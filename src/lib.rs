@@ -33,7 +33,6 @@
 //! - `agents`: Hierarchical agent tree (Root, Node, Leaf agents)
 //! - `task`: Task, subtask, and verification types
 //! - `budget`: Cost tracking and model pricing
-//! - `agent`: Original simple agent (kept for compatibility)
 
 pub mod api;
 pub mod agents;
