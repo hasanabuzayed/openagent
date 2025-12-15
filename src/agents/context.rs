@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::budget::ModelPricing;
 use crate::config::Config;
 use crate::llm::LlmClient;
+use crate::memory::MemorySystem;
 use crate::tools::ToolRegistry;
 
 /// Shared context passed to all agents during execution.
@@ -34,6 +35,9 @@ pub struct AgentContext {
     
     /// Maximum iterations per agent
     pub max_iterations: usize,
+    
+    /// Memory system for persistent storage (optional)
+    pub memory: Option<MemorySystem>,
 }
 
 impl AgentContext {
@@ -53,6 +57,28 @@ impl AgentContext {
             pricing,
             workspace,
             max_split_depth: 3, // Default max recursion for splitting
+            memory: None,
+        }
+    }
+    
+    /// Create a new agent context with memory system.
+    pub fn with_memory(
+        config: Config,
+        llm: Arc<dyn LlmClient>,
+        tools: ToolRegistry,
+        pricing: Arc<ModelPricing>,
+        workspace: PathBuf,
+        memory: Option<MemorySystem>,
+    ) -> Self {
+        Self {
+            max_iterations: config.max_iterations,
+            config,
+            llm,
+            tools,
+            pricing,
+            workspace,
+            max_split_depth: 3,
+            memory,
         }
     }
 
@@ -69,6 +95,7 @@ impl AgentContext {
             workspace: self.workspace.clone(),
             max_split_depth: self.max_split_depth.saturating_sub(1),
             max_iterations: self.max_iterations,
+            memory: self.memory.clone(),
         }
     }
 
@@ -80,6 +107,11 @@ impl AgentContext {
     /// Get the workspace path as a string.
     pub fn workspace_str(&self) -> String {
         self.workspace.to_string_lossy().to_string()
+    }
+    
+    /// Check if memory is available.
+    pub fn has_memory(&self) -> bool {
+        self.memory.is_some()
     }
 }
 

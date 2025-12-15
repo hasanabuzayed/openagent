@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event, Sse},
@@ -15,6 +15,7 @@ use axum::{
     Router,
 };
 use futures::stream::Stream;
+use serde::Deserialize;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -24,6 +25,7 @@ use crate::agents::orchestrator::RootAgent;
 use crate::budget::ModelPricing;
 use crate::config::Config;
 use crate::llm::OpenRouterClient;
+use crate::memory::{self, MemorySystem};
 use crate::tools::ToolRegistry;
 
 use super::types::*;
@@ -34,6 +36,8 @@ pub struct AppState {
     pub tasks: RwLock<HashMap<Uuid, TaskState>>,
     /// The hierarchical root agent
     pub root_agent: AgentRef,
+    /// Memory system (optional)
+    pub memory: Option<MemorySystem>,
 }
 
 /// Start the HTTP server.
@@ -44,10 +48,14 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     // Create the root agent (hierarchical)
     let root_agent: AgentRef = Arc::new(RootAgent::new_with_tuning(&tuning));
     
+    // Initialize memory system (optional - needs Supabase config)
+    let memory = memory::init_memory(&config.memory, &config.api_key).await;
+    
     let state = Arc::new(AppState {
         config: config.clone(),
         tasks: RwLock::new(HashMap::new()),
         root_agent,
+        memory,
     });
 
     let app = Router::new()
@@ -55,6 +63,12 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         .route("/api/task", post(create_task))
         .route("/api/task/:id", get(get_task))
         .route("/api/task/:id/stream", get(stream_task))
+        // Memory endpoints
+        .route("/api/runs", get(list_runs))
+        .route("/api/runs/:id", get(get_run))
+        .route("/api/runs/:id/events", get(get_run_events))
+        .route("/api/runs/:id/tasks", get(get_run_tasks))
+        .route("/api/memory/search", get(search_memory))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -155,21 +169,60 @@ async fn run_agent_task(
         }
     };
 
-    // Create context with the specified workspace
+    // Create context with the specified workspace and memory
     let llm = Arc::new(OpenRouterClient::new(state.config.api_key.clone()));
     let tools = ToolRegistry::new();
     let pricing = Arc::new(ModelPricing::new());
     
-    let ctx = AgentContext::new(
+    let ctx = AgentContext::with_memory(
         state.config.clone(),
         llm,
         tools,
         pricing,
         workspace_path,
+        state.memory.clone(),
     );
+    
+    // Create a run in memory if available
+    let memory_run_id = if let Some(ref mem) = state.memory {
+        match mem.writer.create_run(&task_description).await {
+            Ok(run_id) => {
+                let _ = mem.writer.update_run_status(run_id, crate::memory::MemoryStatus::Running).await;
+                Some(run_id)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create memory run: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Run the hierarchical agent
     let result = state.root_agent.execute(&mut task, &ctx).await;
+    
+    // Complete the memory run
+    if let (Some(ref mem), Some(run_id)) = (&state.memory, memory_run_id) {
+        let _ = mem.writer.complete_run(
+            run_id,
+            &result.output,
+            result.cost_cents as i32,
+            result.success,
+        ).await;
+        
+        // Generate and store summary
+        let summary = format!(
+            "Task: {}\nResult: {}\nSuccess: {}",
+            task_description,
+            if result.output.len() > 500 { &result.output[..500] } else { &result.output },
+            result.success
+        );
+        let _ = mem.writer.store_run_summary(run_id, &summary).await;
+        
+        // Archive the run
+        let _ = mem.writer.archive_run(run_id).await;
+    }
     
     // Update task with result
     {
@@ -278,4 +331,113 @@ async fn stream_task(
     };
     
     Ok(Sse::new(stream))
+}
+
+// ==================== Memory Endpoints ====================
+
+/// Query parameters for listing runs.
+#[derive(Debug, Deserialize)]
+pub struct ListRunsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+/// List archived runs.
+async fn list_runs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListRunsQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mem = state.memory.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Memory not configured".to_string()))?;
+    
+    let limit = params.limit.unwrap_or(20);
+    let offset = params.offset.unwrap_or(0);
+    
+    let runs = mem.retriever.list_runs(limit, offset).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    Ok(Json(serde_json::json!({
+        "runs": runs,
+        "limit": limit,
+        "offset": offset
+    })))
+}
+
+/// Get a specific run.
+async fn get_run(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mem = state.memory.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Memory not configured".to_string()))?;
+    
+    let run = mem.retriever.get_run(id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Run {} not found", id)))?;
+    
+    Ok(Json(serde_json::json!(run)))
+}
+
+/// Get events for a run.
+async fn get_run_events(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<ListRunsQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mem = state.memory.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Memory not configured".to_string()))?;
+    
+    let events = mem.retriever.get_run_events(id, params.limit).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    Ok(Json(serde_json::json!({
+        "run_id": id,
+        "events": events
+    })))
+}
+
+/// Get tasks for a run.
+async fn get_run_tasks(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mem = state.memory.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Memory not configured".to_string()))?;
+    
+    let tasks = mem.retriever.get_run_tasks(id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    Ok(Json(serde_json::json!({
+        "run_id": id,
+        "tasks": tasks
+    })))
+}
+
+/// Query parameters for memory search.
+#[derive(Debug, Deserialize)]
+pub struct SearchMemoryQuery {
+    q: String,
+    k: Option<usize>,
+    run_id: Option<Uuid>,
+}
+
+/// Search memory.
+async fn search_memory(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SearchMemoryQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mem = state.memory.as_ref()
+        .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "Memory not configured".to_string()))?;
+    
+    let results = mem.retriever.search(
+        &params.q,
+        params.k,
+        None,
+        params.run_id,
+    ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    Ok(Json(serde_json::json!({
+        "query": params.q,
+        "results": results
+    })))
 }

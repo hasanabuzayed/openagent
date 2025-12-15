@@ -38,5 +38,8 @@ anyhow = "1"
 async-stream = "0.3"
 regex = "1"
 
+# For memory/storage
+chrono = { version = "0.4", features = ["serde"] }
+
 [dev-dependencies]
 tokio-test = "0.4"

@@ -39,8 +39,10 @@ pub mod agents;
 pub mod budget;
 pub mod config;
 pub mod llm;
+pub mod memory;
 pub mod task;
 pub mod tools;
 
 pub use config::Config;
+pub use config::MemoryConfig;
 
