@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { listTasks, TaskState } from '@/lib/api';
 import { formatCents } from '@/lib/utils';
@@ -184,29 +184,48 @@ function AgentTreeNode({
 
 export default function AgentsPage() {
   const [tasks, setTasks] = useState<TaskState[]>([]);
-  const [selectedTask, setSelectedTask] = useState<TaskState | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const selectedTask = useMemo(
+    () => tasks.find((t) => t.id === selectedTaskId) ?? null,
+    [tasks, selectedTaskId]
+  );
   const [selectedAgent, setSelectedAgent] = useState<AgentNode | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+    let seq = 0;
+
     const fetchTasks = async () => {
+      const mySeq = ++seq;
       try {
         const data = await listTasks();
+        if (cancelled || mySeq !== seq) return;
+
         setTasks(data);
-        if (data.length > 0 && !selectedTask) {
-          setSelectedTask(data[0]);
-        }
+        setSelectedTaskId((prev) => {
+          if (data.length === 0) return null;
+          if (!prev) return data[0]!.id;
+          const stillExists = data.some((t) => t.id === prev);
+          return stillExists ? prev : data[0]!.id;
+        });
       } catch (error) {
         console.error('Failed to fetch tasks:', error);
       } finally {
-        setLoading(false);
+        if (!cancelled && mySeq === seq) {
+          setLoading(false);
+        }
       }
     };
 
     fetchTasks();
     const interval = setInterval(fetchTasks, 3000);
-    return () => clearInterval(interval);
-  }, [selectedTask]);
+    return () => {
+      cancelled = true;
+      seq += 1; // invalidate any in-flight request
+      clearInterval(interval);
+    };
+  }, []);
 
   // Mock agent tree for the selected task
   const mockAgentTree: AgentNode | null = selectedTask
@@ -278,10 +297,10 @@ export default function AgentsPage() {
           {tasks.map((task) => (
             <button
               key={task.id}
-              onClick={() => setSelectedTask(task)}
+              onClick={() => setSelectedTaskId(task.id)}
               className={cn(
                 'w-full rounded-lg p-3 text-left transition-colors',
-                selectedTask?.id === task.id
+                selectedTaskId === task.id
                   ? 'bg-[var(--accent)]/10 border border-[var(--accent)]'
                   : 'bg-[var(--background-tertiary)] hover:bg-[var(--border)]'
               )}
