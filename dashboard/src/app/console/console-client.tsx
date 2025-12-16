@@ -391,9 +391,9 @@ function TerminalTab({ tabId, isActive }: { tabId: string; isActive: boolean }) 
   );
 }
 
-// Files Tab Component
+// Files Tab Component - Clean file explorer with drag-drop support
 function FilesTab({ isActive }: { tabId: string; isActive: boolean }) {
-  const [cwd, setCwd] = useState("/root");
+  const [cwd, setCwd] = useState("/root/context");
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [fsLoading, setFsLoading] = useState(false);
   const [fsError, setFsError] = useState<string | null>(null);
@@ -402,9 +402,44 @@ function FilesTab({ isActive }: { tabId: string; isActive: boolean }) {
     done: number;
     total: number;
   } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isEditingPath, setIsEditingPath] = useState(false);
+  const [editPath, setEditPath] = useState(cwd);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pathInputRef = useRef<HTMLInputElement | null>(null);
   // Track the last loaded directory to avoid unnecessary reloads
   const lastLoadedDirRef = useRef<string | null>(null);
   const hasEverLoadedRef = useRef(false);
+  const dragCounterRef = useRef(0);
+
+  // Parse path into breadcrumb segments
+  const breadcrumbs = useMemo(() => {
+    const parts = cwd.split("/").filter(Boolean);
+    const crumbs: { name: string; path: string }[] = [{ name: "/", path: "/" }];
+    let accumulated = "";
+    for (const part of parts) {
+      accumulated += "/" + part;
+      crumbs.push({ name: part, path: accumulated });
+    }
+    return crumbs;
+  }, [cwd]);
+
+  // Handle path edit submission
+  const handlePathSubmit = useCallback(() => {
+    const normalizedPath = editPath.trim() || "/";
+    setIsEditingPath(false);
+    if (normalizedPath !== cwd) {
+      setCwd(normalizedPath);
+    }
+  }, [editPath, cwd]);
+
+  // Start editing path
+  const startEditingPath = useCallback(() => {
+    setEditPath(cwd);
+    setIsEditingPath(true);
+    // Focus the input after render
+    setTimeout(() => pathInputRef.current?.select(), 0);
+  }, [cwd]);
 
   const sortedEntries = useMemo(() => {
     const dirs = entries
@@ -437,6 +472,21 @@ function FilesTab({ isActive }: { tabId: string; isActive: boolean }) {
     }
   }, []);
 
+  const handleUpload = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
+    setUploading({ done: 0, total: files.length });
+    try {
+      await uploadFiles(cwd, files, (done, total) =>
+        setUploading({ done, total })
+      );
+      await refreshDir(cwd, true);
+    } catch (err) {
+      setFsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(null);
+    }
+  }, [cwd, refreshDir]);
+
   // Load directory when cwd changes or when becoming active for the first time
   useEffect(() => {
     if (isActive) {
@@ -452,6 +502,39 @@ function FilesTab({ isActive }: { tabId: string; isActive: boolean }) {
     }
   }, [cwd, isActive, refreshDir]);
 
+  // Drag and drop handlers for the entire file list
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files || []);
+    await handleUpload(files);
+  }, [handleUpload]);
+
   return (
     <div
       className={[
@@ -459,34 +542,11 @@ function FilesTab({ isActive }: { tabId: string; isActive: boolean }) {
         isActive ? "opacity-100" : "pointer-events-none opacity-0",
       ].join(" ")}
     >
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            className="rounded-md border border-[var(--border)] bg-[var(--background-tertiary)] px-2 py-1 text-xs text-[var(--foreground)] hover:bg-[var(--background-tertiary)]/70"
-            onClick={() => void refreshDir(cwd, true)}
-          >
-            Refresh
-          </button>
-          <button
-            className="rounded-md border border-[var(--border)] bg-[var(--background-tertiary)] px-2 py-1 text-xs text-[var(--foreground)] hover:bg-[var(--background-tertiary)]/70"
-            onClick={async () => {
-              const name = prompt("New folder name");
-              if (!name) return;
-              const target = cwd.endsWith("/")
-                ? `${cwd}${name}`
-                : `${cwd}/${name}`;
-              await mkdir(target);
-              await refreshDir(cwd, true);
-            }}
-          >
-            New folder
-          </button>
-        </div>
-      </div>
-
-      <div className="mb-3 flex items-center gap-2">
+      {/* Compact toolbar */}
+      <div className="mb-2 flex items-center gap-1.5">
+        {/* Navigation buttons */}
         <button
-          className="rounded-md border border-[var(--border)] bg-[var(--background-tertiary)] px-2 py-1 text-xs text-[var(--foreground)] hover:bg-[var(--background-tertiary)]/70"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--background-tertiary)] text-[var(--foreground-muted)] hover:bg-[var(--background-tertiary)]/70 hover:text-[var(--foreground)] disabled:opacity-40"
           onClick={() => {
             const parts = cwd.split("/").filter(Boolean);
             if (parts.length === 0) return;
@@ -494,153 +554,308 @@ function FilesTab({ isActive }: { tabId: string; isActive: boolean }) {
             setCwd("/" + parts.join("/"));
           }}
           disabled={cwd === "/"}
+          title="Go up"
         >
-          Up
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+          </svg>
         </button>
+        
+        <button
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--background-tertiary)] text-[var(--foreground-muted)] hover:bg-[var(--background-tertiary)]/70 hover:text-[var(--foreground)]"
+          onClick={() => void refreshDir(cwd, true)}
+          title="Refresh"
+        >
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+
+        <div className="mx-1 h-4 w-px bg-[var(--border)]" />
+
+        {/* Quick nav buttons */}
+        <button
+          className={`flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors ${
+            cwd === "/root/context" 
+              ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-300" 
+              : "border-[var(--border)] bg-[var(--background-tertiary)] text-[var(--foreground-muted)] hover:bg-[var(--background-tertiary)]/70 hover:text-[var(--foreground)]"
+          }`}
+          onClick={() => setCwd("/root/context")}
+          title="User input files"
+        >
+          <span>📥</span>
+          <span>context</span>
+        </button>
+        <button
+          className={`flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors ${
+            cwd.startsWith("/root/work") 
+              ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-300" 
+              : "border-[var(--border)] bg-[var(--background-tertiary)] text-[var(--foreground-muted)] hover:bg-[var(--background-tertiary)]/70 hover:text-[var(--foreground)]"
+          }`}
+          onClick={() => setCwd("/root/work")}
+          title="Agent workspace"
+        >
+          <span>🔨</span>
+          <span>work</span>
+        </button>
+        <button
+          className={`flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors ${
+            cwd.startsWith("/root/tools") 
+              ? "border-indigo-500/30 bg-indigo-500/10 text-indigo-300" 
+              : "border-[var(--border)] bg-[var(--background-tertiary)] text-[var(--foreground-muted)] hover:bg-[var(--background-tertiary)]/70 hover:text-[var(--foreground)]"
+          }`}
+          onClick={() => setCwd("/root/tools")}
+          title="Reusable tools"
+        >
+          <span>🛠️</span>
+          <span>tools</span>
+        </button>
+
+        <div className="flex-1" />
+
+        {/* Action buttons */}
+        <button
+          className="flex h-7 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background-tertiary)] px-2 text-xs text-[var(--foreground-muted)] hover:bg-[var(--background-tertiary)]/70 hover:text-[var(--foreground)]"
+          onClick={async () => {
+            const name = prompt("New folder name");
+            if (!name) return;
+            const target = cwd.endsWith("/") ? `${cwd}${name}` : `${cwd}/${name}`;
+            await mkdir(target);
+            await refreshDir(cwd, true);
+          }}
+          title="New folder"
+        >
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+          </svg>
+          <span>Folder</span>
+        </button>
+
         <input
-          className="w-full rounded-md border border-[var(--border)] bg-[var(--background)]/40 px-3 py-2 text-sm text-[var(--foreground)] placeholder:text-[var(--foreground-muted)] focus-visible:!border-[var(--border)]"
-          value={cwd}
-          onChange={(e) => setCwd(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void refreshDir(cwd);
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files || []);
+            void handleUpload(files);
+            e.target.value = "";
           }}
         />
+        <button
+          className="flex h-7 items-center gap-1.5 rounded-md border border-indigo-500/30 bg-indigo-500/10 px-2 text-xs text-indigo-300 hover:bg-indigo-500/20"
+          onClick={() => fileInputRef.current?.click()}
+          title="Upload files"
+        >
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+          </svg>
+          <span>Import</span>
+        </button>
       </div>
 
-      <div
-        className="mb-3 rounded-md border border-dashed border-[var(--border)] bg-[var(--background)]/20 p-3 text-sm text-[var(--foreground-muted)]"
-        onDragOver={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        onDrop={async (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const files = Array.from(e.dataTransfer.files || []);
-          if (files.length === 0) return;
-          setUploading({ done: 0, total: files.length });
-          try {
-            await uploadFiles(cwd, files, (done, total) =>
-              setUploading({ done, total })
-            );
-            await refreshDir(cwd);
-          } catch (err) {
-            setFsError(err instanceof Error ? err.message : String(err));
-          } finally {
-            setUploading(null);
-          }
-        }}
-      >
-        Drag & drop to upload into{" "}
-        <span className="text-[var(--foreground)]">{cwd}</span>
-        {uploading ? (
-          <span className="ml-2 text-xs">
-            ({uploading.done}/{uploading.total})
-          </span>
-        ) : null}
+      {/* Breadcrumb navigation / Editable path */}
+      <div className="mb-2 flex items-center text-xs">
+        {isEditingPath ? (
+          <input
+            ref={pathInputRef}
+            type="text"
+            value={editPath}
+            onChange={(e) => setEditPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                handlePathSubmit();
+              } else if (e.key === "Escape") {
+                setIsEditingPath(false);
+                setEditPath(cwd);
+              }
+            }}
+            onBlur={handlePathSubmit}
+            className="flex-1 rounded-md border border-indigo-500/30 bg-[var(--background)]/60 px-2 py-1 text-sm text-[var(--foreground)] focus:outline-none focus:border-indigo-500/50"
+            autoFocus
+          />
+        ) : (
+          <button
+            className="flex items-center gap-1 overflow-x-auto scrollbar-none rounded-md px-1 py-0.5 hover:bg-white/[0.03] transition-colors group"
+            onClick={startEditingPath}
+            title="Click to edit path"
+          >
+            {breadcrumbs.map((crumb, i) => (
+              <span key={crumb.path} className="flex items-center">
+                {i > 0 && <span className="mx-0.5 text-[var(--foreground-muted)]">/</span>}
+                <span
+                  className={`rounded px-1 py-0.5 transition-colors ${
+                    i === breadcrumbs.length - 1
+                      ? "text-[var(--foreground)]"
+                      : "text-[var(--foreground-muted)]"
+                  }`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCwd(crumb.path);
+                  }}
+                >
+                  {crumb.name}
+                </span>
+              </span>
+            ))}
+            <svg className="h-3 w-3 ml-1 text-[var(--foreground-muted)] opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+          </button>
+        )}
       </div>
 
-      {fsError ? (
-        <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-          {fsError}
+      {/* Upload progress */}
+      {uploading && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-300">
+          <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+          <span>Uploading {uploading.done}/{uploading.total}...</span>
         </div>
-      ) : null}
+      )}
 
-      <div className="flex-1 grid gap-3 md:grid-cols-5 min-h-0">
-        <div className="md:col-span-3 overflow-hidden">
-          <div className="h-full rounded-md border border-[var(--border)] bg-[var(--background)]/30 flex flex-col">
-            <div className="grid grid-cols-12 gap-2 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--foreground-muted)]">
-              <div className="col-span-7">Name</div>
-              <div className="col-span-3">Size</div>
-              <div className="col-span-2">Type</div>
-            </div>
-            <div className="flex-1 overflow-auto">
-              {fsLoading ? (
-                <div className="px-3 py-3 text-sm text-[var(--foreground-muted)]">
-                  Loading…
-                </div>
-              ) : sortedEntries.length === 0 ? (
-                <div className="px-3 py-3 text-sm text-[var(--foreground-muted)]">
-                  Empty
-                </div>
-              ) : (
-                sortedEntries.map((e) => (
-                  <button
-                    key={e.path}
-                    className={
-                      "grid w-full grid-cols-12 gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--background-tertiary)]/60 " +
-                      (selected?.path === e.path
-                        ? "bg-[var(--accent)]/10"
-                        : "")
-                    }
-                    onClick={() => setSelected(e)}
-                    onDoubleClick={() => {
-                      if (e.kind === "dir") setCwd(e.path);
-                    }}
-                  >
-                    <div className="col-span-7 truncate text-[var(--foreground)]">
-                      {e.kind === "dir" ? "📁 " : "📄 "}{e.name}
-                    </div>
-                    <div className="col-span-3 text-[var(--foreground-muted)]">
-                      {e.kind === "file" ? formatBytes(e.size) : "-"}
-                    </div>
-                    <div className="col-span-2 text-[var(--foreground-muted)]">
-                      {e.kind}
-                    </div>
-                  </button>
-                ))
-              )}
+      {fsError && (
+        <div className="mb-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200 flex items-center gap-2">
+          <svg className="h-3.5 w-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span className="truncate">{fsError}</span>
+          <button onClick={() => setFsError(null)} className="ml-auto text-red-300 hover:text-red-100">×</button>
+        </div>
+      )}
+
+      {/* Main content area with drag-drop */}
+      <div
+        className={`flex-1 min-h-0 rounded-md border transition-colors relative ${
+          isDragging
+            ? "border-indigo-500 bg-indigo-500/5"
+            : "border-[var(--border)] bg-[var(--background)]/30"
+        }`}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
+        {/* Drag overlay */}
+        {isDragging && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-indigo-500/10 backdrop-blur-sm pointer-events-none">
+            <div className="flex flex-col items-center gap-2 text-indigo-300">
+              <svg className="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+              <span className="text-sm font-medium">Drop files to upload</span>
             </div>
           </div>
-        </div>
+        )}
 
-        <div className="md:col-span-2">
-          <div className="rounded-md border border-[var(--border)] bg-[var(--background)]/30 p-3">
-            <div className="text-sm font-medium text-[var(--foreground)]">
-              Selection
-            </div>
-            {selected ? (
-              <div className="mt-2 space-y-2 text-sm">
-                <div className="break-words text-[var(--foreground)]">
-                  {selected.path}
-                </div>
-                <div className="text-[var(--foreground-muted)]">
-                  <span className="text-[var(--foreground)]">Type:</span>{" "}
-                  {selected.kind}
-                </div>
-                {selected.kind === "file" ? (
-                  <div className="text-[var(--foreground-muted)]">
-                    <span className="text-[var(--foreground)]">Size:</span>{" "}
-                    {formatBytes(selected.size)}
-                  </div>
-                ) : null}
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {selected.kind === "file" ? (
-                    <button
-                      className="rounded-md border border-[var(--border)] bg-[var(--background-tertiary)] px-2 py-1 text-xs text-[var(--foreground)] hover:bg-[var(--background-tertiary)]/70"
-                      onClick={() => void downloadFile(selected.path)}
-                    >
-                      Download
-                    </button>
-                  ) : null}
-                  <button
-                    className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-200 hover:bg-red-500/15"
-                    onClick={async () => {
-                      if (!confirm(`Delete ${selected.path}?`)) return;
-                      await rm(selected.path, selected.kind === "dir");
-                      await refreshDir(cwd);
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
+        <div className="h-full flex flex-col">
+          {/* Header */}
+          <div className="grid grid-cols-12 gap-2 border-b border-[var(--border)] px-3 py-1.5 text-[10px] uppercase tracking-wider text-[var(--foreground-muted)]">
+            <div className="col-span-7">Name</div>
+            <div className="col-span-3 text-right">Size</div>
+            <div className="col-span-2 text-right">Type</div>
+          </div>
+
+          {/* File list */}
+          <div className="flex-1 overflow-auto">
+            {fsLoading ? (
+              <div className="flex items-center justify-center py-8 text-sm text-[var(--foreground-muted)]">
+                <svg className="h-4 w-4 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                Loading...
+              </div>
+            ) : sortedEntries.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-[var(--foreground-muted)]">
+                <svg className="h-8 w-8 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                <span className="text-sm">Empty folder</span>
+                <span className="text-xs mt-1 opacity-60">Drag files here or click Import</span>
               </div>
             ) : (
-              <div className="mt-2 text-sm text-[var(--foreground-muted)]">
-                Click a file/folder.
-              </div>
+              sortedEntries.map((e) => (
+                <button
+                  key={e.path}
+                  className={`grid w-full grid-cols-12 gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
+                    selected?.path === e.path
+                      ? "bg-indigo-500/10 text-[var(--foreground)]"
+                      : "text-[var(--foreground)] hover:bg-white/[0.03]"
+                  }`}
+                  onClick={() => setSelected(e)}
+                  onDoubleClick={() => {
+                    if (e.kind === "dir") setCwd(e.path);
+                    else void downloadFile(e.path);
+                  }}
+                >
+                  <div className="col-span-7 flex items-center gap-2 truncate">
+                    <span className="text-base flex-shrink-0">{e.kind === "dir" ? "📁" : "📄"}</span>
+                    <span className="truncate">{e.name}</span>
+                  </div>
+                  <div className="col-span-3 text-right text-[var(--foreground-muted)] tabular-nums">
+                    {e.kind === "file" ? formatBytes(e.size) : "—"}
+                  </div>
+                  <div className="col-span-2 text-right text-[var(--foreground-muted)]">
+                    {e.kind}
+                  </div>
+                </button>
+              ))
             )}
           </div>
+
+          {/* Footer with selection info */}
+          {selected && (
+            <div className="border-t border-[var(--border)] px-3 py-2 flex items-center gap-3 text-xs bg-white/[0.02]">
+              <span className="text-[var(--foreground-muted)] truncate flex-1">
+                {selected.path}
+              </span>
+              {selected.kind === "file" && (
+                <span className="text-[var(--foreground-muted)] tabular-nums">
+                  {formatBytes(selected.size)}
+                </span>
+              )}
+              <div className="flex items-center gap-1">
+                {selected.kind === "file" && (
+                  <button
+                    className="flex h-6 items-center gap-1 rounded border border-[var(--border)] bg-[var(--background-tertiary)] px-2 text-[var(--foreground-muted)] hover:text-[var(--foreground)]"
+                    onClick={() => void downloadFile(selected.path)}
+                    title="Download"
+                  >
+                    <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                  </button>
+                )}
+                {selected.kind === "dir" && (
+                  <button
+                    className="flex h-6 items-center gap-1 rounded border border-[var(--border)] bg-[var(--background-tertiary)] px-2 text-[var(--foreground-muted)] hover:text-[var(--foreground)]"
+                    onClick={() => setCwd(selected.path)}
+                    title="Open folder"
+                  >
+                    <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    </svg>
+                  </button>
+                )}
+                <button
+                  className="flex h-6 items-center gap-1 rounded border border-red-500/30 bg-red-500/10 px-2 text-red-300 hover:bg-red-500/20"
+                  onClick={async () => {
+                    if (!confirm(`Delete ${selected.name}?`)) return;
+                    await rm(selected.path, selected.kind === "dir");
+                    await refreshDir(cwd, true);
+                  }}
+                  title="Delete"
+                >
+                  <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

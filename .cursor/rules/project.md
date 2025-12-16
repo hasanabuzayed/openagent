@@ -16,7 +16,27 @@ The agent has **full system access** by design:
 - Can search for files/content across the entire filesystem
 - Default working directory is `/root` in production (configurable via `WORKING_DIR`)
 - Paths can be absolute (e.g., `/var/log/syslog`) or relative to the working directory
-- Agent can create helper tools/scripts in `/root/tools/` for reuse
+
+### Directory Conventions
+
+The agent uses an organized directory structure:
+```
+/root/
+├── context/           # 📥 INPUT: User-provided files (uploaded via dashboard)
+│   └── [task files]   #    The agent checks this FIRST for files to analyze
+├── work/              # 🔨 WORKSPACE: Agent's working area
+│   └── [task-name]/   #    Subfolder for each distinct task/analysis
+│       ├── output/    #    Final outputs, reports, results
+│       ├── temp/      #    Intermediate/temporary files
+│       └── notes.md   #    Task notes, findings, decisions
+└── tools/             # 🛠️ TOOLBOX: Reusable scripts & utilities
+    ├── README.md      #    Document each tool's purpose & usage
+    └── [tool-name]/   #    One folder per tool/script
+```
+
+- **`/root/context/`**: Where users upload files for the agent to analyze (dashboard file explorer defaults here)
+- **`/root/work/`**: Agent creates organized subfolders here for each task
+- **`/root/tools/`**: Persistent helper scripts/tools the agent creates for reuse
 
 ## Architecture (v2: Hierarchical Agent Tree)
 
@@ -446,7 +466,7 @@ This is intentional - the agent is designed to be a powerful system-wide assista
 - Never expose the API publicly without authentication
 - Use the built-in JWT auth system (`DASHBOARD_PASSWORD`, `JWT_SECRET`)
 - Keep `.env` out of version control
-- The agent's default working directory is `/root` with tools stored in `/root/tools/`
+- Users upload files to `/root/context/`, agent works in `/root/work/`, tools in `/root/tools/`
 
 ## Future Work
 
