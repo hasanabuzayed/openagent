@@ -491,25 +491,42 @@ pub async fn stream(
             .unwrap();
         yield Ok(init_ev);
 
+        // Keepalive interval to prevent connection timeouts during long LLM calls
+        let mut keepalive_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        keepalive_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
-            match rx.recv().await {
-                Ok(ev) => {
-                    let sse = Event::default().event(ev.event_name()).json_data(&ev).unwrap();
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(ev) => {
+                            let sse = Event::default().event(ev.event_name()).json_data(&ev).unwrap();
+                            yield Ok(sse);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let sse = Event::default()
+                                .event("error")
+                                .json_data(AgentEvent::Error { message: "event stream lagged; some events were dropped".to_string() })
+                                .unwrap();
+                            yield Ok(sse);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                _ = keepalive_interval.tick() => {
+                    // Send SSE comment as keepalive (: comment\n\n)
+                    let sse = Event::default().comment("keepalive");
                     yield Ok(sse);
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let sse = Event::default()
-                        .event("error")
-                        .json_data(AgentEvent::Error { message: "event stream lagged; some events were dropped".to_string() })
-                        .unwrap();
-                    yield Ok(sse);
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     };
 
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("keepalive")
+    ))
 }
 
 /// Spawn the global control session actor.

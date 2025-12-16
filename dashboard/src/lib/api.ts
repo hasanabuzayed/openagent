@@ -440,6 +440,7 @@ export function streamControl(
             } else if (line.startsWith("data:")) {
               data += line.slice("data:".length).trim();
             }
+            // SSE comments (lines starting with :) are ignored for keepalive
           }
 
           if (!data) continue;
@@ -450,11 +451,21 @@ export function streamControl(
           }
         }
       }
-    } catch {
+      
+      // Stream ended normally (server closed connection)
+      onEvent({
+        type: "error",
+        data: { message: "Stream ended - server closed connection" },
+      });
+    } catch (err) {
       if (!controller.signal.aborted) {
+        // Provide more specific error messages
+        const errorMessage = err instanceof Error 
+          ? `Stream connection failed: ${err.message}`
+          : "Stream connection failed";
         onEvent({
           type: "error",
-          data: { message: "Stream connection failed" },
+          data: { message: errorMessage },
         });
       }
     }

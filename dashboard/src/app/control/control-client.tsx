@@ -297,13 +297,21 @@ export default function ControlClient() {
     }
   };
 
+  // Auto-reconnecting stream with exponential backoff
   useEffect(() => {
-    streamCleanupRef.current?.();
+    let cleanup: (() => void) | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempts = 0;
+    let mounted = true;
+    const maxReconnectDelay = 30000; // 30 seconds max
+    const baseDelay = 1000; // Start with 1 second
 
-    const cleanup = streamControl((event) => {
+    const handleEvent = (event: { type: string; data: unknown }) => {
       const data: unknown = event.data;
 
       if (event.type === 'status' && isRecord(data)) {
+        // Successfully receiving events - reset reconnect counter
+        reconnectAttempts = 0;
         const st = data['state'];
         setRunState(typeof st === 'string' ? (st as ControlRunState) : 'idle');
         const q = data['queue_len'];
@@ -409,17 +417,48 @@ export default function ControlClient() {
         const msg =
           (isRecord(data) && data['message'] ? String(data['message']) : null) ??
           'An error occurred.';
-        setItems((prev) => [
-          ...prev,
-          { kind: 'system', id: `err-${Date.now()}`, content: msg },
-        ]);
+        
+        // Auto-reconnect on stream errors
+        if (msg.includes('Stream connection failed') || msg.includes('Stream ended')) {
+          scheduleReconnect();
+        } else {
+          setItems((prev) => [
+            ...prev,
+            { kind: 'system', id: `err-${Date.now()}`, content: msg },
+          ]);
+        }
       }
-    });
+    };
 
+    const scheduleReconnect = () => {
+      if (!mounted) return;
+      
+      // Calculate delay with exponential backoff
+      const delay = Math.min(baseDelay * Math.pow(2, reconnectAttempts), maxReconnectDelay);
+      reconnectAttempts++;
+      
+      console.log(`Stream disconnected, reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+      
+      reconnectTimeout = setTimeout(() => {
+        if (mounted) {
+          connect();
+        }
+      }, delay);
+    };
+
+    const connect = () => {
+      cleanup?.();
+      cleanup = streamControl(handleEvent);
+    };
+
+    // Initial connection
+    connect();
     streamCleanupRef.current = cleanup;
 
     return () => {
-      streamCleanupRef.current?.();
+      mounted = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      cleanup?.();
       streamCleanupRef.current = null;
     };
   }, []);
