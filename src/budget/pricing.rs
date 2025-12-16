@@ -206,11 +206,12 @@ impl ModelPricing {
     /// Automatically excludes:
     /// - Free models (ending in :free) as they often don't work reliably
     /// - Models with $0 pricing
-    /// - Models not from trusted providers
-    /// - Small models (< 30B parameters based on naming heuristics)
+    /// - "Lite" or small model variants
+    /// - Models not in the explicit allowlist
     pub async fn models_by_cost_filtered(&self, require_tools: bool) -> Vec<PricingInfo> {
-        // Explicitly allowed models that are known to work well with tools
-        const CAPABLE_MODELS: &[&str] = &[
+        // Explicitly allowed model patterns (exact match or prefix with version suffix like -001)
+        // These are the ONLY models that will be considered for task execution
+        const CAPABLE_MODEL_BASES: &[&str] = &[
             // Claude family (all sizes work great)
             "anthropic/claude-sonnet-4.5",
             "anthropic/claude-sonnet-4",
@@ -225,10 +226,10 @@ impl ModelPricing {
             "openai/gpt-4-turbo",
             "openai/gpt-4.1",
             "openai/gpt-4.1-mini",
-            // Google Gemini (large models only)
-            "google/gemini-2.0-flash",
-            "google/gemini-2.5-pro",
+            // Google Gemini (large models ONLY - no lite/flash-lite)
             "google/gemini-pro",
+            "google/gemini-1.5-pro",
+            "google/gemini-2.5-pro",
             // Mistral large models
             "mistralai/mistral-large",
             "mistralai/mistral-medium",
@@ -237,9 +238,23 @@ impl ModelPricing {
             "deepseek/deepseek-coder",
         ];
         
+        // Patterns to exclude even if they match an allowed base
+        const EXCLUDED_PATTERNS: &[&str] = &[
+            "-lite",
+            "-mini-", // but not ending in -mini
+            "-nano",
+            "-tiny",
+            "-small",
+            "-3b",
+            "-7b",
+            "-8b",
+        ];
+        
         let cache = self.cache.read().await;
         let mut models: Vec<_> = cache.values()
             .filter(|m| {
+                let model_id_lower = m.model_id.to_lowercase();
+                
                 // Must support tools if required
                 if require_tools && !m.supports_tools {
                     return false;
@@ -255,8 +270,25 @@ impl ModelPricing {
                     return false;
                 }
                 
-                // Only include known-capable models
-                CAPABLE_MODELS.iter().any(|allowed| m.model_id.starts_with(allowed))
+                // Exclude "lite" and other small variants
+                if EXCLUDED_PATTERNS.iter().any(|p| model_id_lower.contains(p)) {
+                    return false;
+                }
+                
+                // Must match an allowed model base (exact match or with version suffix)
+                CAPABLE_MODEL_BASES.iter().any(|base| {
+                    // Exact match
+                    if m.model_id == *base {
+                        return true;
+                    }
+                    // Match with version suffix (e.g., base-001, base:version)
+                    if m.model_id.starts_with(base) {
+                        let suffix = &m.model_id[base.len()..];
+                        // Allow version suffixes like -001, :latest, etc.
+                        return suffix.starts_with('-') || suffix.starts_with(':');
+                    }
+                    false
+                })
             })
             .cloned()
             .collect();
