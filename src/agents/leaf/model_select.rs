@@ -281,17 +281,25 @@ impl Agent for ModelSelector {
         let models = ctx.pricing.models_by_cost_filtered(true).await;
         
         if models.is_empty() {
-            // Use hardcoded defaults if no pricing available
+            // Fall back to configured default model
+            let default_model = ctx.config.default_model.clone();
+            
+            // Record on task analysis
+            {
+                let a = task.analysis_mut();
+                a.selected_model = Some(default_model.clone());
+            }
+            
             return AgentResult::success(
-                "Using default model (no pricing data available)",
+                "Using configured default model (no other models available)",
                 0,
             )
             .with_data(json!({
-                "model_id": "openai/gpt-4.1-mini",
-                "expected_cost_cents": 10,
-                "confidence": 0.5,
-                "reasoning": "Fallback to default model",
-                "fallbacks": ["openai/gpt-4o-mini", "anthropic/claude-3-haiku"],
+                "model_id": default_model,
+                "expected_cost_cents": 50,
+                "confidence": 0.8,
+                "reasoning": "Fallback to configured default model",
+                "fallbacks": [],
             }));
         }
 

@@ -207,15 +207,34 @@ impl ModelPricing {
     /// - Free models (ending in :free) as they often don't work reliably
     /// - Models with $0 pricing
     /// - Models not from trusted providers
+    /// - Small models (< 30B parameters based on naming heuristics)
     pub async fn models_by_cost_filtered(&self, require_tools: bool) -> Vec<PricingInfo> {
-        // Trusted providers that work reliably with tool calling
-        const TRUSTED_PROVIDERS: &[&str] = &[
-            "anthropic/",
-            "openai/",
-            "google/",
-            "meta-llama/",
-            "mistralai/",
-            "deepseek/",
+        // Explicitly allowed models that are known to work well with tools
+        const CAPABLE_MODELS: &[&str] = &[
+            // Claude family (all sizes work great)
+            "anthropic/claude-sonnet-4.5",
+            "anthropic/claude-sonnet-4",
+            "anthropic/claude-3.7-sonnet",
+            "anthropic/claude-3.5-sonnet",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-3.5-haiku",
+            "anthropic/claude-3-haiku",
+            // OpenAI GPT-4 family
+            "openai/gpt-4o",
+            "openai/gpt-4o-mini",
+            "openai/gpt-4-turbo",
+            "openai/gpt-4.1",
+            "openai/gpt-4.1-mini",
+            // Google Gemini (large models only)
+            "google/gemini-2.0-flash",
+            "google/gemini-2.5-pro",
+            "google/gemini-pro",
+            // Mistral large models
+            "mistralai/mistral-large",
+            "mistralai/mistral-medium",
+            // DeepSeek large
+            "deepseek/deepseek-chat",
+            "deepseek/deepseek-coder",
         ];
         
         let cache = self.cache.read().await;
@@ -236,8 +255,8 @@ impl ModelPricing {
                     return false;
                 }
                 
-                // Only include models from trusted providers
-                TRUSTED_PROVIDERS.iter().any(|p| m.model_id.starts_with(p))
+                // Only include known-capable models
+                CAPABLE_MODELS.iter().any(|allowed| m.model_id.starts_with(allowed))
             })
             .cloned()
             .collect();
