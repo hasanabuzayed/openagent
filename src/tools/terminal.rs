@@ -94,11 +94,10 @@ impl Tool for RunCommand {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let exit_code = output.status.code().unwrap_or(-1);
         
-        tracing::debug!("Command exit code: {}, stdout len: {}, stderr len: {}", 
+        tracing::info!("Command completed: exit={}, stdout_len={}, stderr_len={}", 
             exit_code, stdout.len(), stderr.len());
-        if !stdout.is_empty() {
-            tracing::debug!("Command stdout (first 500 chars): {}", 
-                &stdout[..stdout.len().min(500)]);
+        if !stdout.is_empty() && stdout.len() < 1000 {
+            tracing::info!("Command stdout: {}", stdout.trim());
         }
         if !stderr.is_empty() {
             tracing::warn!("Command stderr: {}", &stderr[..stderr.len().min(500)]);
