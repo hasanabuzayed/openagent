@@ -35,7 +35,7 @@ mod retriever;
 pub use types::*;
 pub use supabase::SupabaseClient;
 pub use embed::EmbeddingClient;
-pub use writer::{MemoryWriter, EventRecorder};
+pub use writer::{MemoryWriter, EventRecorder, RecordedEvent};
 pub use retriever::MemoryRetriever;
 
 use crate::config::MemoryConfig;

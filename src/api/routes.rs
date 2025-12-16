@@ -357,8 +357,46 @@ async fn run_agent_task(
     // Run the hierarchical agent
     let result = state.root_agent.execute(&mut task, &ctx).await;
 
-    // Complete the memory run
+    // Complete the memory run and record events
     if let (Some(ref mem), Some(run_id)) = (&state.memory, memory_run_id) {
+        // Record tool call events from result data
+        if let Some(data) = &result.data {
+            let recorder = crate::memory::EventRecorder::new(run_id);
+            
+            // Record each tool call as an event
+            if let Some(tools_used) = data.get("tools_used") {
+                if let Some(arr) = tools_used.as_array() {
+                    for tool_entry in arr {
+                        let tool_str = tool_entry.as_str().unwrap_or("");
+                        let event = crate::memory::RecordedEvent::new("TaskExecutor", crate::memory::EventKind::ToolCall)
+                            .with_preview(tool_str);
+                        let _ = mem.writer.record_event(&recorder, event).await;
+                    }
+                }
+            }
+
+            // Record final response as an event
+            let prompt_tokens = data.get("usage")
+                .and_then(|u| u.get("prompt_tokens"))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+                .unwrap_or(0);
+            let completion_tokens = data.get("usage")
+                .and_then(|u| u.get("completion_tokens"))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+                .unwrap_or(0);
+            
+            let response_event = crate::memory::RecordedEvent::new("TaskExecutor", crate::memory::EventKind::LlmResponse)
+                .with_preview(&if result.output.len() > 1000 {
+                    result.output[..1000].to_string()
+                } else {
+                    result.output.clone()
+                })
+                .with_tokens(prompt_tokens, completion_tokens, result.cost_cents as i32);
+            let _ = mem.writer.record_event(&recorder, response_event).await;
+        }
+
         let _ = mem
             .writer
             .complete_run(
@@ -390,8 +428,16 @@ async fn run_agent_task(
     {
         let mut tasks = state.tasks.write().await;
         if let Some(task_state) = tasks.get_mut(&task_id) {
-            // Add log entries from result data
+            // Extract iterations from execution signals
             if let Some(data) = &result.data {
+                // Update iterations count from execution signals
+                if let Some(signals) = data.get("execution_signals") {
+                    if let Some(iterations) = signals.get("iterations").and_then(|v| v.as_u64()) {
+                        task_state.iterations = iterations as usize;
+                    }
+                }
+
+                // Add log entries for tools used
                 if let Some(tools_used) = data.get("tools_used") {
                     if let Some(arr) = tools_used.as_array() {
                         for tool in arr {

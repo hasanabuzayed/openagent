@@ -125,6 +125,9 @@ fn html_decode(s: &str) -> String {
 }
 
 /// Fetch content from a URL.
+/// 
+/// For large responses (>20KB), saves the full content to /root/tmp/ and returns
+/// the file path along with a preview. This ensures no data is lost due to truncation.
 pub struct FetchUrl;
 
 #[async_trait]
@@ -134,7 +137,7 @@ impl Tool for FetchUrl {
     }
 
     fn description(&self) -> &str {
-        "Fetch the content of a URL. Returns the text content of the page. Useful for reading documentation, APIs, or downloading data."
+        "Fetch the content of a URL. For small responses (<20KB), returns the content directly. For large responses, saves the full content to /root/tmp/ and returns the file path with a preview. Useful for reading documentation, APIs, or downloading data."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -157,7 +160,7 @@ impl Tool for FetchUrl {
 
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (compatible; OpenAgent/1.0)")
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
             .build()?;
 
         let response = client.get(url).send().await?;
@@ -176,21 +179,58 @@ impl Tool for FetchUrl {
 
         let body = response.text().await?;
 
-        // If HTML, try to extract text content
-        let result = if content_type.contains("text/html") {
-            extract_text_from_html(&body)
+        // Determine file extension from content type
+        let extension = if content_type.contains("application/json") {
+            "json"
+        } else if content_type.contains("text/html") {
+            "html"
+        } else if content_type.contains("text/csv") {
+            "csv"
+        } else if content_type.contains("text/xml") || content_type.contains("application/xml") {
+            "xml"
         } else {
-            body
+            "txt"
         };
 
-        // Truncate if too long
-        if result.len() > 20000 {
+        // If HTML, try to extract text content for display
+        let display_content = if content_type.contains("text/html") {
+            extract_text_from_html(&body)
+        } else {
+            body.clone()
+        };
+
+        // For large responses, save to file and return path
+        const MAX_INLINE_SIZE: usize = 20000;
+        if body.len() > MAX_INLINE_SIZE {
+            // Ensure /root/tmp exists
+            let tmp_dir = Path::new("/root/tmp");
+            if let Err(e) = std::fs::create_dir_all(tmp_dir) {
+                tracing::warn!("Failed to create /root/tmp: {}", e);
+                // Fall back to workspace tmp
+            }
+
+            // Generate unique filename
+            let file_id = uuid::Uuid::new_v4();
+            let filename = format!("fetch_{}.{}", file_id, extension);
+            let file_path = tmp_dir.join(&filename);
+
+            // Save full content to file
+            std::fs::write(&file_path, &body)?;
+
+            // Return path with preview
+            let preview_len = std::cmp::min(2000, display_content.len());
+            let preview = &display_content[..preview_len];
+            
             Ok(format!(
-                "{}... [content truncated, showing first 20000 chars]",
-                &result[..20000]
+                "Response too large ({} bytes). Full content saved to: {}\n\nPreview (first {} chars):\n{}{}",
+                body.len(),
+                file_path.display(),
+                preview_len,
+                preview,
+                if display_content.len() > preview_len { "\n..." } else { "" }
             ))
         } else {
-            Ok(result)
+            Ok(display_content)
         }
     }
 }
