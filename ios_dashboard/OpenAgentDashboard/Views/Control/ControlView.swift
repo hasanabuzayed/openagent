@@ -489,7 +489,7 @@ private struct MessageBubble: View {
     private var assistantBubble: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Status header for assistant messages
-            if case .assistant(let success, _, let model) = message.type {
+            if case .assistant(let success, _, _) = message.type {
                 HStack(spacing: 6) {
                     Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .font(.caption2)
