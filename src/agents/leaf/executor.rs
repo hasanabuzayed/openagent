@@ -471,6 +471,14 @@ When task is complete, provide a clear summary of:
             // Check for tool calls
             if let Some(tool_calls) = &response.tool_calls {
                 if !tool_calls.is_empty() {
+                    let tool_names: Vec<_> = tool_calls.iter().map(|tc| tc.function.name.as_str()).collect();
+                    tracing::info!(
+                        "Iteration {} has {} tool calls: {:?}, content_len={}",
+                        iteration + 1,
+                        tool_calls.len(),
+                        tool_names,
+                        response.content.as_ref().map(|c| c.len()).unwrap_or(0)
+                    );
                     // Add assistant message with tool calls
                     messages.push(ChatMessage {
                         role: Role::Assistant,
