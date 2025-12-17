@@ -3,6 +3,30 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Transport type for MCP server communication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    /// HTTP JSON-RPC transport (server must be running and listening)
+    Http { endpoint: String },
+    /// Stdio transport (spawn process, communicate via stdin/stdout)
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: std::collections::HashMap<String, String>,
+    },
+}
+
+impl Default for McpTransport {
+    fn default() -> Self {
+        McpTransport::Http {
+            endpoint: "http://127.0.0.1:3000".to_string(),
+        }
+    }
+}
+
 /// Status of an MCP server connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -129,7 +153,10 @@ pub struct McpServerConfig {
     pub id: Uuid,
     /// Human-readable name (e.g., "Supabase", "Browser Extension")
     pub name: String,
-    /// Server endpoint URL (e.g., "http://127.0.0.1:4011")
+    /// Transport configuration (HTTP or stdio)
+    pub transport: McpTransport,
+    /// Server endpoint URL (e.g., "http://127.0.0.1:4011") - DEPRECATED, use transport
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub endpoint: String,
     /// Optional description
     pub description: Option<String>,
@@ -140,6 +167,9 @@ pub struct McpServerConfig {
     /// Tool names exposed by this MCP (populated after connection)
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Tool descriptors with full metadata (name, description, schema)
+    #[serde(default)]
+    pub tool_descriptors: Vec<McpToolDescriptor>,
     /// When this MCP was added
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Last time we successfully connected
@@ -147,18 +177,50 @@ pub struct McpServerConfig {
 }
 
 impl McpServerConfig {
-    /// Create a new MCP server configuration.
+    /// Create a new MCP server configuration with HTTP transport.
     pub fn new(name: String, endpoint: String) -> Self {
         Self {
             id: Uuid::new_v4(),
             name,
-            endpoint,
+            transport: McpTransport::Http { endpoint: endpoint.clone() },
+            endpoint, // Keep for backwards compat
             description: None,
             enabled: true,
             version: None,
             tools: Vec::new(),
+            tool_descriptors: Vec::new(),
             created_at: chrono::Utc::now(),
             last_connected_at: None,
+        }
+    }
+
+    /// Create a new MCP server configuration with stdio transport.
+    pub fn new_stdio(
+        name: String,
+        command: String,
+        args: Vec<String>,
+        env: std::collections::HashMap<String, String>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name,
+            transport: McpTransport::Stdio { command, args, env },
+            endpoint: String::new(),
+            description: None,
+            enabled: true,
+            version: None,
+            tools: Vec::new(),
+            tool_descriptors: Vec::new(),
+            created_at: chrono::Utc::now(),
+            last_connected_at: None,
+        }
+    }
+
+    /// Get the effective endpoint (for backwards compat)
+    pub fn effective_endpoint(&self) -> Option<&str> {
+        match &self.transport {
+            McpTransport::Http { endpoint } => Some(endpoint.as_str()),
+            McpTransport::Stdio { .. } => None,
         }
     }
 }
@@ -215,8 +277,26 @@ pub struct McpTool {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AddMcpRequest {
     pub name: String,
-    pub endpoint: String,
+    /// HTTP endpoint (for backwards compat, use transport instead)
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Transport configuration (preferred)
+    #[serde(default)]
+    pub transport: Option<McpTransport>,
     pub description: Option<String>,
+}
+
+impl AddMcpRequest {
+    /// Get the effective transport from the request
+    pub fn effective_transport(&self) -> McpTransport {
+        if let Some(transport) = &self.transport {
+            transport.clone()
+        } else if let Some(endpoint) = &self.endpoint {
+            McpTransport::Http { endpoint: endpoint.clone() }
+        } else {
+            McpTransport::default()
+        }
+    }
 }
 
 /// Request to update an MCP server.
@@ -224,6 +304,7 @@ pub struct AddMcpRequest {
 pub struct UpdateMcpRequest {
     pub name: Option<String>,
     pub endpoint: Option<String>,
+    pub transport: Option<McpTransport>,
     pub description: Option<String>,
     pub enabled: Option<bool>,
 }
@@ -235,7 +316,7 @@ pub struct McpToolsResponse {
 }
 
 /// Tool descriptor from MCP server.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolDescriptor {
     pub name: String,
     #[serde(default)]
