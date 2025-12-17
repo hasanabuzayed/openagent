@@ -41,8 +41,10 @@ impl McpRegistry {
             states.insert(config.id, McpServerState::from_config(config));
         }
 
+        // Use very short timeouts to avoid blocking for too long
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(5))
+            .connect_timeout(Duration::from_millis(1000))
             .build()
             .unwrap_or_default();
 
@@ -128,12 +130,14 @@ impl McpRegistry {
     }
 
     /// Add a new MCP server.
+    /// Note: This does NOT automatically attempt to connect. Use refresh() after adding.
     pub async fn add(&self, req: AddMcpRequest) -> anyhow::Result<McpServerState> {
         let mut config = McpServerConfig::new(req.name, req.endpoint);
         config.description = req.description;
         
         // Save to persistent store
         let config = self.config_store.add(config).await?;
+        let id = config.id;
         
         // Create runtime state
         let state = McpServerState::from_config(config.clone());
@@ -141,13 +145,11 @@ impl McpRegistry {
         // Add to states
         {
             let mut states = self.states.write().await;
-            states.insert(config.id, state.clone());
+            states.insert(id, state.clone());
         }
         
-        // Try to connect and discover tools
-        let _ = self.refresh(config.id).await;
-        
-        Ok(self.get(config.id).await.unwrap_or(state))
+        // Return immediately - user should call refresh() to connect
+        Ok(state)
     }
 
     /// Remove an MCP server.
@@ -162,6 +164,7 @@ impl McpRegistry {
     }
 
     /// Enable an MCP server.
+    /// Note: This does NOT automatically attempt to connect. Use refresh() after enabling.
     pub async fn enable(&self, id: Uuid) -> anyhow::Result<McpServerState> {
         // Update persistent config
         let config = self.config_store.enable(id).await?;
@@ -175,9 +178,6 @@ impl McpRegistry {
                 state.error = None;
             }
         }
-        
-        // Try to connect
-        let _ = self.refresh(id).await;
         
         self.get(id).await.ok_or_else(|| anyhow::anyhow!("MCP not found"))
     }
@@ -200,6 +200,31 @@ impl McpRegistry {
         self.get(id).await.ok_or_else(|| anyhow::anyhow!("MCP not found"))
     }
 
+    /// Helper to update state with error - uses try_write to avoid blocking
+    fn try_update_state_error(&self, id: Uuid, error_msg: String) {
+        if let Ok(mut states) = self.states.try_write() {
+            if let Some(state) = states.get_mut(&id) {
+                state.status = McpStatus::Error;
+                state.error = Some(error_msg);
+            }
+        }
+        // If we can't get the lock, just log and skip - state update is best-effort
+    }
+    
+    /// Helper to update state with success - uses try_write to avoid blocking
+    fn try_update_state_success(&self, id: Uuid, tool_names: Vec<String>, server_version: Option<String>) {
+        if let Ok(mut states) = self.states.try_write() {
+            if let Some(state) = states.get_mut(&id) {
+                state.config.tools = tool_names;
+                state.config.version = server_version;
+                state.config.last_connected_at = Some(chrono::Utc::now());
+                state.status = McpStatus::Connected;
+                state.error = None;
+            }
+        }
+        // If we can't get the lock, just log and skip - state update is best-effort
+    }
+    
     /// Refresh an MCP server - reconnect and discover tools.
     pub async fn refresh(&self, id: Uuid) -> anyhow::Result<McpServerState> {
         let state = self.get(id).await.ok_or_else(|| anyhow::anyhow!("MCP not found"))?;
@@ -208,17 +233,13 @@ impl McpRegistry {
             return Ok(state);
         }
         
-        let endpoint = state.config.endpoint.trim_end_matches('/');
+        let endpoint = state.config.endpoint.trim_end_matches('/').to_string();
         
         // Step 1: Initialize the MCP connection with JSON-RPC
-        let init_result = match self.initialize_mcp(endpoint).await {
+        let init_result = match self.initialize_mcp(&endpoint).await {
             Ok(result) => result,
             Err(e) => {
-                let mut states = self.states.write().await;
-                if let Some(state) = states.get_mut(&id) {
-                    state.status = McpStatus::Error;
-                    state.error = Some(format!("Initialize failed: {}", e));
-                }
+                self.try_update_state_error(id, format!("Initialize failed: {}", e));
                 return self.get(id).await.ok_or_else(|| anyhow::anyhow!("MCP not found"));
             }
         };
@@ -227,7 +248,7 @@ impl McpRegistry {
         let server_version = init_result.server_info.as_ref().and_then(|s| s.version.clone());
         
         // Step 2: List tools using JSON-RPC
-        match self.send_jsonrpc(endpoint, "tools/list", None).await {
+        match self.send_jsonrpc(&endpoint, "tools/list", None).await {
             Ok(result) => {
                 match serde_json::from_value::<McpToolsResponse>(result) {
                     Ok(tools_response) => {
@@ -244,43 +265,29 @@ impl McpRegistry {
                             c.last_connected_at = Some(chrono::Utc::now());
                         }).await;
                         
-                        // Update state
-                        let mut states = self.states.write().await;
-                        if let Some(state) = states.get_mut(&id) {
-                            state.config.tools = tool_names;
-                            state.config.version = server_version;
-                            state.config.last_connected_at = Some(chrono::Utc::now());
-                            state.status = McpStatus::Connected;
-                            state.error = None;
-                        }
+                        // Update state (best-effort, non-blocking)
+                        self.try_update_state_success(id, tool_names, server_version);
                     }
                     Err(e) => {
-                        let mut states = self.states.write().await;
-                        if let Some(state) = states.get_mut(&id) {
-                            state.status = McpStatus::Error;
-                            state.error = Some(format!("Failed to parse tools: {}", e));
-                        }
+                        self.try_update_state_error(id, format!("Failed to parse tools: {}", e));
                     }
                 }
             }
             Err(e) => {
-                let mut states = self.states.write().await;
-                if let Some(state) = states.get_mut(&id) {
-                    state.status = McpStatus::Error;
-                    state.error = Some(format!("tools/list failed: {}", e));
-                }
+                self.try_update_state_error(id, format!("tools/list failed: {}", e));
             }
         }
         
         self.get(id).await.ok_or_else(|| anyhow::anyhow!("MCP not found"))
     }
 
-    /// Refresh all MCP servers.
+    /// Refresh all MCP servers concurrently.
     pub async fn refresh_all(&self) {
         let ids: Vec<Uuid> = self.states.read().await.keys().cloned().collect();
-        for id in ids {
-            let _ = self.refresh(id).await;
-        }
+        
+        // Refresh all MCPs concurrently using join_all
+        let futures: Vec<_> = ids.iter().map(|id| self.refresh(*id)).collect();
+        futures::future::join_all(futures).await;
     }
 
     /// Call a tool on an MCP server.

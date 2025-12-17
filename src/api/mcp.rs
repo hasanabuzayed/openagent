@@ -88,24 +88,40 @@ pub async fn disable_mcp(
 }
 
 /// Refresh an MCP server (reconnect and discover tools).
+/// This spawns the refresh in the background and returns the current state immediately.
 pub async fn refresh_mcp(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<McpServerState>, (StatusCode, String)> {
-    state
+    // Get current state first
+    let current_state = state
         .mcp
-        .refresh(id)
+        .get(id)
         .await
-        .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("MCP {} not found", id)))?;
+    
+    // Spawn refresh in background (don't wait for completion)
+    let mcp = Arc::clone(&state.mcp);
+    tokio::spawn(async move {
+        let _ = mcp.refresh(id).await;
+    });
+    
+    // Return current state with a status indicating refresh is in progress
+    Ok(Json(current_state))
 }
 
 /// Refresh all MCP servers.
+/// This spawns refreshes in the background and returns immediately.
 pub async fn refresh_all_mcps(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    state.mcp.refresh_all().await;
-    Json(serde_json::json!({ "success": true }))
+    // Spawn refresh_all in background
+    let mcp = Arc::clone(&state.mcp);
+    tokio::spawn(async move {
+        mcp.refresh_all().await;
+    });
+    
+    Json(serde_json::json!({ "success": true, "message": "Refresh started in background" }))
 }
 
 // ==================== Tools Management ====================

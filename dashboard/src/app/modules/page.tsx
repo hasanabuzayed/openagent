@@ -243,22 +243,46 @@ function McpDetailPanel({
               <div
                 className={cn(
                   "flex h-10 w-10 items-center justify-center rounded-xl",
-                  mcp.enabled ? "bg-emerald-500/10" : "bg-white/[0.04]"
+                  !mcp.enabled
+                    ? "bg-white/[0.04]"
+                    : mcp.status === "connected"
+                      ? "bg-emerald-500/10"
+                      : mcp.status === "error"
+                        ? "bg-red-500/10"
+                        : "bg-yellow-500/10"
                 )}
               >
                 <Power
                   className={cn(
                     "h-5 w-5",
-                    mcp.enabled ? "text-emerald-400" : "text-white/40"
+                    !mcp.enabled
+                      ? "text-white/40"
+                      : mcp.status === "connected"
+                        ? "text-emerald-400"
+                        : mcp.status === "error"
+                          ? "text-red-400"
+                          : "text-yellow-400"
                   )}
                 />
               </div>
               <div>
                 <p className="font-medium text-white">
-                  {mcp.enabled ? "Module Active" : "Module Inactive"}
+                  {!mcp.enabled
+                    ? "Module Disabled"
+                    : mcp.status === "connected"
+                      ? "Module Active"
+                      : mcp.status === "error"
+                        ? "Module Error"
+                        : "Module Pending"}
                 </p>
                 <p className="text-xs text-white/40">
-                  {mcp.enabled ? "Running and monitoring" : "Paused"}
+                  {!mcp.enabled
+                    ? "Paused"
+                    : mcp.status === "connected"
+                      ? "Running and monitoring"
+                      : mcp.status === "error"
+                        ? "Connection failed"
+                        : "Connecting..."}
                 </p>
               </div>
             </div>
