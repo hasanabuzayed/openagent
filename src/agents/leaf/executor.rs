@@ -462,11 +462,13 @@ When task is complete, provide a clear summary of:
             if let Some(tool_calls) = &response.tool_calls {
                 if !tool_calls.is_empty() {
                     // Add assistant message with tool calls
+                    // Preserve reasoning_details for models that require it (Gemini 3, Claude 3.7+)
                     messages.push(ChatMessage {
                         role: Role::Assistant,
                         content: response.content.clone().map(MessageContent::text),
                         tool_calls: Some(tool_calls.clone()),
                         tool_call_id: None,
+                        reasoning_details: response.reasoning_details.clone(),
                     });
 
                     // Check for repetitive actions
@@ -655,6 +657,7 @@ When task is complete, provide a clear summary of:
                             content: Some(message_content),
                             tool_calls: None,
                             tool_call_id: Some(tool_call.id.clone()),
+                            reasoning_details: None,
                         });
                     }
 

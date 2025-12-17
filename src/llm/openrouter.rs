@@ -119,6 +119,7 @@ impl OpenRouterClient {
                 .usage
                 .map(|u| TokenUsage::new(u.prompt_tokens, u.completion_tokens)),
             model: parsed.model.or_else(|| Some(request.model.clone())),
+            reasoning_details: choice.message.reasoning_details,
         })
     }
 
@@ -279,6 +280,10 @@ struct OpenRouterChoice {
 struct OpenRouterMessage {
     content: Option<String>,
     tool_calls: Option<Vec<ToolCall>>,
+    /// Reasoning details for models that support extended thinking (Gemini 3, Claude 3.7+, etc.)
+    /// Must be preserved and passed back in subsequent requests for tool calling to work.
+    #[serde(default)]
+    reasoning_details: Option<serde_json::Value>,
 }
 
 /// Usage data (OpenAI-compatible).

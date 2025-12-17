@@ -122,6 +122,10 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Reasoning details for models with extended thinking (Gemini 3, Claude 3.7+).
+    /// Must be preserved from responses and passed back in subsequent requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_details: Option<serde_json::Value>,
 }
 
 impl ChatMessage {
@@ -132,6 +136,7 @@ impl ChatMessage {
             content: Some(MessageContent::text(content)),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_details: None,
         }
     }
 
@@ -142,6 +147,7 @@ impl ChatMessage {
             content: Some(MessageContent::text_and_image(text, image_url)),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_details: None,
         }
     }
 
@@ -193,6 +199,9 @@ pub struct ChatResponse {
     pub finish_reason: Option<String>,
     pub usage: Option<TokenUsage>,
     pub model: Option<String>,
+    /// Reasoning details for models with extended thinking (Gemini 3, Claude 3.7+).
+    /// Must be preserved and passed back in subsequent requests for tool calling.
+    pub reasoning_details: Option<serde_json::Value>,
 }
 
 /// Token usage information (if provided by the upstream provider).
