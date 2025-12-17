@@ -103,6 +103,16 @@ select:focus-visible {
   background: rgb(var(--accent) / 0.25);
 }
 
+/*
+ * Override text selection color on colored backgrounds (e.g., indigo message bubbles).
+ * The default selection uses indigo/25% which is invisible on indigo-500 backgrounds.
+ * Using white/40% provides good contrast on any colored surface.
+ */
+.selection-light::selection,
+.selection-light *::selection {
+  background: rgba(255, 255, 255, 0.4);
+}
+
 /* =========================================================================
    Scrollbars - minimal, subtle
    ========================================================================= */

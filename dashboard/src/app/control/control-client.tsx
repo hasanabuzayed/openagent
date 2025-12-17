@@ -878,7 +878,7 @@ export default function ControlClient() {
                         text={item.content}
                         className="self-start mt-2"
                       />
-                      <div className="max-w-[80%] rounded-2xl rounded-br-md bg-indigo-500 px-4 py-3 text-white">
+                      <div className="max-w-[80%] rounded-2xl rounded-br-md bg-indigo-500 px-4 py-3 text-white selection-light">
                         <p className="whitespace-pre-wrap text-sm">
                           {item.content}
                         </p>
