@@ -237,7 +237,7 @@ function ThinkingItem({ item }: { item: Extract<ChatItem, { kind: 'thinking' }> 
           expanded ? 'max-h-80 opacity-100 mt-2' : 'max-h-0 opacity-0'
         )}
       >
-        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 select-text">
           <div className="text-xs text-white/50 whitespace-pre-wrap overflow-y-auto max-h-64 leading-relaxed">
             {item.content}
           </div>
@@ -860,7 +860,7 @@ export default function ControlClient() {
                   return (
                     <div key={item.id} className="flex justify-end gap-3 group">
                       <CopyButton text={item.content} className="self-start mt-2" />
-                      <div className="max-w-[80%] rounded-2xl rounded-br-md bg-indigo-500 px-4 py-3 text-white">
+                      <div className="max-w-[80%] rounded-2xl rounded-br-md bg-indigo-500 px-4 py-3 text-white select-text">
                         <p className="whitespace-pre-wrap text-sm">{item.content}</p>
                       </div>
                       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.08]">
@@ -881,7 +881,7 @@ export default function ControlClient() {
                       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
                         <Bot className="h-4 w-4 text-indigo-400" />
                       </div>
-                      <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                      <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3 select-text">
                         <div className="mb-2 flex items-center gap-2 text-xs text-white/40">
                           <MessageStatusIcon
                             className={cn(
@@ -942,7 +942,7 @@ export default function ControlClient() {
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
                           <Bot className="h-4 w-4 text-indigo-400" />
                         </div>
-                        <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                        <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3 select-text">
                           <div className="mb-2 text-xs text-white/40">
                             Tool: <span className="font-mono text-indigo-400">{item.name}</span>
                           </div>
@@ -1002,7 +1002,7 @@ export default function ControlClient() {
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
                           <Bot className="h-4 w-4 text-indigo-400" />
                         </div>
-                        <div className="max-w-[90%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                        <div className="max-w-[90%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3 select-text">
                           <div className="mb-2 text-xs text-white/40">
                             Tool: <span className="font-mono text-indigo-400">{item.name}</span>
                           </div>
@@ -1028,7 +1028,7 @@ export default function ControlClient() {
                       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
                         <Bot className="h-4 w-4 text-indigo-400" />
                       </div>
-                      <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                      <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3 select-text">
                         <p className="text-sm text-white/60">
                           Unsupported Tool: <span className="font-mono text-indigo-400">{item.name}</span>
                         </p>
@@ -1043,7 +1043,7 @@ export default function ControlClient() {
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.04]">
                       <Ban className="h-4 w-4 text-white/40" />
                     </div>
-                    <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+                    <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.02] border border-white/[0.04] px-4 py-3 select-text">
                       <p className="whitespace-pre-wrap text-sm text-white/60">{item.content}</p>
                     </div>
                   </div>
