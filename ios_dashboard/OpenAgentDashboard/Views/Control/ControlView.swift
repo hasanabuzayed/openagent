@@ -30,9 +30,6 @@ struct ControlView: View {
             backgroundGlows
             
             VStack(spacing: 0) {
-                // Header
-                headerView
-                
                 // Messages
                 messagesView
                 
@@ -40,7 +37,67 @@ struct ControlView: View {
                 inputView
             }
         }
+        .navigationTitle(currentMission?.displayTitle ?? "Control")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 2) {
+                    Text(currentMission?.displayTitle ?? "Control")
+                        .font(.headline)
+                        .foregroundStyle(Theme.textPrimary)
+                    
+                    HStack(spacing: 4) {
+                        StatusDot(status: runState.statusType, size: 5)
+                        Text(runState.label)
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textSecondary)
+                        
+                        if queueLength > 0 {
+                            Text("• \(queueLength) queued")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                }
+            }
+            
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        Task { await createNewMission() }
+                    } label: {
+                        Label("New Mission", systemImage: "plus")
+                    }
+                    
+                    if let mission = currentMission {
+                        Divider()
+                        
+                        Button {
+                            Task { await setMissionStatus(.completed) }
+                        } label: {
+                            Label("Mark Complete", systemImage: "checkmark.circle")
+                        }
+                        
+                        Button(role: .destructive) {
+                            Task { await setMissionStatus(.failed) }
+                        } label: {
+                            Label("Mark Failed", systemImage: "xmark.circle")
+                        }
+                        
+                        if mission.status != .active {
+                            Button {
+                                Task { await setMissionStatus(.active) }
+                            } label: {
+                                Label("Reactivate", systemImage: "arrow.clockwise")
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.body)
+                }
+            }
+        }
         .task {
             await loadCurrentMission()
             startStreaming()
@@ -74,78 +131,10 @@ struct ControlView: View {
         }
     }
     
-    // MARK: - Header
+    // MARK: - Header (now in toolbar)
     
     private var headerView: some View {
-        HStack(spacing: 12) {
-            // Mission info
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(currentMission?.displayTitle ?? "Control")
-                        .font(.headline)
-                        .foregroundStyle(Theme.textPrimary)
-                        .lineLimit(1)
-                    
-                    if let status = currentMission?.status {
-                        StatusBadge(status: status.statusType, compact: true)
-                    }
-                }
-                
-                HStack(spacing: 8) {
-                    StatusDot(status: runState.statusType, size: 6)
-                    Text(runState.label)
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
-                    
-                    if queueLength > 0 {
-                        Text("• Queue: \(queueLength)")
-                            .font(.caption)
-                            .foregroundStyle(Theme.textTertiary)
-                    }
-                }
-            }
-            
-            Spacer()
-            
-            // Mission menu
-            Menu {
-                Button {
-                    Task { await createNewMission() }
-                } label: {
-                    Label("New Mission", systemImage: "plus")
-                }
-                
-                if let mission = currentMission {
-                    Divider()
-                    
-                    Button {
-                        Task { await setMissionStatus(.completed) }
-                    } label: {
-                        Label("Mark Complete", systemImage: "checkmark.circle")
-                    }
-                    
-                    Button(role: .destructive) {
-                        Task { await setMissionStatus(.failed) }
-                    } label: {
-                        Label("Mark Failed", systemImage: "xmark.circle")
-                    }
-                    
-                    if mission.status != .active {
-                        Button {
-                            Task { await setMissionStatus(.active) }
-                        } label: {
-                            Label("Reactivate", systemImage: "arrow.clockwise")
-                        }
-                    }
-                }
-            } label: {
-                GlassIconButton(icon: "ellipsis", action: {}, size: 36)
-                    .allowsHitTesting(false)
-            }
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial)
+        EmptyView() // Moved to navigation bar
     }
     
     // MARK: - Messages
@@ -179,24 +168,71 @@ struct ControlView: View {
     }
     
     private var emptyStateView: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(Theme.accent.opacity(0.6))
+        VStack(spacing: 32) {
+            Spacer()
             
-            VStack(spacing: 8) {
-                Text("Start a Conversation")
-                    .font(.title3.bold())
+            // Animated brain icon
+            Image(systemName: "brain")
+                .font(.system(size: 56, weight: .light))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Theme.accent, Theme.accent.opacity(0.6)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .symbolEffect(.pulse, options: .repeating.speed(0.5))
+            
+            VStack(spacing: 12) {
+                Text("Ready to Help")
+                    .font(.title2.bold())
                     .foregroundStyle(Theme.textPrimary)
                 
-                Text("Send a message to the AI agent to begin")
+                Text("Send a message to start working\nwith the AI agent")
                     .font(.subheadline)
                     .foregroundStyle(Theme.textSecondary)
                     .multilineTextAlignment(.center)
+                    .lineSpacing(4)
             }
+            
+            // Suggestion chips
+            VStack(spacing: 10) {
+                Text("Try asking:")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textMuted)
+                
+                FlowLayout(spacing: 8) {
+                    suggestionChip("Write a Python script")
+                    suggestionChip("Debug this error")
+                    suggestionChip("Explain this code")
+                    suggestionChip("Create a file")
+                }
+            }
+            .padding(.top, 8)
+            
+            Spacer()
+            Spacer()
         }
-        .frame(maxHeight: .infinity)
-        .padding(40)
+        .padding(.horizontal, 32)
+    }
+    
+    private func suggestionChip(_ text: String) -> some View {
+        Button {
+            inputText = text
+            isInputFocused = true
+        } label: {
+            Text(text)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Theme.backgroundSecondary)
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Theme.border, lineWidth: 1)
+                )
+        }
     }
     
     // MARK: - Input
@@ -527,6 +563,54 @@ private struct MessageBubble: View {
     }
 }
 
+
+// MARK: - Flow Layout
+
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+    
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = FlowResult(in: proposal.width ?? 0, spacing: spacing, subviews: subviews)
+        return result.size
+    }
+    
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = FlowResult(in: bounds.width, spacing: spacing, subviews: subviews)
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + result.positions[index].x,
+                                       y: bounds.minY + result.positions[index].y),
+                          proposal: .unspecified)
+        }
+    }
+    
+    struct FlowResult {
+        var size: CGSize = .zero
+        var positions: [CGPoint] = []
+        
+        init(in maxWidth: CGFloat, spacing: CGFloat, subviews: Subviews) {
+            var x: CGFloat = 0
+            var y: CGFloat = 0
+            var rowHeight: CGFloat = 0
+            
+            for subview in subviews {
+                let size = subview.sizeThatFits(.unspecified)
+                
+                if x + size.width > maxWidth && x > 0 {
+                    x = 0
+                    y += rowHeight + spacing
+                    rowHeight = 0
+                }
+                
+                positions.append(CGPoint(x: x, y: y))
+                rowHeight = max(rowHeight, size.height)
+                x += size.width + spacing
+                self.size.width = max(self.size.width, x)
+            }
+            
+            self.size.height = y + rowHeight
+        }
+    }
+}
 
 #Preview {
     NavigationStack {
