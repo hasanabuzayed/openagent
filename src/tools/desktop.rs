@@ -301,7 +301,7 @@ impl Tool for Screenshot {
     }
 
     fn description(&self) -> &str {
-        "Take a screenshot of the virtual desktop. Returns the file path to the saved PNG image. To share the screenshot with the user in chat, use upload_image with the returned path to get a public URL, then include the markdown in your response."
+        "Take a screenshot of the virtual desktop. By default, automatically uploads the screenshot and returns a public URL with markdown that you can include directly in your response to show the image to the user."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -311,6 +311,14 @@ impl Tool for Screenshot {
                 "display": {
                     "type": "string",
                     "description": "The display identifier (e.g., ':99') from desktop_start_session"
+                },
+                "upload": {
+                    "type": "boolean",
+                    "description": "Whether to upload the screenshot and return a public URL (default: true). Set to false to only save locally."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Description for the image alt text (default: 'screenshot')"
                 },
                 "filename": {
                     "type": "string",
@@ -398,13 +406,77 @@ impl Tool for Screenshot {
         }
 
         let metadata = std::fs::metadata(&filepath)?;
+        let should_upload = args["upload"].as_bool().unwrap_or(true);
+        let description = args["description"].as_str().unwrap_or("screenshot");
 
-        Ok(format!(
-            "{{\"success\": true, \"path\": \"{}\", \"size_bytes\": {}}}",
-            filepath.display(),
-            metadata.len()
-        ))
+        // Auto-upload to Supabase if enabled and configured
+        if should_upload {
+            if let Some((url, markdown)) = upload_screenshot_to_supabase(&filepath, description).await {
+                return Ok(json!({
+                    "success": true,
+                    "path": filepath.display().to_string(),
+                    "size_bytes": metadata.len(),
+                    "url": url,
+                    "markdown": markdown
+                }).to_string());
+            }
+            // Fall through to local-only if upload fails
+        }
+
+        Ok(json!({
+            "success": true, 
+            "path": filepath.display().to_string(), 
+            "size_bytes": metadata.len()
+        }).to_string())
     }
+}
+
+/// Helper to upload a screenshot to Supabase Storage
+async fn upload_screenshot_to_supabase(filepath: &std::path::PathBuf, description: &str) -> Option<(String, String)> {
+    let supabase_url = std::env::var("SUPABASE_URL").ok()?;
+    let service_role_key = std::env::var("SUPABASE_SERVICE_ROLE_KEY").ok()?;
+    
+    if supabase_url.is_empty() || service_role_key.is_empty() {
+        return None;
+    }
+    
+    let content = std::fs::read(filepath).ok()?;
+    let file_id = uuid::Uuid::new_v4();
+    let upload_path = format!("{}.png", file_id);
+    
+    let storage_url = format!(
+        "{}/storage/v1/object/images/{}",
+        supabase_url.trim_end_matches('/'),
+        upload_path
+    );
+    
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&storage_url)
+        .header("apikey", &service_role_key)
+        .header("Authorization", format!("Bearer {}", service_role_key))
+        .header("Content-Type", "image/png")
+        .header("x-upsert", "true")
+        .body(content)
+        .send()
+        .await
+        .ok()?;
+    
+    if !resp.status().is_success() {
+        return None;
+    }
+    
+    let public_url = format!(
+        "{}/storage/v1/object/public/images/{}",
+        supabase_url.trim_end_matches('/'),
+        upload_path
+    );
+    
+    let markdown = format!("![{}]({})", description, public_url);
+    
+    tracing::info!(url = %public_url, "Screenshot auto-uploaded to Supabase");
+    
+    Some((public_url, markdown))
 }
 
 /// Send keyboard input to the desktop.
