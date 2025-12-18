@@ -12,6 +12,7 @@ mod directory;
 mod file_ops;
 mod git;
 mod index;
+pub mod memory;
 pub mod mission;
 mod search;
 mod storage;
@@ -62,11 +63,19 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new registry with all default tools.
     pub fn new() -> Self {
-        Self::with_mission_control(None)
+        Self::with_options(None, None)
     }
 
     /// Create a new registry with all default tools and optional mission control.
     pub fn with_mission_control(mission_control: Option<mission::MissionControl>) -> Self {
+        Self::with_options(mission_control, None)
+    }
+
+    /// Create a new registry with all options.
+    pub fn with_options(
+        mission_control: Option<mission::MissionControl>,
+        shared_memory: Option<memory::SharedMemory>,
+    ) -> Self {
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         // File operations
@@ -145,6 +154,18 @@ impl ToolRegistry {
             None => Arc::new(mission::CompleteMission::new()),
         };
         tools.insert("complete_mission".to_string(), mission_tool);
+
+        // Memory tools (if memory system is available)
+        if let Some(mem) = shared_memory {
+            tools.insert(
+                "search_memory".to_string(),
+                Arc::new(memory::SearchMemory::new(Arc::clone(&mem))),
+            );
+            tools.insert(
+                "store_fact".to_string(),
+                Arc::new(memory::StoreFact::new(Arc::clone(&mem))),
+            );
+        }
 
         Self { tools }
     }

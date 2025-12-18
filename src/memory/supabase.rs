@@ -3,7 +3,7 @@
 use reqwest::Client;
 use uuid::Uuid;
 
-use super::types::{DbRun, DbTask, DbEvent, DbChunk, DbTaskOutcome, SearchResult, ModelStats, DbMission, MissionMessage};
+use super::types::{DbRun, DbTask, DbEvent, DbChunk, DbTaskOutcome, SearchResult, ModelStats, DbMission, MissionMessage, UserFact, MissionSummary};
 
 /// Supabase client for database and storage operations.
 pub struct SupabaseClient {
@@ -638,6 +638,185 @@ impl SupabaseClient {
         }
         
         Ok(())
+    }
+    
+    // ==================== User Facts ====================
+    
+    /// Insert a user fact into memory.
+    pub async fn insert_user_fact(
+        &self,
+        fact_text: &str,
+        category: Option<&str>,
+        embedding: Option<&[f32]>,
+        source_mission_id: Option<uuid::Uuid>,
+    ) -> anyhow::Result<uuid::Uuid> {
+        let embedding_str = embedding.map(|e| format!(
+            "[{}]",
+            e.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
+        ));
+        
+        let body = serde_json::json!({
+            "fact_text": fact_text,
+            "category": category,
+            "embedding": embedding_str,
+            "source_mission_id": source_mission_id
+        });
+        
+        let resp = self.client
+            .post(format!("{}/user_facts", self.rest_url()))
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&body)
+            .send()
+            .await?;
+        
+        let status = resp.status();
+        let text = resp.text().await?;
+        
+        if !status.is_success() {
+            anyhow::bail!("Failed to insert user fact: {} - {}", status, text);
+        }
+        
+        let facts: Vec<UserFact> = serde_json::from_str(&text)?;
+        facts.into_iter().next()
+            .and_then(|f| f.id)
+            .ok_or_else(|| anyhow::anyhow!("No fact ID returned"))
+    }
+    
+    /// Search user facts by text (simple contains search).
+    pub async fn search_user_facts(&self, query: &str, limit: usize) -> anyhow::Result<Vec<UserFact>> {
+        // Use ilike for case-insensitive search
+        let resp = self.client
+            .get(format!(
+                "{}/user_facts?fact_text=ilike.*{}*&order=created_at.desc&limit={}",
+                self.rest_url(),
+                urlencoding::encode(query),
+                limit
+            ))
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .send()
+            .await?;
+        
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            anyhow::bail!("Failed to search user facts: {}", text);
+        }
+        
+        Ok(resp.json().await?)
+    }
+    
+    /// Get all user facts (for injection into prompts).
+    pub async fn get_all_user_facts(&self, limit: usize) -> anyhow::Result<Vec<UserFact>> {
+        let resp = self.client
+            .get(format!(
+                "{}/user_facts?order=created_at.desc&limit={}",
+                self.rest_url(), limit
+            ))
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .send()
+            .await?;
+        
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            anyhow::bail!("Failed to get user facts: {}", text);
+        }
+        
+        Ok(resp.json().await?)
+    }
+    
+    // ==================== Mission Summaries ====================
+    
+    /// Insert a mission summary.
+    pub async fn insert_mission_summary(
+        &self,
+        mission_id: uuid::Uuid,
+        summary: &str,
+        key_files: &[String],
+        tools_used: &[String],
+        success: bool,
+        embedding: Option<&[f32]>,
+    ) -> anyhow::Result<uuid::Uuid> {
+        let embedding_str = embedding.map(|e| format!(
+            "[{}]",
+            e.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
+        ));
+        
+        let body = serde_json::json!({
+            "mission_id": mission_id,
+            "summary": summary,
+            "key_files": key_files,
+            "tools_used": tools_used,
+            "success": success,
+            "embedding": embedding_str
+        });
+        
+        let resp = self.client
+            .post(format!("{}/mission_summaries", self.rest_url()))
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .header("Content-Type", "application/json")
+            .header("Prefer", "return=representation")
+            .json(&body)
+            .send()
+            .await?;
+        
+        let status = resp.status();
+        let text = resp.text().await?;
+        
+        if !status.is_success() {
+            anyhow::bail!("Failed to insert mission summary: {} - {}", status, text);
+        }
+        
+        let summaries: Vec<MissionSummary> = serde_json::from_str(&text)?;
+        summaries.into_iter().next()
+            .and_then(|s| s.id)
+            .ok_or_else(|| anyhow::anyhow!("No summary ID returned"))
+    }
+    
+    /// Search mission summaries by text.
+    pub async fn search_mission_summaries(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MissionSummary>> {
+        let resp = self.client
+            .get(format!(
+                "{}/mission_summaries?summary=ilike.*{}*&order=created_at.desc&limit={}",
+                self.rest_url(),
+                urlencoding::encode(query),
+                limit
+            ))
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .send()
+            .await?;
+        
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            anyhow::bail!("Failed to search mission summaries: {}", text);
+        }
+        
+        Ok(resp.json().await?)
+    }
+    
+    /// Get recent mission summaries (for context injection).
+    pub async fn get_recent_mission_summaries(&self, limit: usize) -> anyhow::Result<Vec<MissionSummary>> {
+        let resp = self.client
+            .get(format!(
+                "{}/mission_summaries?order=created_at.desc&limit={}",
+                self.rest_url(), limit
+            ))
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .send()
+            .await?;
+        
+        if !resp.status().is_success() {
+            let text = resp.text().await?;
+            anyhow::bail!("Failed to get recent mission summaries: {}", text);
+        }
+        
+        Ok(resp.json().await?)
     }
 }
 

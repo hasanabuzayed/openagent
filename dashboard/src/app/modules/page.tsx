@@ -150,7 +150,11 @@ function McpCard({
           </div>
           <div className="flex items-center gap-1 group">
             <p className="text-xs text-white/40 truncate">{mcp.endpoint}</p>
-            <CopyButton text={mcp.endpoint} showOnHover label="Copied endpoint" />
+            <CopyButton
+              text={mcp.endpoint}
+              showOnHover
+              label="Copied endpoint"
+            />
           </div>
         </div>
       </div>
@@ -209,7 +213,7 @@ function McpDetailPanel({
         onClick={onClose}
       />
       {/* Panel */}
-      <div 
+      <div
         className="fixed right-0 top-0 z-50 h-full w-96 flex flex-col glass-panel border-l border-white/[0.06] animate-slide-in-right"
         onClick={(e) => e.stopPropagation()}
       >
@@ -217,7 +221,10 @@ function McpDetailPanel({
         <div className="flex items-start justify-between border-b border-white/[0.06] p-4">
           <div className="flex items-center gap-3">
             <button
-              onClick={(e) => { e.stopPropagation(); onClose(); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-white/50 hover:bg-white/[0.04] hover:text-white transition-colors"
             >
               <ChevronLeft className="h-5 w-5" />
@@ -231,7 +238,10 @@ function McpDetailPanel({
             </div>
           </div>
           <button
-            onClick={(e) => { e.stopPropagation(); onClose(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-white/50 hover:bg-white/[0.04] hover:text-white transition-colors"
           >
             <X className="h-5 w-5" />
@@ -249,10 +259,10 @@ function McpDetailPanel({
                   !mcp.enabled
                     ? "bg-white/[0.04]"
                     : mcp.status === "connected"
-                      ? "bg-emerald-500/10"
-                      : mcp.status === "error"
-                        ? "bg-red-500/10"
-                        : "bg-yellow-500/10"
+                    ? "bg-emerald-500/10"
+                    : mcp.status === "error"
+                    ? "bg-red-500/10"
+                    : "bg-yellow-500/10"
                 )}
               >
                 <Power
@@ -261,10 +271,10 @@ function McpDetailPanel({
                     !mcp.enabled
                       ? "text-white/40"
                       : mcp.status === "connected"
-                        ? "text-emerald-400"
-                        : mcp.status === "error"
-                          ? "text-red-400"
-                          : "text-yellow-400"
+                      ? "text-emerald-400"
+                      : mcp.status === "error"
+                      ? "text-red-400"
+                      : "text-yellow-400"
                   )}
                 />
               </div>
@@ -273,19 +283,19 @@ function McpDetailPanel({
                   {!mcp.enabled
                     ? "Module Disabled"
                     : mcp.status === "connected"
-                      ? "Module Active"
-                      : mcp.status === "error"
-                        ? "Module Error"
-                        : "Module Pending"}
+                    ? "Module Active"
+                    : mcp.status === "error"
+                    ? "Module Error"
+                    : "Module Pending"}
                 </p>
                 <p className="text-xs text-white/40">
                   {!mcp.enabled
                     ? "Paused"
                     : mcp.status === "connected"
-                      ? "Running and monitoring"
-                      : mcp.status === "error"
-                        ? "Connection failed"
-                        : "Connecting..."}
+                    ? "Running and monitoring"
+                    : mcp.status === "error"
+                    ? "Connection failed"
+                    : "Connecting..."}
                 </p>
               </div>
             </div>
@@ -942,7 +952,9 @@ export default function ModulesPage() {
             disabled={refreshing}
             className="flex items-center gap-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] px-3 py-2 text-sm text-white/80 transition-colors disabled:opacity-50"
           >
-            <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+            <RefreshCw
+              className={cn("h-4 w-4", refreshing && "animate-spin")}
+            />
             Refresh
           </button>
           <button
@@ -981,17 +993,19 @@ export default function ModulesPage() {
             Tools ({tools.length})
           </button>
         </div>
-        
+
         {/* Search */}
         <div className="relative w-64">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/30" />
           <input
             type="text"
-            placeholder={activeTab === "installed" ? "Search MCPs..." : "Search tools..."}
+            placeholder={
+              activeTab === "installed" ? "Search MCPs..." : "Search tools..."
+            }
             value={activeTab === "installed" ? searchQuery : toolSearch}
-            onChange={(e) => 
-              activeTab === "installed" 
-                ? setSearchQuery(e.target.value) 
+            onChange={(e) =>
+              activeTab === "installed"
+                ? setSearchQuery(e.target.value)
                 : setToolSearch(e.target.value)
             }
             className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] py-2 pl-9 pr-3 text-sm text-white placeholder-white/30 focus:border-indigo-500/50 focus:outline-none transition-colors"
@@ -1013,10 +1027,14 @@ export default function ModulesPage() {
               <Plug className="h-8 w-8 text-white/30" />
             </div>
             <p className="text-white/80">
-              {searchQuery ? "No MCPs match your search" : "No MCP servers configured"}
+              {searchQuery
+                ? "No MCPs match your search"
+                : "No MCP servers configured"}
             </p>
             <p className="mt-1 text-sm text-white/40">
-              {searchQuery ? "Try a different search term" : 'Click "Add MCP" to connect to an MCP server'}
+              {searchQuery
+                ? "Try a different search term"
+                : 'Click "Add MCP" to connect to an MCP server'}
             </p>
           </div>
         ) : (

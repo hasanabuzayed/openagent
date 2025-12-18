@@ -353,3 +353,36 @@ impl ContextPack {
     }
 }
 
+/// A user fact stored in long-term memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserFact {
+    pub id: Option<Uuid>,
+    pub fact_text: String,
+    pub category: Option<String>, // "preference", "project", "convention", "person"
+    pub source_mission_id: Option<Uuid>,
+    pub created_at: Option<String>,
+}
+
+/// A mission summary for cross-mission learning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionSummary {
+    pub id: Option<Uuid>,
+    pub mission_id: Uuid,
+    pub summary: String,
+    pub key_files: Vec<String>,
+    pub tools_used: Vec<String>,
+    pub success: bool,
+    pub created_at: Option<String>,
+}
+
+/// Session metadata for context injection.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionMetadata {
+    pub current_time: String,
+    pub mission_title: Option<String>,
+    pub mission_id: Option<Uuid>,
+    pub working_directory: String,
+    pub recent_tool_calls: u32,
+    pub context_files: Vec<String>,
+}
+

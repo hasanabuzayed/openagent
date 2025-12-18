@@ -6,6 +6,13 @@
 //! ## Tool Reuse
 //! The executor automatically discovers and lists reusable tools in `/root/tools/`
 //! at the start of each execution, injecting their documentation into the system prompt.
+//!
+//! ## Memory Integration
+//! The executor injects:
+//! - Session metadata (time, mission, working directory)
+//! - Relevant memory context from past tasks
+//! - User facts and preferences
+//! - Recent mission summaries
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -162,8 +169,129 @@ impl TaskExecutor {
         }
     }
 
+    /// Build session metadata for context injection.
+    fn build_session_metadata(&self, working_dir: &str, ctx: &AgentContext) -> String {
+        let now = chrono::Utc::now();
+        let time_str = now.format("%A %B %d, %Y %H:%M UTC").to_string();
+        
+        // List files in /root/context/ if available
+        let context_dir = if working_dir.contains("/root") {
+            "/root/context"
+        } else {
+            &format!("{}/context", working_dir)
+        };
+        
+        let context_files: Vec<String> = std::fs::read_dir(context_dir)
+            .ok()
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .take(10) // Limit to 10 files
+                    .collect()
+            })
+            .unwrap_or_default();
+        
+        let context_files_str = if context_files.is_empty() {
+            "  (empty - no files uploaded)".to_string()
+        } else {
+            context_files.iter().map(|f| format!("  - {}", f)).collect::<Vec<_>>().join("\n")
+        };
+        
+        format!(
+            r#"## Session Context
+- **Time**: {}
+- **Working Directory**: {}
+- **Files in /root/context/**:
+{}
+"#,
+            time_str,
+            working_dir,
+            context_files_str
+        )
+    }
+
+    /// Retrieve relevant memory context for the task.
+    async fn retrieve_memory_context(&self, task_description: &str, ctx: &AgentContext) -> String {
+        let memory = match &ctx.memory {
+            Some(m) => m,
+            None => return String::new(),
+        };
+        
+        let mut sections = Vec::new();
+        
+        // 1. Search for relevant past task chunks
+        if let Ok(chunks) = memory.retriever.search(task_description, Some(3), Some(0.6), None).await {
+            if !chunks.is_empty() {
+                let hints: Vec<String> = chunks.iter()
+                    .map(|c| {
+                        let text = if c.chunk_text.len() > 300 {
+                            format!("{}...", &c.chunk_text[..300])
+                        } else {
+                            c.chunk_text.clone()
+                        };
+                        format!("• {}", text.replace('\n', " ").trim())
+                    })
+                    .collect();
+                
+                sections.push(format!(
+                    "### Relevant Past Experience\n{}",
+                    hints.join("\n")
+                ));
+            }
+        }
+        
+        // 2. Get user facts (always include top facts)
+        if let Ok(facts) = memory.supabase.get_all_user_facts(10).await {
+            if !facts.is_empty() {
+                let fact_lines: Vec<String> = facts.iter()
+                    .map(|f| {
+                        let cat = f.category.as_deref().unwrap_or("general");
+                        format!("• [{}] {}", cat, f.fact_text)
+                    })
+                    .collect();
+                
+                sections.push(format!(
+                    "### User & Project Facts\n{}",
+                    fact_lines.join("\n")
+                ));
+            }
+        }
+        
+        // 3. Get recent mission summaries
+        if let Ok(summaries) = memory.supabase.get_recent_mission_summaries(5).await {
+            if !summaries.is_empty() {
+                let summary_lines: Vec<String> = summaries.iter()
+                    .map(|s| {
+                        let status = if s.success { "✅" } else { "❌" };
+                        format!("• {} {}", status, s.summary)
+                    })
+                    .collect();
+                
+                sections.push(format!(
+                    "### Recent Missions\n{}",
+                    summary_lines.join("\n")
+                ));
+            }
+        }
+        
+        if sections.is_empty() {
+            String::new()
+        } else {
+            format!("## Memory Context\n\n{}\n", sections.join("\n\n"))
+        }
+    }
+
     /// Build the system prompt for task execution.
-    fn build_system_prompt(&self, working_dir: &str, tools: &ToolRegistry, reusable_tools: &str) -> String {
+    fn build_system_prompt(
+        &self,
+        working_dir: &str,
+        tools: &ToolRegistry,
+        reusable_tools: &str,
+        session_metadata: &str,
+        memory_context: &str,
+    ) -> String {
         let tool_descriptions = tools
             .list_tools()
             .iter()
@@ -172,7 +300,7 @@ impl TaskExecutor {
             .join("\n");
 
         format!(
-            r#"You are an autonomous task executor with **full system access** on a Linux server.
+            r#"{session_metadata}{memory_context}You are an autonomous task executor with **full system access** on a Linux server.
 You can read/write any file, execute any command, install any software, and search anywhere.
 Your default working directory is: {working_dir}
 
@@ -273,7 +401,16 @@ When task is complete, provide a clear summary of:
 - Tools installed (for future reference)
 - Tools reused from /root/tools/ (if any)
 - How to verify the result
-- Any NEW reusable scripts saved to /root/tools/"#,
+- Any NEW reusable scripts saved to /root/tools/
+
+## Memory Tools
+You have access to memory tools to learn from past experience:
+- **search_memory**: Search past tasks, missions, and learnings for relevant context
+- **store_fact**: Store important facts about the user or project for future reference
+
+Use `search_memory` when you encounter a problem you might have solved before or want to check past approaches."#,
+            session_metadata = session_metadata,
+            memory_context = memory_context,
             working_dir = working_dir,
             tool_descriptions = tool_descriptions,
             reusable_tools = reusable_tools
@@ -323,8 +460,23 @@ When task is complete, provide a clear summary of:
             tracing::info!("Discovered reusable tools inventory");
         }
 
-        // Build initial messages with reusable tools info
-        let system_prompt = self.build_system_prompt(&ctx.working_dir_str(), &ctx.tools, &reusable_tools);
+        // Build session metadata
+        let session_metadata = self.build_session_metadata(&ctx.working_dir_str(), ctx);
+        
+        // Retrieve relevant memory context (async)
+        let memory_context = self.retrieve_memory_context(task.description(), ctx).await;
+        if !memory_context.is_empty() {
+            tracing::info!("Injected memory context into system prompt");
+        }
+
+        // Build initial messages with all context
+        let system_prompt = self.build_system_prompt(
+            &ctx.working_dir_str(),
+            &ctx.tools,
+            &reusable_tools,
+            &session_metadata,
+            &memory_context,
+        );
         let mut messages = vec![
             ChatMessage::new(Role::System, system_prompt),
             ChatMessage::new(Role::User, task.description().to_string()),

@@ -37,7 +37,7 @@ src/
 ├── memory/           # Supabase + pgvector persistence
 ├── mcp/              # MCP server registry + config
 ├── llm/              # OpenRouter client
-├── tools/            # File ops, terminal, git, web, search, desktop, storage
+├── tools/            # File ops, terminal, git, web, search, desktop, storage, memory
 ├── task/             # Task types + verification
 └── api/              # HTTP routes (axum)
 ```
@@ -115,6 +115,42 @@ The agent can share images in markdown using the `upload_image` tool:
 - Bucket: `images` (public, created in Supabase dashboard)
 - Public URL format: `https://<project>.supabase.co/storage/v1/object/public/images/<file>`
 - Supported formats: PNG, JPEG, GIF, WebP, SVG
+
+## Memory System
+
+The agent has a layered memory system inspired by ChatGPT's architecture:
+
+### Memory Layers
+
+| Layer | Description | Injection |
+|-------|-------------|-----------|
+| **Session Metadata** | Time, working dir, context files | Every system prompt |
+| **User Facts** | Stored preferences and project info | Every system prompt (top 10) |
+| **Mission Summaries** | Past mission learnings with embeddings | Every system prompt (top 5) |
+| **Task Chunks** | Semantic search over past task outputs | On-demand via RAG |
+
+### Memory Tools
+
+| Tool | Purpose |
+|------|---------|
+| `search_memory` | Search past tasks, missions, and facts |
+| `store_fact` | Store user preferences or project info |
+
+### Database Tables
+
+Required tables in Supabase (see `docs/MEMORY_TABLES.sql`):
+- `user_facts` - Long-term user/project facts with embeddings
+- `mission_summaries` - Learnings from completed missions
+
+### Automatic Context Injection
+
+The `TaskExecutor` automatically injects:
+1. **Session metadata** (time, working directory, context files)
+2. **Relevant past task chunks** (via semantic search)
+3. **User facts** (preferences, conventions)
+4. **Recent mission summaries**
+
+This allows the agent to learn from past experience without explicit prompting.
 
 ## After Significant Changes
 

@@ -677,6 +677,24 @@ async fn control_actor_loop(
     let mut running: Option<tokio::task::JoinHandle<(Uuid, String, crate::agents::AgentResult)>> = None;
     let mut running_cancel: Option<CancellationToken> = None;
 
+    // Helper to extract file paths from text (for mission summaries)
+    fn extract_file_paths(text: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        // Match common file path patterns
+        for word in text.split_whitespace() {
+            let word = word.trim_matches(|c| c == '`' || c == '\'' || c == '"' || c == ',' || c == ':');
+            if (word.starts_with('/') || word.starts_with("./")) 
+                && word.len() > 3 
+                && !word.contains("http")
+                && word.chars().filter(|c| *c == '/').count() >= 1
+            {
+                // Likely a file path
+                paths.push(word.to_string());
+            }
+        }
+        paths
+    }
+    
     // Helper to persist history to current mission
     async fn persist_mission_history(
         memory: &Option<MemorySystem>,
@@ -903,8 +921,37 @@ async fn control_actor_loop(
                                     crate::tools::mission::MissionStatusValue::Completed => MissionStatus::Completed,
                                     crate::tools::mission::MissionStatusValue::Failed => MissionStatus::Failed,
                                 };
+                                let success = matches!(status, crate::tools::mission::MissionStatusValue::Completed);
+                                
                                 if let Some(mem) = &memory {
                                     if let Ok(()) = mem.supabase.update_mission_status(id, &new_status.to_string()).await {
+                                        // Generate and store mission summary
+                                        if let Some(ref summary_text) = summary {
+                                            // Extract key files from conversation (look for paths in assistant messages)
+                                            let key_files: Vec<String> = history.iter()
+                                                .filter(|(role, _)| role == "assistant")
+                                                .flat_map(|(_, content)| extract_file_paths(content))
+                                                .take(10)
+                                                .collect();
+                                            
+                                            // Generate embedding for the summary
+                                            let embedding = mem.embedder.embed(summary_text).await.ok();
+                                            
+                                            // Store mission summary
+                                            if let Err(e) = mem.supabase.insert_mission_summary(
+                                                id,
+                                                summary_text,
+                                                &key_files,
+                                                &[], // tools_used - could track this
+                                                success,
+                                                embedding.as_deref(),
+                                            ).await {
+                                                tracing::warn!("Failed to store mission summary: {}", e);
+                                            } else {
+                                                tracing::info!("Stored mission summary for {}", id);
+                                            }
+                                        }
+                                        
                                         let _ = events_tx.send(AgentEvent::MissionStatusChanged {
                                             mission_id: id,
                                             status: new_status,
@@ -1086,7 +1133,13 @@ async fn run_single_control_turn(
 
     // Context for agent execution.
     let llm = Arc::new(OpenRouterClient::new(config.api_key.clone()));
-    let tools = ToolRegistry::with_mission_control(mission_control.clone());
+    
+    // Create shared memory reference for memory tools
+    let shared_memory: Option<crate::tools::memory::SharedMemory> = memory.as_ref().map(|m| {
+        Arc::new(tokio::sync::RwLock::new(Some(m.clone())))
+    });
+    
+    let tools = ToolRegistry::with_options(mission_control.clone(), shared_memory);
     let mut ctx = AgentContext::with_memory(
         config.clone(),
         llm,
