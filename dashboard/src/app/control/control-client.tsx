@@ -584,9 +584,26 @@ export default function ControlClient() {
       if (event.type === "status" && isRecord(data)) {
         reconnectAttempts = 0;
         const st = data["state"];
-        setRunState(typeof st === "string" ? (st as ControlRunState) : "idle");
+        const newState = typeof st === "string" ? (st as ControlRunState) : "idle";
         const q = data["queue_len"];
         setQueueLen(typeof q === "number" ? q : 0);
+        
+        // If we reconnected and agent is already running, add a visual indicator
+        setRunState((prevState) => {
+          // Only show reconnect notice if we weren't already tracking this as running
+          // and there's no active thinking/phase item (means we missed some events)
+          if (newState === "running" && prevState === "idle") {
+            setItems((prevItems) => {
+              const hasActiveThinking = prevItems.some(
+                (it) => (it.kind === "thinking" && !it.done) || it.kind === "phase"
+              );
+              // If there's no active streaming item, the user is seeing stale state
+              // The "Agent is working..." indicator will show via the render logic
+              return prevItems;
+            });
+          }
+          return newState;
+        });
         return;
       }
 
@@ -913,10 +930,23 @@ export default function ControlClient() {
             <div className="flex h-full items-center justify-center">
               <div className="text-center">
                 <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-500/10">
-                  <Bot className="h-8 w-8 text-indigo-400" />
+                  {runState === "running" ? (
+                    <Loader className="h-8 w-8 text-indigo-400 animate-spin" />
+                  ) : (
+                    <Bot className="h-8 w-8 text-indigo-400" />
+                  )}
                 </div>
                 {missionLoading ? (
                   <Shimmer className="max-w-xs mx-auto" />
+                ) : runState === "running" ? (
+                  <>
+                    <h2 className="text-lg font-medium text-white">
+                      Agent is working...
+                    </h2>
+                    <p className="mt-2 text-sm text-white/40 max-w-sm">
+                      Processing your request. Updates will appear here as they arrive.
+                    </p>
+                  </>
                 ) : currentMission && currentMission.status !== "active" ? (
                   <>
                     <h2 className="text-lg font-medium text-white">
@@ -947,6 +977,23 @@ export default function ControlClient() {
             </div>
           ) : (
             <div className="mx-auto max-w-3xl space-y-6">
+              {/* Show streaming indicator when running but no active thinking/phase */}
+              {runState === "running" && items.length > 0 && !items.some(
+                (it) => (it.kind === "thinking" && !it.done) || it.kind === "phase"
+              ) && (
+                <div className="flex justify-start gap-3 animate-fade-in">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
+                    <Bot className="h-4 w-4 text-indigo-400 animate-pulse" />
+                  </div>
+                  <div className="rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <Loader className="h-4 w-4 text-indigo-400 animate-spin" />
+                      <span className="text-sm text-white/60">Agent is working...</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {items.map((item) => {
                 if (item.kind === "user") {
                   return (
