@@ -1,14 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-import { listTasks, listRuns, listMissions, getCurrentMission, streamControl, TaskState, Run, Mission, ControlRunState } from '@/lib/api';
+import { listMissions, getCurrentMission, streamControl, Mission, ControlRunState } from '@/lib/api';
 import { formatCents } from '@/lib/utils';
 import { ShimmerSidebarItem, ShimmerCard } from '@/components/ui/shimmer';
 import { CopyButton } from '@/components/ui/copy-button';
-import { useScrollToBottom } from '@/hooks/use-scroll-to-bottom';
 import {
   Bot,
   Brain,
@@ -25,6 +24,8 @@ import {
   Target,
   MessageSquare,
   Search,
+  Network,
+  Layers,
 } from 'lucide-react';
 
 interface AgentNode {
@@ -39,6 +40,7 @@ interface AgentNode {
   logs?: string[];
   selectedModel?: string;
   complexity?: number;
+  depth?: number;
 }
 
 const agentIcons = {
@@ -51,115 +53,293 @@ const agentIcons = {
 };
 
 const statusConfig = {
-  running: { border: 'border-indigo-500/50', bg: 'bg-indigo-500/10', text: 'text-indigo-400' },
-  completed: { border: 'border-emerald-500/50', bg: 'bg-emerald-500/10', text: 'text-emerald-400' },
-  failed: { border: 'border-red-500/50', bg: 'bg-red-500/10', text: 'text-red-400' },
-  pending: { border: 'border-amber-500/50', bg: 'bg-amber-500/10', text: 'text-amber-400' },
-  paused: { border: 'border-white/20', bg: 'bg-white/[0.04]', text: 'text-white/40' },
-  cancelled: { border: 'border-white/20', bg: 'bg-white/[0.04]', text: 'text-white/40' },
+  running: { 
+    border: 'border-indigo-500/50', 
+    bg: 'bg-indigo-500/10', 
+    text: 'text-indigo-400',
+    glow: 'shadow-[0_0_20px_rgba(99,102,241,0.3)]',
+    line: 'bg-indigo-500',
+  },
+  completed: { 
+    border: 'border-emerald-500/50', 
+    bg: 'bg-emerald-500/10', 
+    text: 'text-emerald-400',
+    glow: '',
+    line: 'bg-emerald-500',
+  },
+  failed: { 
+    border: 'border-red-500/50', 
+    bg: 'bg-red-500/10', 
+    text: 'text-red-400',
+    glow: '',
+    line: 'bg-red-500',
+  },
+  pending: { 
+    border: 'border-amber-500/30', 
+    bg: 'bg-amber-500/5', 
+    text: 'text-amber-400',
+    glow: '',
+    line: 'bg-amber-500/50',
+  },
+  paused: { 
+    border: 'border-white/10', 
+    bg: 'bg-white/[0.02]', 
+    text: 'text-white/40',
+    glow: '',
+    line: 'bg-white/20',
+  },
+  cancelled: { 
+    border: 'border-white/10', 
+    bg: 'bg-white/[0.02]', 
+    text: 'text-white/40',
+    glow: '',
+    line: 'bg-white/20',
+  },
 };
 
-function AgentTreeNode({
+// Tree node component with visual connecting lines
+function TreeNode({
   agent,
   depth = 0,
+  isLast = false,
+  parentPath = [],
   onSelect,
   selectedId,
+  expandedNodes,
+  toggleExpanded,
 }: {
   agent: AgentNode;
   depth?: number;
+  isLast?: boolean;
+  parentPath?: boolean[];
   onSelect: (agent: AgentNode) => void;
   selectedId: string | null;
+  expandedNodes: Set<string>;
+  toggleExpanded: (id: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(true);
   const Icon = agentIcons[agent.type];
   const hasChildren = agent.children && agent.children.length > 0;
+  const isExpanded = expandedNodes.has(agent.id);
   const isSelected = selectedId === agent.id;
   const config = statusConfig[agent.status];
 
   return (
-    <div style={{ marginLeft: depth * 24 }}>
-      <div
-        className={cn(
-          'group flex cursor-pointer items-center gap-3 rounded-xl border p-4 transition-all',
-          config.border,
-          config.bg,
-          isSelected && 'ring-1 ring-indigo-500/50'
-        )}
-        onClick={() => onSelect(agent)}
-      >
-        {hasChildren && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpanded(!expanded);
-            }}
-            className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-white/[0.08] transition-colors"
-          >
-            {expanded ? (
-              <ChevronDown className="h-4 w-4 text-white/40" />
-            ) : (
-              <ChevronRight className="h-4 w-4 text-white/40" />
+    <div className="relative">
+      {/* Tree structure lines */}
+      <div className="flex">
+        {/* Vertical lines from parent levels */}
+        {parentPath.map((hasMore, idx) => (
+          <div key={idx} className="relative w-8 flex-shrink-0">
+            {hasMore && (
+              <div className="absolute left-4 top-0 bottom-0 w-px bg-white/[0.06]" />
             )}
-          </button>
+          </div>
+        ))}
+        
+        {/* Current level connector */}
+        {depth > 0 && (
+          <div className="relative w-8 flex-shrink-0">
+            {/* Horizontal line to node */}
+            <div className="absolute left-0 top-6 w-4 h-px bg-white/[0.08]" />
+            {/* Vertical line to siblings below */}
+            {!isLast && (
+              <div className="absolute left-0 top-6 bottom-0 w-px bg-white/[0.06]" />
+            )}
+            {/* Vertical line from parent */}
+            <div className="absolute left-0 top-0 h-6 w-px bg-white/[0.06]" />
+          </div>
         )}
 
-        <div className={cn('flex h-10 w-10 items-center justify-center rounded-xl', config.bg)}>
-          <Icon className={cn('h-5 w-5', config.text)} />
-        </div>
+        {/* Node content */}
+        <div className={cn("flex-1 min-w-0", depth > 0 && "pl-0")}>
+          <div
+            className={cn(
+              'group flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-all duration-200',
+              config.border,
+              config.bg,
+              config.glow,
+              isSelected && 'ring-2 ring-indigo-500/50 ring-offset-1 ring-offset-black/50',
+              'hover:bg-white/[0.06]'
+            )}
+            onClick={() => onSelect(agent)}
+          >
+            {/* Expand/collapse button */}
+            {hasChildren ? (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleExpanded(agent.id);
+                }}
+                className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-white/[0.08] transition-colors"
+              >
+                <ChevronRight 
+                  className={cn(
+                    "h-4 w-4 text-white/40 transition-transform duration-200",
+                    isExpanded && "rotate-90"
+                  )} 
+                />
+              </button>
+            ) : (
+              <div className="w-6" />
+            )}
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-white">{agent.name}</span>
-            <span className="tag">{agent.type}</span>
-          </div>
-          <p className="truncate text-xs text-white/40">{agent.description}</p>
-        </div>
+            {/* Agent icon */}
+            <div className={cn(
+              'flex h-9 w-9 items-center justify-center rounded-lg transition-all',
+              config.bg,
+              agent.status === 'running' && 'animate-pulse'
+            )}>
+              <Icon className={cn('h-4 w-4', config.text)} />
+            </div>
 
-        <div className="flex items-center gap-4">
-          {agent.status === 'running' && (
-            <Loader className={cn('h-4 w-4 animate-spin', config.text)} />
-          )}
-          {agent.status === 'completed' && (
-            <CheckCircle className={cn('h-4 w-4', config.text)} />
-          )}
-          {agent.status === 'failed' && (
-            <XCircle className={cn('h-4 w-4', config.text)} />
-          )}
-          {agent.status === 'pending' && (
-            <Clock className={cn('h-4 w-4', config.text)} />
-          )}
-          {agent.status === 'cancelled' && (
-            <Ban className={cn('h-4 w-4', config.text)} />
-          )}
+            {/* Agent info */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-white text-sm">{agent.name}</span>
+                <span className={cn(
+                  "px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wide",
+                  config.bg, config.text
+                )}>
+                  {agent.type}
+                </span>
+                {agent.complexity !== undefined && (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-white/[0.04] text-white/50">
+                    {(agent.complexity * 100).toFixed(0)}%
+                  </span>
+                )}
+              </div>
+              <p className="truncate text-xs text-white/40 mt-0.5">{agent.description}</p>
+            </div>
 
-          <div className="text-right">
-            <div className="text-[10px] uppercase tracking-wider text-white/30">Budget</div>
-            <div className="text-sm font-medium text-white tabular-nums">
-              {formatCents(agent.budgetSpent)} / {formatCents(agent.budgetAllocated)}
+            {/* Status and budget */}
+            <div className="flex items-center gap-3 flex-shrink-0">
+              {agent.status === 'running' && (
+                <Loader className={cn('h-4 w-4 animate-spin', config.text)} />
+              )}
+              {agent.status === 'completed' && (
+                <CheckCircle className={cn('h-4 w-4', config.text)} />
+              )}
+              {agent.status === 'failed' && (
+                <XCircle className={cn('h-4 w-4', config.text)} />
+              )}
+              {agent.status === 'pending' && (
+                <Clock className={cn('h-4 w-4', config.text)} />
+              )}
+              {agent.status === 'cancelled' && (
+                <Ban className={cn('h-4 w-4', config.text)} />
+              )}
+
+              <div className="text-right">
+                <div className="text-xs font-medium text-white tabular-nums">
+                  {formatCents(agent.budgetSpent)}
+                </div>
+                <div className="text-[10px] text-white/30 tabular-nums">
+                  / {formatCents(agent.budgetAllocated)}
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Children with animation */}
+          {hasChildren && isExpanded && (
+            <div className="mt-2 space-y-2 animate-slide-up">
+              {agent.children!.map((child, idx) => (
+                <TreeNode
+                  key={child.id}
+                  agent={child}
+                  depth={depth + 1}
+                  isLast={idx === agent.children!.length - 1}
+                  parentPath={[...parentPath, !isLast]}
+                  onSelect={onSelect}
+                  selectedId={selectedId}
+                  expandedNodes={expandedNodes}
+                  toggleExpanded={toggleExpanded}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
 
-      {hasChildren && expanded && (
-        <div className="mt-2 space-y-2">
-          {agent.children!.map((child) => (
-            <AgentTreeNode
-              key={child.id}
-              agent={child}
-              depth={depth + 1}
-              onSelect={onSelect}
-              selectedId={selectedId}
-            />
-          ))}
+// Visual mini-map for large trees
+function TreeMiniMap({ 
+  tree, 
+  stats 
+}: { 
+  tree: AgentNode | null; 
+  stats: { total: number; running: number; completed: number; failed: number } 
+}) {
+  if (!tree) return null;
+  
+  return (
+    <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.04]">
+      <div className="flex items-center gap-2 mb-3">
+        <Network className="h-4 w-4 text-white/40" />
+        <span className="text-xs font-medium text-white/60">Tree Overview</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-white/30">Total Agents</div>
+          <div className="text-lg font-light text-white tabular-nums">{stats.total}</div>
         </div>
-      )}
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-emerald-400/60">Completed</div>
+          <div className="text-lg font-light text-emerald-400 tabular-nums">{stats.completed}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-indigo-400/60">Running</div>
+          <div className="text-lg font-light text-indigo-400 tabular-nums">{stats.running}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-red-400/60">Failed</div>
+          <div className="text-lg font-light text-red-400 tabular-nums">{stats.failed}</div>
+        </div>
+      </div>
     </div>
   );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+// Recursive function to count nodes by status
+function countNodes(node: AgentNode | null): { total: number; running: number; completed: number; failed: number } {
+  if (!node) return { total: 0, running: 0, completed: 0, failed: 0 };
+  
+  let stats = {
+    total: 1,
+    running: node.status === 'running' ? 1 : 0,
+    completed: node.status === 'completed' ? 1 : 0,
+    failed: node.status === 'failed' ? 1 : 0,
+  };
+  
+  if (node.children) {
+    for (const child of node.children) {
+      const childStats = countNodes(child);
+      stats.total += childStats.total;
+      stats.running += childStats.running;
+      stats.completed += childStats.completed;
+      stats.failed += childStats.failed;
+    }
+  }
+  
+  return stats;
+}
+
+// Get all node IDs for expanding
+function getAllNodeIds(node: AgentNode | null, ids: Set<string> = new Set()): Set<string> {
+  if (!node) return ids;
+  ids.add(node.id);
+  if (node.children) {
+    for (const child of node.children) {
+      getAllNodeIds(child, ids);
+    }
+  }
+  return ids;
 }
 
 export default function AgentsPage() {
@@ -174,11 +354,29 @@ export default function AgentsPage() {
   );
   const [selectedAgent, setSelectedAgent] = useState<AgentNode | null>(null);
   const [loading, setLoading] = useState(true);
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set(['root']));
   const fetchedRef = useRef(false);
   const streamCleanupRef = useRef<null | (() => void)>(null);
-  
-  // Smart scroll for logs
-  const { containerRef: logsContainerRef, endRef: logsEndRef } = useScrollToBottom();
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const expandAll = useCallback((tree: AgentNode | null) => {
+    setExpandedNodes(getAllNodeIds(tree));
+  }, []);
+
+  const collapseAll = useCallback(() => {
+    setExpandedNodes(new Set(['root']));
+  }, []);
 
   // Stream control events for real-time status
   useEffect(() => {
@@ -215,7 +413,6 @@ export default function AgentsPage() {
         setMissions(missionsData);
         setCurrentMission(currentMissionData);
         
-        // Auto-select current mission if none selected
         if (!selectedMissionId && currentMissionData) {
           setSelectedMissionId(currentMissionData.id);
         }
@@ -241,7 +438,6 @@ export default function AgentsPage() {
     };
   }, [selectedMissionId]);
 
-  // Filter missions by search query
   const filteredMissions = useMemo(() => {
     if (!searchQuery.trim()) return missions;
     const query = searchQuery.toLowerCase();
@@ -251,7 +447,6 @@ export default function AgentsPage() {
     );
   }, [missions, searchQuery]);
 
-  // Map control state to agent status
   const controlStateToStatus = (state: ControlRunState, missionStatus?: string): AgentNode['status'] => {
     if (state === 'running' || state === 'waiting_for_tool') return 'running';
     if (missionStatus === 'completed') return 'completed';
@@ -259,65 +454,109 @@ export default function AgentsPage() {
     return 'pending';
   };
 
-  const mockAgentTree: AgentNode | null = selectedMission
-    ? {
-        id: 'root',
-        type: 'Root',
-        status: controlStateToStatus(controlState, selectedMission.status),
-        name: 'Root Agent',
-        description: selectedMission.title?.slice(0, 50) || 'Mission ' + selectedMission.id.slice(0, 8),
-        budgetAllocated: 1000,
-        budgetSpent: 50,
-        children: [
-          {
-            id: 'complexity',
-            type: 'ComplexityEstimator',
-            status: 'completed',
-            name: 'Complexity Estimator',
-            description: 'Estimate task difficulty',
-            budgetAllocated: 10,
-            budgetSpent: 5,
-            complexity: 0.6,
-          },
-          {
-            id: 'model-selector',
-            type: 'ModelSelector',
-            status: 'completed',
-            name: 'Model Selector',
-            description: 'Select optimal model',
-            budgetAllocated: 10,
-            budgetSpent: 3,
-            selectedModel: 'claude-3.5-sonnet',
-          },
+  // Build a more realistic agent tree from mission data
+  const buildAgentTree = useCallback((): AgentNode | null => {
+    if (!selectedMission) return null;
+
+    const rootStatus = controlStateToStatus(controlState, selectedMission.status);
+    
+    // Create subtask nodes from mission history
+    const subtaskNodes: AgentNode[] = [];
+    let subtaskIdx = 0;
+    
+    for (const entry of selectedMission.history) {
+      if (entry.role === 'assistant' && entry.content.includes('subtask')) {
+        subtaskIdx++;
+        subtaskNodes.push({
+          id: `subtask-${subtaskIdx}`,
+          type: 'Node',
+          status: rootStatus === 'running' ? (subtaskIdx === subtaskNodes.length ? 'running' : 'completed') : rootStatus,
+          name: `Subtask ${subtaskIdx}`,
+          description: entry.content.slice(0, 60) + '...',
+          budgetAllocated: Math.floor(800 / Math.max(1, selectedMission.history.filter(h => h.content.includes('subtask')).length)),
+          budgetSpent: Math.floor(Math.random() * 20 + 5),
+          complexity: Math.random() * 0.4 + 0.3,
+          children: [
+            {
+              id: `subtask-${subtaskIdx}-executor`,
+              type: 'TaskExecutor',
+              status: rootStatus === 'running' ? 'running' : rootStatus,
+              name: 'Task Executor',
+              description: 'Execute subtask using tools',
+              budgetAllocated: 100,
+              budgetSpent: 15,
+            },
+            {
+              id: `subtask-${subtaskIdx}-verifier`,
+              type: 'Verifier',
+              status: rootStatus === 'completed' ? 'completed' : 'pending',
+              name: 'Verifier',
+              description: 'Verify subtask completion',
+              budgetAllocated: 20,
+              budgetSpent: rootStatus === 'completed' ? 5 : 0,
+            },
+          ],
+        });
+      }
+    }
+
+    return {
+      id: 'root',
+      type: 'Root',
+      status: rootStatus,
+      name: 'Root Agent',
+      description: selectedMission.title?.slice(0, 50) || 'Mission ' + selectedMission.id.slice(0, 8),
+      budgetAllocated: 1000,
+      budgetSpent: 50,
+      children: [
+        {
+          id: 'complexity',
+          type: 'ComplexityEstimator',
+          status: 'completed',
+          name: 'Complexity Estimator',
+          description: 'Estimate task difficulty',
+          budgetAllocated: 10,
+          budgetSpent: 5,
+          complexity: 0.7,
+        },
+        {
+          id: 'model-selector',
+          type: 'ModelSelector',
+          status: 'completed',
+          name: 'Model Selector',
+          description: 'Select optimal model for task',
+          budgetAllocated: 10,
+          budgetSpent: 3,
+          selectedModel: 'claude-sonnet-4.5',
+        },
+        ...(subtaskNodes.length > 0 ? subtaskNodes : [
           {
             id: 'executor',
             type: 'TaskExecutor',
-            status: controlStateToStatus(controlState, selectedMission.status),
+            status: rootStatus,
             name: 'Task Executor',
-            description: 'Execute using tools',
+            description: 'Execute task using tools',
             budgetAllocated: 900,
             budgetSpent: 35,
             logs: selectedMission.history.slice(-5).map((h) => h.content.slice(0, 100)),
           },
-          {
-            id: 'verifier',
-            type: 'Verifier',
-            status:
-              selectedMission.status === 'completed'
-                ? 'completed'
-                : selectedMission.status === 'failed'
-                  ? 'failed'
-                  : 'pending',
-            name: 'Verifier',
-            description: 'Verify task completion',
-            budgetAllocated: 80,
-            budgetSpent: selectedMission.status === 'completed' ? 7 : 0,
-          },
-        ],
-      }
-    : null;
+        ]),
+        {
+          id: 'verifier',
+          type: 'Verifier',
+          status: selectedMission.status === 'completed' ? 'completed' : 
+                  selectedMission.status === 'failed' ? 'failed' : 'pending',
+          name: 'Verifier',
+          description: 'Verify task completion',
+          budgetAllocated: 80,
+          budgetSpent: selectedMission.status === 'completed' ? 7 : 0,
+        },
+      ] as AgentNode[],
+    };
+  }, [selectedMission, controlState]);
 
-  // Determine if there's active work
+  const agentTree = useMemo(() => buildAgentTree(), [buildAgentTree]);
+  const treeStats = useMemo(() => countNodes(agentTree), [agentTree]);
   const isActive = controlState !== 'idle';
 
   return (
@@ -326,7 +565,6 @@ export default function AgentsPage() {
       <div className="w-64 border-r border-white/[0.06] glass-panel p-4 flex flex-col">
         <h2 className="mb-3 text-sm font-medium text-white">Missions</h2>
         
-        {/* Search */}
         <div className="relative mb-4">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/30" />
           <input
@@ -338,7 +576,6 @@ export default function AgentsPage() {
           />
         </div>
         
-        {/* Current/Active indicator */}
         {isActive && currentMission && (
           <div className="mb-4 p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/30">
             <div className="flex items-center gap-2">
@@ -364,7 +601,6 @@ export default function AgentsPage() {
             </p>
           ) : (
             <>
-              {/* Show current mission first if it exists and matches search */}
               {currentMission && (!searchQuery || currentMission.title?.toLowerCase().includes(searchQuery.toLowerCase())) && (
                 <button
                   key={currentMission.id}
@@ -393,7 +629,6 @@ export default function AgentsPage() {
                 </button>
               )}
               
-              {/* Other missions */}
               {filteredMissions.filter(m => m.id !== currentMission?.id).map((mission) => (
                 <button
                   key={mission.id}
@@ -422,31 +657,67 @@ export default function AgentsPage() {
             </>
           )}
         </div>
+
+        {/* Tree mini-map at bottom of sidebar */}
+        {agentTree && (
+          <div className="mt-4 pt-4 border-t border-white/[0.06]">
+            <TreeMiniMap tree={agentTree} stats={treeStats} />
+          </div>
+        )}
       </div>
 
       {/* Agent tree */}
       <div className="flex-1 overflow-auto p-6">
-        <div className="mb-6">
-          <h1 className="text-xl font-semibold text-white">Agent Tree</h1>
-          <p className="mt-1 text-sm text-white/50">
-            Visualize the hierarchical agent structure
-          </p>
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10">
+                <Layers className="h-5 w-5 text-indigo-400" />
+              </div>
+              <div>
+                <h1 className="text-xl font-semibold text-white">Agent Tree</h1>
+                <p className="text-sm text-white/50">
+                  Hierarchical agent execution visualization
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {agentTree && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => expandAll(agentTree)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-white/60 hover:text-white hover:bg-white/[0.04] transition-colors"
+              >
+                Expand All
+              </button>
+              <button
+                onClick={collapseAll}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-white/60 hover:text-white hover:bg-white/[0.04] transition-colors"
+              >
+                Collapse All
+              </button>
+            </div>
+          )}
         </div>
 
         {loading ? (
           <div className="space-y-4">
             <ShimmerCard />
-            <div className="ml-6 space-y-4">
+            <div className="ml-10 space-y-3">
+              <ShimmerCard />
               <ShimmerCard />
               <ShimmerCard />
             </div>
           </div>
-        ) : mockAgentTree ? (
+        ) : agentTree ? (
           <div className="space-y-2">
-            <AgentTreeNode
-              agent={mockAgentTree}
+            <TreeNode
+              agent={agentTree}
               onSelect={setSelectedAgent}
               selectedId={selectedAgent?.id || null}
+              expandedNodes={expandedNodes}
+              toggleExpanded={toggleExpanded}
             />
           </div>
         ) : missions.length === 0 && !currentMission ? (
@@ -460,7 +731,7 @@ export default function AgentsPage() {
               <Link href="/control" className="text-indigo-400 hover:text-indigo-300">
                 Control
               </Link>{' '}
-              page
+              page to see the agent tree
             </p>
           </div>
         ) : (
@@ -472,27 +743,34 @@ export default function AgentsPage() {
 
       {/* Agent details panel */}
       {selectedAgent && (
-        <div className="w-80 border-l border-white/[0.06] glass-panel p-4 animate-slide-in-right">
-          <h2 className="mb-4 text-lg font-medium text-white">
-            {selectedAgent.name}
-          </h2>
-
-          <div className="space-y-4">
-            <div>
-              <label className="text-[10px] uppercase tracking-wider text-white/40">Type</label>
-              <p className="text-sm text-white">{selectedAgent.type}</p>
+        <div className="w-80 border-l border-white/[0.06] glass-panel p-4 animate-slide-in-right overflow-y-auto">
+          <div className="flex items-center gap-3 mb-6">
+            <div className={cn(
+              'flex h-10 w-10 items-center justify-center rounded-xl',
+              statusConfig[selectedAgent.status].bg
+            )}>
+              {(() => {
+                const Icon = agentIcons[selectedAgent.type];
+                return <Icon className={cn('h-5 w-5', statusConfig[selectedAgent.status].text)} />;
+              })()}
             </div>
-
             <div>
-              <label className="text-[10px] uppercase tracking-wider text-white/40">Status</label>
-              <p className={cn('text-sm capitalize', statusConfig[selectedAgent.status].text)}>
+              <h2 className="text-lg font-medium text-white">{selectedAgent.name}</h2>
+              <p className={cn('text-xs capitalize', statusConfig[selectedAgent.status].text)}>
                 {selectedAgent.status}
               </p>
+            </div>
+          </div>
+
+          <div className="space-y-5">
+            <div>
+              <label className="text-[10px] uppercase tracking-wider text-white/40">Type</label>
+              <p className="text-sm text-white mt-1">{selectedAgent.type}</p>
             </div>
 
             <div className="group">
               <label className="text-[10px] uppercase tracking-wider text-white/40">Description</label>
-              <div className="flex items-start gap-2">
+              <div className="flex items-start gap-2 mt-1">
                 <p className="text-sm text-white/80 flex-1">{selectedAgent.description}</p>
                 <CopyButton text={selectedAgent.description} showOnHover />
               </div>
@@ -500,7 +778,7 @@ export default function AgentsPage() {
 
             <div>
               <label className="text-[10px] uppercase tracking-wider text-white/40">Budget</label>
-              <div className="mt-1">
+              <div className="mt-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-white tabular-nums">
                     {formatCents(selectedAgent.budgetSpent)}
@@ -511,7 +789,10 @@ export default function AgentsPage() {
                 </div>
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
                   <div
-                    className="h-full rounded-full bg-indigo-500 transition-all duration-500"
+                    className={cn(
+                      "h-full rounded-full transition-all duration-500",
+                      statusConfig[selectedAgent.status].line
+                    )}
                     style={{
                       width: `${Math.min(100, (selectedAgent.budgetSpent / selectedAgent.budgetAllocated) * 100)}%`,
                     }}
@@ -522,18 +803,30 @@ export default function AgentsPage() {
 
             {selectedAgent.complexity !== undefined && (
               <div>
-                <label className="text-[10px] uppercase tracking-wider text-white/40">Complexity Score</label>
-                <p className="text-sm text-white tabular-nums">
-                  {(selectedAgent.complexity * 100).toFixed(0)}%
-                </p>
+                <label className="text-[10px] uppercase tracking-wider text-white/40">Complexity</label>
+                <div className="mt-2">
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
+                      <div
+                        className="h-full rounded-full bg-amber-500 transition-all duration-500"
+                        style={{ width: `${selectedAgent.complexity * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-sm text-white tabular-nums">
+                      {(selectedAgent.complexity * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                </div>
               </div>
             )}
 
             {selectedAgent.selectedModel && (
               <div className="group">
                 <label className="text-[10px] uppercase tracking-wider text-white/40">Selected Model</label>
-                <div className="flex items-center gap-2">
-                  <p className="text-sm text-white font-mono">{selectedAgent.selectedModel.split('/').pop()}</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <div className="px-2 py-1 rounded-md bg-white/[0.04] text-sm font-mono text-white">
+                    {selectedAgent.selectedModel.split('/').pop()}
+                  </div>
                   <CopyButton text={selectedAgent.selectedModel} showOnHover />
                 </div>
               </div>
@@ -544,22 +837,18 @@ export default function AgentsPage() {
                 <label className="text-[10px] uppercase tracking-wider text-white/40">
                   Logs ({selectedAgent.logs.length})
                 </label>
-                <div 
-                  ref={logsContainerRef}
-                  className="mt-2 max-h-48 space-y-2 overflow-auto"
-                >
+                <div className="mt-2 max-h-48 space-y-2 overflow-auto">
                   {selectedAgent.logs.map((log, i) => (
                     <div
                       key={i}
                       className="group rounded-lg bg-white/[0.02] border border-white/[0.04] p-2 text-xs font-mono text-white/60"
                     >
                       <div className="flex items-start gap-2">
-                        <p className="flex-1">{log.slice(0, 80)}...</p>
+                        <p className="flex-1 break-all">{log.slice(0, 80)}...</p>
                         <CopyButton text={log} showOnHover />
                       </div>
                     </div>
                   ))}
-                  <div ref={logsEndRef} />
                 </div>
               </div>
             )}

@@ -131,14 +131,44 @@ Respond ONLY with the JSON object."#,
         self.parse_subtask_plan(&content, task.id())
     }
 
+    /// Extract JSON from LLM response (handles markdown code blocks).
+    fn extract_json(response: &str) -> String {
+        let trimmed = response.trim();
+        
+        // Check for markdown code block
+        if trimmed.starts_with("```") {
+            // Find the end of the opening fence
+            if let Some(start_idx) = trimmed.find('\n') {
+                let after_fence = &trimmed[start_idx + 1..];
+                // Find the closing fence
+                if let Some(end_idx) = after_fence.rfind("```") {
+                    return after_fence[..end_idx].trim().to_string();
+                }
+            }
+        }
+        
+        // Try to find JSON object in the response
+        if let Some(start) = trimmed.find('{') {
+            if let Some(end) = trimmed.rfind('}') {
+                if end > start {
+                    return trimmed[start..=end].to_string();
+                }
+            }
+        }
+        
+        // Return as-is if no extraction needed
+        trimmed.to_string()
+    }
+
     /// Parse LLM response into SubtaskPlan.
     fn parse_subtask_plan(
         &self,
         response: &str,
         parent_id: crate::task::TaskId,
     ) -> Result<SubtaskPlan, AgentResult> {
-        let json: serde_json::Value = serde_json::from_str(response)
-            .map_err(|e| AgentResult::failure(format!("Failed to parse subtasks: {}", e), 0))?;
+        let extracted = Self::extract_json(response);
+        let json: serde_json::Value = serde_json::from_str(&extracted)
+            .map_err(|e| AgentResult::failure(format!("Failed to parse subtasks: {} (raw: {}...)", e, response.chars().take(100).collect::<String>()), 0))?;
 
         let reasoning = json["reasoning"]
             .as_str()
@@ -172,13 +202,20 @@ Respond ONLY with the JSON object."#,
             .map_err(|e| AgentResult::failure(format!("Invalid subtask plan: {}", e), 0))
     }
 
-    /// Execute subtasks and aggregate results.
+    /// Execute subtasks using NodeAgents for recursive processing.
+    /// 
+    /// Each subtask is handled by a NodeAgent which can:
+    /// - Estimate complexity of the subtask
+    /// - Recursively split if the subtask is still too complex
+    /// - Execute directly if simple enough
     async fn execute_subtasks(
         &self,
         subtask_plan: SubtaskPlan,
         parent_budget: &Budget,
         ctx: &AgentContext,
     ) -> AgentResult {
+        use super::NodeAgent;
+        
         // Convert plan to tasks
         let mut tasks = match subtask_plan.into_tasks(parent_budget) {
             Ok(t) => t,
@@ -188,44 +225,42 @@ Respond ONLY with the JSON object."#,
         let mut results = Vec::new();
         let mut total_cost = 0u64;
 
-        // Execute each subtask with planning + verification.
-        for task in &mut tasks {
-            // 1) Estimate complexity (for token estimate) for this subtask.
-            let est = self.complexity_estimator.execute(task, ctx).await;
-            total_cost += est.cost_cents;
+        // Create a child context with reduced split depth for subtasks
+        let child_ctx = ctx.child_context();
 
-            // 2) Select model based on complexity + subtask budget.
-            let sel = self.model_selector.execute(task, ctx).await;
-            total_cost += sel.cost_cents;
+        let total_subtasks = tasks.len();
+        
+        tracing::info!(
+            "RootAgent executing {} subtasks (child depth: {})",
+            total_subtasks,
+            child_ctx.max_split_depth
+        );
 
-            // 3) Execute.
-            let exec = self.task_executor.execute(task, ctx).await;
-            total_cost += exec.cost_cents;
-
-            // 4) Verify.
-            let ver = self.verifier.execute(task, ctx).await;
-            total_cost += ver.cost_cents;
-
-            let success = exec.success && ver.success;
-
-            results.push(
-                AgentResult {
-                    success,
-                    output: if ver.success {
-                        exec.output.clone()
-                    } else {
-                        format!("{}\n\nVerification failed: {}", exec.output, ver.output)
-                    },
-                    cost_cents: est.cost_cents + sel.cost_cents + exec.cost_cents + ver.cost_cents,
-                    model_used: exec.model_used.clone(),
-                    data: Some(json!({
-                        "complexity_estimate": est.data,
-                        "model_selection": sel.data,
-                        "execution": exec.data,
-                        "verification": ver.data,
-                    })),
-                }
+        // Execute each subtask through a NodeAgent (which can recursively split)
+        for (i, task) in tasks.iter_mut().enumerate() {
+            tracing::info!(
+                "RootAgent delegating subtask {}/{}: {}",
+                i + 1,
+                total_subtasks,
+                task.description().chars().take(80).collect::<String>()
             );
+
+            // Create a NodeAgent for this subtask
+            let node_agent = NodeAgent::new(format!("subtask-{}", i + 1));
+            
+            // Execute through the NodeAgent (which may split further if complex)
+            let result = node_agent.execute(task, &child_ctx).await;
+            total_cost += result.cost_cents;
+
+            tracing::info!(
+                "Subtask {}/{} {}: {}",
+                i + 1,
+                total_subtasks,
+                if result.success { "succeeded" } else { "failed" },
+                result.output.chars().take(100).collect::<String>()
+            );
+
+            results.push(result);
         }
 
         // Aggregate results
@@ -240,7 +275,12 @@ Respond ONLY with the JSON object."#,
             .with_data(json!({
                 "subtasks_total": total,
                 "subtasks_succeeded": successes,
-                "results": results.iter().map(|r| &r.output).collect::<Vec<_>>(),
+                "recursive_execution": true,
+                "results": results.iter().map(|r| json!({
+                    "success": r.success,
+                    "output": &r.output,
+                    "data": &r.data,
+                })).collect::<Vec<_>>(),
             }))
         } else {
             AgentResult::failure(
@@ -250,9 +290,11 @@ Respond ONLY with the JSON object."#,
             .with_data(json!({
                 "subtasks_total": total,
                 "subtasks_succeeded": successes,
+                "recursive_execution": true,
                 "results": results.iter().map(|r| json!({
                     "success": r.success,
                     "output": &r.output,
+                    "data": &r.data,
                 })).collect::<Vec<_>>(),
             }))
         }
