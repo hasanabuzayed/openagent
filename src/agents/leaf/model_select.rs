@@ -577,6 +577,7 @@ mod tests {
             completion_cost_per_million: completion,
             context_length: 100000,
             max_output_tokens: None,
+            supports_tools: true,
         }
     }
 

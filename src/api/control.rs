@@ -27,7 +27,7 @@ use crate::agents::{AgentContext, AgentRef};
 use crate::budget::{Budget, ModelPricing};
 use crate::config::Config;
 use crate::llm::OpenRouterClient;
-use crate::memory::{MissionMessage, MemorySystem};
+use crate::memory::{ContextBuilder, MissionMessage, MemorySystem};
 use crate::task::VerificationCriteria;
 use crate::tools::ToolRegistry;
 
@@ -1042,52 +1042,6 @@ async fn control_actor_loop(
     }
 }
 
-/// Truncate a string to a maximum character count, adding an ellipsis if truncated.
-fn truncate_message(content: &str, max_chars: usize) -> String {
-    if content.len() <= max_chars {
-        content.to_string()
-    } else {
-        format!("{}... [truncated, {} chars total]", &content[..max_chars], content.len())
-    }
-}
-
-/// Build a conversation context from history with size limits.
-/// 
-/// This prevents context overflow by:
-/// 1. Limiting total history to last N messages
-/// 2. Truncating individual messages that are too long
-/// 3. Capping total context size
-fn build_conversation_context(history: &[(String, String)], max_messages: usize, max_message_chars: usize, max_total_chars: usize) -> String {
-    let mut context = String::new();
-    
-    if history.is_empty() {
-        return context;
-    }
-    
-    // Take only the most recent messages
-    let start_idx = history.len().saturating_sub(max_messages);
-    let recent_history = &history[start_idx..];
-    
-    // Build context with truncation
-    context.push_str("Conversation so far:\n");
-    
-    for (role, content) in recent_history {
-        let truncated_content = truncate_message(content, max_message_chars);
-        let entry = format!("{}: {}\n", role, truncated_content);
-        
-        // Check if adding this would exceed total limit
-        if context.len() + entry.len() > max_total_chars {
-            context.push_str("... [earlier messages omitted due to size limits]\n");
-            break;
-        }
-        
-        context.push_str(&entry);
-    }
-    
-    context.push('\n');
-    context
-}
-
 async fn run_single_control_turn(
     config: Config,
     root_agent: AgentRef,
@@ -1103,17 +1057,10 @@ async fn run_single_control_turn(
     mission_control: Option<crate::tools::mission::MissionControl>,
 ) -> crate::agents::AgentResult {
     // Build a task prompt that includes conversation context with size limits.
-    // This prevents context overflow when history gets large.
-    const MAX_HISTORY_MESSAGES: usize = 10;      // Keep only last 10 messages
-    const MAX_MESSAGE_CHARS: usize = 5000;       // Truncate individual messages to 5K chars
-    const MAX_TOTAL_CONTEXT_CHARS: usize = 30000; // Cap total context at 30K chars
-    
-    let history_context = build_conversation_context(
-        &history, 
-        MAX_HISTORY_MESSAGES, 
-        MAX_MESSAGE_CHARS, 
-        MAX_TOTAL_CONTEXT_CHARS
-    );
+    // Uses ContextBuilder with config-driven limits to prevent context overflow.
+    let working_dir = config.working_dir.to_string_lossy().to_string();
+    let context_builder = ContextBuilder::new(&config.context, &working_dir);
+    let history_context = context_builder.build_history_context(&history);
     
     let mut convo = String::new();
     convo.push_str(&history_context);

@@ -53,6 +53,135 @@ pub struct MemoryConfig {
     pub embed_dimension: usize,
 }
 
+/// Context injection configuration.
+///
+/// Controls how much context is injected into agent prompts
+/// to prevent token overflow while maintaining relevance.
+#[derive(Debug, Clone)]
+pub struct ContextConfig {
+    // === Conversation History ===
+    /// Maximum messages to include from conversation history
+    pub max_history_messages: usize,
+    /// Maximum characters per individual message in history
+    pub max_message_chars: usize,
+    /// Maximum total characters for conversation context
+    pub max_history_total_chars: usize,
+    
+    // === Memory Retrieval ===
+    /// Number of relevant past task chunks to retrieve
+    pub memory_chunk_limit: usize,
+    /// Similarity threshold for chunk retrieval (0.0-1.0)
+    pub memory_chunk_threshold: f64,
+    /// Maximum user facts to inject
+    pub user_facts_limit: usize,
+    /// Maximum mission summaries to inject
+    pub mission_summaries_limit: usize,
+    
+    // === Tool Results ===
+    /// Maximum characters for tool result before truncation
+    pub max_tool_result_chars: usize,
+    
+    // === Context Files ===
+    /// Maximum context files to list in session metadata
+    pub max_context_files: usize,
+    
+    // === Directory Structure ===
+    /// Context directory name (user uploads)
+    pub context_dir_name: String,
+    /// Work directory name (agent workspace)
+    pub work_dir_name: String,
+    /// Tools directory name (reusable scripts)
+    pub tools_dir_name: String,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            // Conversation history
+            max_history_messages: 10,
+            max_message_chars: 5000,
+            max_history_total_chars: 30000,
+            
+            // Memory retrieval
+            memory_chunk_limit: 3,
+            memory_chunk_threshold: 0.6,
+            user_facts_limit: 10,
+            mission_summaries_limit: 5,
+            
+            // Tool results
+            max_tool_result_chars: 15000,
+            
+            // Context files
+            max_context_files: 10,
+            
+            // Directory structure
+            context_dir_name: "context".to_string(),
+            work_dir_name: "work".to_string(),
+            tools_dir_name: "tools".to_string(),
+        }
+    }
+}
+
+impl ContextConfig {
+    /// Load from environment variables, falling back to defaults.
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+        
+        if let Ok(v) = std::env::var("CONTEXT_MAX_HISTORY_MESSAGES") {
+            if let Ok(n) = v.parse() { config.max_history_messages = n; }
+        }
+        if let Ok(v) = std::env::var("CONTEXT_MAX_MESSAGE_CHARS") {
+            if let Ok(n) = v.parse() { config.max_message_chars = n; }
+        }
+        if let Ok(v) = std::env::var("CONTEXT_MAX_HISTORY_CHARS") {
+            if let Ok(n) = v.parse() { config.max_history_total_chars = n; }
+        }
+        if let Ok(v) = std::env::var("CONTEXT_MEMORY_CHUNK_LIMIT") {
+            if let Ok(n) = v.parse() { config.memory_chunk_limit = n; }
+        }
+        if let Ok(v) = std::env::var("CONTEXT_MEMORY_THRESHOLD") {
+            if let Ok(n) = v.parse() { config.memory_chunk_threshold = n; }
+        }
+        if let Ok(v) = std::env::var("CONTEXT_USER_FACTS_LIMIT") {
+            if let Ok(n) = v.parse() { config.user_facts_limit = n; }
+        }
+        if let Ok(v) = std::env::var("CONTEXT_MISSION_SUMMARIES_LIMIT") {
+            if let Ok(n) = v.parse() { config.mission_summaries_limit = n; }
+        }
+        if let Ok(v) = std::env::var("CONTEXT_MAX_TOOL_RESULT_CHARS") {
+            if let Ok(n) = v.parse() { config.max_tool_result_chars = n; }
+        }
+        
+        config
+    }
+    
+    /// Get the context directory path for a given working directory.
+    pub fn context_dir(&self, working_dir: &str) -> String {
+        self.resolve_subdir(working_dir, &self.context_dir_name)
+    }
+    
+    /// Get the tools directory path for a given working directory.
+    pub fn tools_dir(&self, working_dir: &str) -> String {
+        self.resolve_subdir(working_dir, &self.tools_dir_name)
+    }
+    
+    /// Get the work directory path for a given working directory.
+    pub fn work_dir(&self, working_dir: &str) -> String {
+        self.resolve_subdir(working_dir, &self.work_dir_name)
+    }
+    
+    /// Resolve a subdirectory path relative to working directory.
+    fn resolve_subdir(&self, working_dir: &str, subdir: &str) -> String {
+        if working_dir.contains("/root") {
+            format!("/root/{}", subdir)
+        } else if working_dir.starts_with('/') {
+            format!("{}/{}", working_dir, subdir)
+        } else {
+            format!("./{}", subdir)
+        }
+    }
+}
+
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
@@ -105,6 +234,9 @@ pub struct Config {
 
     /// Memory/storage configuration
     pub memory: MemoryConfig,
+    
+    /// Context injection configuration
+    pub context: ContextConfig,
 }
 
 /// SSH configuration for the dashboard console + file explorer.
@@ -261,6 +393,8 @@ impl Config {
             private_key: read_private_key_from_env()?,
         };
         
+        let context = ContextConfig::from_env();
+        
         Ok(Self {
             api_key,
             default_model,
@@ -272,6 +406,7 @@ impl Config {
             auth,
             console_ssh,
             memory,
+            context,
         })
     }
     
@@ -292,6 +427,7 @@ impl Config {
             auth: AuthConfig::default(),
             console_ssh: ConsoleSshConfig::default(),
             memory: MemoryConfig::default(),
+            context: ContextConfig::default(),
         }
     }
 }

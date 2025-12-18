@@ -24,6 +24,7 @@ use crate::agents::{
 use crate::api::control::{AgentEvent, ControlRunState};
 use crate::budget::ExecutionSignals;
 use crate::llm::{ChatMessage, MessageContent, Role, ToolCall};
+use crate::memory::ContextBuilder;
 use crate::task::{Task, TokenUsageSummary};
 use crate::tools::ToolRegistry;
 
@@ -65,23 +66,12 @@ impl TaskExecutor {
         Self { id: AgentId::new() }
     }
 
-    /// Discover reusable tools in /root/tools/.
+    /// Discover reusable tools in the tools directory.
     /// 
     /// Scans the directory for README.md files and tool scripts,
     /// building an inventory of available reusable tools.
-    async fn discover_reusable_tools(&self, working_dir: &str) -> String {
-        let tools_dir = if working_dir.starts_with('/') {
-            // Find the root (e.g., /root or the working directory's ancestor)
-            if working_dir.contains("/root") {
-                "/root/tools".to_string()
-            } else {
-                format!("{}/tools", working_dir)
-            }
-        } else {
-            "/root/tools".to_string()
-        };
-
-        let tools_path = Path::new(&tools_dir);
+    async fn discover_reusable_tools(&self, tools_dir: &str) -> String {
+        let tools_path = Path::new(tools_dir);
         if !tools_path.exists() {
             return String::new();
         }
@@ -169,118 +159,22 @@ impl TaskExecutor {
         }
     }
 
-    /// Build session metadata for context injection.
-    fn build_session_metadata(&self, working_dir: &str, ctx: &AgentContext) -> String {
-        let now = chrono::Utc::now();
-        let time_str = now.format("%A %B %d, %Y %H:%M UTC").to_string();
-        
-        // List files in /root/context/ if available
-        let context_dir = if working_dir.contains("/root") {
-            "/root/context"
-        } else {
-            &format!("{}/context", working_dir)
-        };
-        
-        let context_files: Vec<String> = std::fs::read_dir(context_dir)
-            .ok()
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .take(10) // Limit to 10 files
-                    .collect()
-            })
-            .unwrap_or_default();
-        
-        let context_files_str = if context_files.is_empty() {
-            "  (empty - no files uploaded)".to_string()
-        } else {
-            context_files.iter().map(|f| format!("  - {}", f)).collect::<Vec<_>>().join("\n")
-        };
-        
-        format!(
-            r#"## Session Context
-- **Time**: {}
-- **Working Directory**: {}
-- **Files in /root/context/**:
-{}
-"#,
-            time_str,
-            working_dir,
-            context_files_str
-        )
+    /// Build session metadata for context injection using ContextBuilder.
+    fn build_session_metadata(&self, ctx: &AgentContext) -> String {
+        let builder = ContextBuilder::new(&ctx.config.context, &ctx.working_dir_str());
+        builder.build_session_metadata(None).format()
     }
 
-    /// Retrieve relevant memory context for the task.
+    /// Retrieve relevant memory context for the task using ContextBuilder.
     async fn retrieve_memory_context(&self, task_description: &str, ctx: &AgentContext) -> String {
         let memory = match &ctx.memory {
             Some(m) => m,
             None => return String::new(),
         };
         
-        let mut sections = Vec::new();
-        
-        // 1. Search for relevant past task chunks
-        if let Ok(chunks) = memory.retriever.search(task_description, Some(3), Some(0.6), None).await {
-            if !chunks.is_empty() {
-                let hints: Vec<String> = chunks.iter()
-                    .map(|c| {
-                        let text = if c.chunk_text.len() > 300 {
-                            format!("{}...", &c.chunk_text[..300])
-                        } else {
-                            c.chunk_text.clone()
-                        };
-                        format!("• {}", text.replace('\n', " ").trim())
-                    })
-                    .collect();
-                
-                sections.push(format!(
-                    "### Relevant Past Experience\n{}",
-                    hints.join("\n")
-                ));
-            }
-        }
-        
-        // 2. Get user facts (always include top facts)
-        if let Ok(facts) = memory.supabase.get_all_user_facts(10).await {
-            if !facts.is_empty() {
-                let fact_lines: Vec<String> = facts.iter()
-                    .map(|f| {
-                        let cat = f.category.as_deref().unwrap_or("general");
-                        format!("• [{}] {}", cat, f.fact_text)
-                    })
-                    .collect();
-                
-                sections.push(format!(
-                    "### User & Project Facts\n{}",
-                    fact_lines.join("\n")
-                ));
-            }
-        }
-        
-        // 3. Get recent mission summaries
-        if let Ok(summaries) = memory.supabase.get_recent_mission_summaries(5).await {
-            if !summaries.is_empty() {
-                let summary_lines: Vec<String> = summaries.iter()
-                    .map(|s| {
-                        let status = if s.success { "✅" } else { "❌" };
-                        format!("• {} {}", status, s.summary)
-                    })
-                    .collect();
-                
-                sections.push(format!(
-                    "### Recent Missions\n{}",
-                    summary_lines.join("\n")
-                ));
-            }
-        }
-        
-        if sections.is_empty() {
-            String::new()
-        } else {
-            format!("## Memory Context\n\n{}\n", sections.join("\n\n"))
-        }
+        let builder = ContextBuilder::new(&ctx.config.context, &ctx.working_dir_str());
+        let memory_ctx = builder.build_memory_context(memory, task_description).await;
+        memory_ctx.format()
     }
 
     /// Build the system prompt for task execution.
@@ -454,20 +348,26 @@ Use `search_memory` when you encounter a problem you might have solved before or
         // If we can fetch pricing, compute real costs from token usage.
         let pricing = ctx.pricing.get_pricing(model).await;
 
-        // Discover reusable tools from /root/tools/ (or working_dir/tools)
-        let reusable_tools = self.discover_reusable_tools(&ctx.working_dir_str()).await;
+        // Create context builder for this execution
+        let context_builder = ContextBuilder::new(&ctx.config.context, &ctx.working_dir_str());
+        
+        // Discover reusable tools from tools directory
+        let reusable_tools = self.discover_reusable_tools(&context_builder.tools_dir()).await;
         if !reusable_tools.is_empty() {
             tracing::info!("Discovered reusable tools inventory");
         }
 
         // Build session metadata
-        let session_metadata = self.build_session_metadata(&ctx.working_dir_str(), ctx);
+        let session_metadata = self.build_session_metadata(ctx);
         
         // Retrieve relevant memory context (async)
         let memory_context = self.retrieve_memory_context(task.description(), ctx).await;
         if !memory_context.is_empty() {
             tracing::info!("Injected memory context into system prompt");
         }
+        
+        // Get tool result truncation limit from config
+        let max_tool_result_chars = ctx.config.context.max_tool_result_chars;
 
         // Build initial messages with all context
         let system_prompt = self.build_system_prompt(
@@ -779,11 +679,10 @@ Use `search_memory` when you encounter a problem you might have solved before or
                         }
 
                         // Truncate tool result if too large to prevent context overflow
-                        const MAX_TOOL_RESULT_CHARS: usize = 15000;
-                        let truncated_content = if tool_message_content.len() > MAX_TOOL_RESULT_CHARS {
+                        let truncated_content = if tool_message_content.len() > max_tool_result_chars {
                             format!(
                                 "{}... [truncated, {} chars total. For large data, consider writing to a file and reading specific sections]",
-                                &tool_message_content[..MAX_TOOL_RESULT_CHARS],
+                                &tool_message_content[..max_tool_result_chars],
                                 tool_message_content.len()
                             )
                         } else {

@@ -34,11 +34,16 @@ src/
 │   ├── orchestrator/ # RootAgent, NodeAgent
 │   └── leaf/         # ComplexityEstimator, ModelSelector, TaskExecutor, Verifier
 ├── budget/           # Cost tracking, pricing, smart retry
-├── memory/           # Supabase + pgvector persistence
+├── memory/           # Supabase + pgvector persistence + context building
+│   ├── supabase.rs   # Database client
+│   ├── context.rs    # ContextBuilder, SessionContext, MemoryContext
+│   ├── retriever.rs  # Semantic search
+│   └── writer.rs     # Event recording
 ├── mcp/              # MCP server registry + config
 ├── llm/              # OpenRouter client
 ├── tools/            # File ops, terminal, git, web, search, desktop, storage, memory
 ├── task/             # Task types + verification
+├── config.rs         # Config, MemoryConfig, ContextConfig
 └── api/              # HTTP routes (axum)
 ```
 
@@ -125,8 +130,8 @@ The agent has a layered memory system inspired by ChatGPT's architecture:
 | Layer | Description | Injection |
 |-------|-------------|-----------|
 | **Session Metadata** | Time, working dir, context files | Every system prompt |
-| **User Facts** | Stored preferences and project info | Every system prompt (top 10) |
-| **Mission Summaries** | Past mission learnings with embeddings | Every system prompt (top 5) |
+| **User Facts** | Stored preferences and project info | Every system prompt (configurable) |
+| **Mission Summaries** | Past mission learnings with embeddings | Every system prompt (configurable) |
 | **Task Chunks** | Semantic search over past task outputs | On-demand via RAG |
 
 ### Memory Tools
@@ -142,6 +147,40 @@ Required tables in Supabase (see `docs/MEMORY_TABLES.sql`):
 - `user_facts` - Long-term user/project facts with embeddings
 - `mission_summaries` - Learnings from completed missions
 
+## Context System
+
+Context injection is managed by `ContextBuilder` (`src/memory/context.rs`) with centralized configuration.
+
+### ContextConfig (`src/config.rs`)
+
+All context-related limits are configurable via environment variables:
+
+| Setting | Env Var | Default | Description |
+|---------|---------|---------|-------------|
+| History messages | `CONTEXT_MAX_HISTORY_MESSAGES` | 10 | Max conversation messages to include |
+| Message chars | `CONTEXT_MAX_MESSAGE_CHARS` | 5000 | Max chars per message |
+| History total | `CONTEXT_MAX_HISTORY_CHARS` | 30000 | Total history context limit |
+| Memory chunks | `CONTEXT_MEMORY_CHUNK_LIMIT` | 3 | Relevant past chunks to retrieve |
+| Chunk threshold | `CONTEXT_MEMORY_THRESHOLD` | 0.6 | Similarity threshold (0-1) |
+| User facts | `CONTEXT_USER_FACTS_LIMIT` | 10 | User facts to inject |
+| Mission summaries | `CONTEXT_MISSION_SUMMARIES_LIMIT` | 5 | Recent summaries to inject |
+| Tool results | `CONTEXT_MAX_TOOL_RESULT_CHARS` | 15000 | Tool output truncation limit |
+
+### Context Components
+
+The `ContextBuilder` produces three structured context types:
+
+```rust
+// Session context (sync)
+SessionContext { time, working_dir, context_files, mission_title }
+
+// Memory context (async, requires DB)
+MemoryContext { past_experience, user_facts, mission_summaries }
+
+// History context (sync)
+String (formatted conversation history)
+```
+
 ### Automatic Context Injection
 
 The `TaskExecutor` automatically injects:
@@ -151,6 +190,13 @@ The `TaskExecutor` automatically injects:
 4. **Recent mission summaries**
 
 This allows the agent to learn from past experience without explicit prompting.
+
+### Directory Structure
+
+Context paths are derived from `ContextConfig`:
+- `context/` - User uploads (read by session metadata)
+- `work/` - Agent workspace
+- `tools/` - Reusable scripts
 
 ## After Significant Changes
 

@@ -31,12 +31,14 @@ mod supabase;
 mod embed;
 mod writer;
 mod retriever;
+mod context;
 
 pub use types::*;
 pub use supabase::SupabaseClient;
 pub use embed::EmbeddingClient;
 pub use writer::{MemoryWriter, EventRecorder, RecordedEvent};
 pub use retriever::MemoryRetriever;
+pub use context::{ContextBuilder, SessionContext, MemoryContext};
 
 use crate::config::MemoryConfig;
 use std::sync::Arc;
