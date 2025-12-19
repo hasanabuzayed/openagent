@@ -191,7 +191,12 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     /// Reasoning/thinking content for "thinking" models (Gemini 3, etc.).
     /// Must be preserved and sent back in subsequent requests when using tool calls.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Serialized as "reasoning_details" which is what OpenRouter expects for Gemini.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "reasoning_details",
+        alias = "reasoning"
+    )]
     pub reasoning: Option<Vec<ReasoningContent>>,
 }
 
