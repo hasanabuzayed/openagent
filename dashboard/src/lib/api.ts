@@ -332,6 +332,8 @@ export interface RunningMissionInfo {
   state: "queued" | "running" | "waiting_for_tool" | "finished";
   queue_len: number;
   history_len: number;
+  seconds_since_activity: number;
+  expected_deliverables: number;
 }
 
 // Get all running parallel missions

@@ -1131,6 +1131,8 @@ export default function ControlClient() {
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {runningMissions.map((mission) => {
               const isViewingMission = viewingMissionId === mission.mission_id;
+              const isStalled = mission.state === "running" && mission.seconds_since_activity > 60;
+              const isSeverlyStalled = mission.state === "running" && mission.seconds_since_activity > 120;
               return (
                 <div
                   key={mission.mission_id}
@@ -1139,6 +1141,10 @@ export default function ControlClient() {
                     "flex items-center justify-between rounded-lg border p-3 transition-colors cursor-pointer",
                     isViewingMission
                       ? "border-indigo-500/30 bg-indigo-500/10"
+                      : isSeverlyStalled
+                      ? "border-red-500/30 bg-red-500/10"
+                      : isStalled
+                      ? "border-amber-500/30 bg-amber-500/10"
                       : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04]"
                   )}
                 >
@@ -1146,6 +1152,8 @@ export default function ControlClient() {
                     <div
                       className={cn(
                         "h-2 w-2 rounded-full shrink-0",
+                        isSeverlyStalled ? "bg-red-400 animate-pulse" :
+                        isStalled ? "bg-amber-400 animate-pulse" :
                         mission.state === "running" ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
                       )}
                     />
@@ -1155,7 +1163,17 @@ export default function ControlClient() {
                       </p>
                       <p className="text-xs text-white/40 truncate">
                         {mission.mission_id.slice(0, 8)}... • {mission.state}
+                        {isStalled && (
+                          <span className="text-amber-400 ml-1">
+                            • ⚠️ {Math.floor(mission.seconds_since_activity)}s idle
+                          </span>
+                        )}
                       </p>
+                      {mission.expected_deliverables > 0 && (
+                        <p className="text-xs text-indigo-400 truncate">
+                          📋 {mission.expected_deliverables} expected deliverable{mission.expected_deliverables > 1 ? 's' : ''}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">

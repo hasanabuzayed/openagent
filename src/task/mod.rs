@@ -8,8 +8,10 @@
 pub mod task;
 mod subtask;
 mod verification;
+pub mod deliverables;
 
 pub use task::{Task, TaskId, TaskStatus, TaskError, TaskAnalysis, TokenUsageSummary};
 pub use subtask::{Subtask, SubtaskPlan, SubtaskPlanError};
 pub use verification::{VerificationCriteria, VerificationResult, VerificationMethod, ProgrammaticCheck};
+pub use deliverables::{Deliverable, DeliverableSet, extract_deliverables};
 

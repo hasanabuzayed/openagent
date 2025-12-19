@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use uuid::Uuid;
+
 use crate::budget::{ModelPricing, SharedBenchmarkRegistry, SharedModelResolver};
 use crate::config::Config;
 use crate::llm::LlmClient;
@@ -72,6 +74,9 @@ pub struct AgentContext {
     
     /// Current execution progress (for progress indicator).
     pub progress_snapshot: Option<Arc<tokio::sync::RwLock<crate::api::control::ExecutionProgress>>>,
+    
+    /// Mission ID for tagging events (used in parallel mission execution).
+    pub mission_id: Option<Uuid>,
 }
 
 impl AgentContext {
@@ -101,6 +106,7 @@ impl AgentContext {
             mission_control: None,
             tree_snapshot: None,
             progress_snapshot: None,
+            mission_id: None,
         }
     }
     
@@ -131,6 +137,7 @@ impl AgentContext {
             mission_control: None,
             tree_snapshot: None,
             progress_snapshot: None,
+            mission_id: None,
         }
     }
 
@@ -157,6 +164,7 @@ impl AgentContext {
             mission_control: self.mission_control.clone(),
             tree_snapshot: self.tree_snapshot.clone(),
             progress_snapshot: self.progress_snapshot.clone(),
+            mission_id: self.mission_id,
         }
     }
 

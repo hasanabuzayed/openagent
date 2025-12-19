@@ -325,11 +325,21 @@ You have access to memory tools to learn from past experience:
 
 Use `search_memory` when you encounter a problem you might have solved before or want to check past approaches.
 
+## Using Provided Information
+**CRITICAL: Use information already given in the prompt!**
+- If the user provides URLs, paths, or specific values, USE THEM DIRECTLY
+- DO NOT ask for information that was already provided in the conversation
+- If you're unsure, re-read the user's message before asking for clarification
+- Example: If user says "clone https://github.com/foo/bar", just clone it—don't ask for the URL
+
 ## Completion Rules
 1. **Don't stop prematurely** — If you haven't produced the final deliverable, keep working
-2. **Explicit completion** — Use complete_mission tool when the goal is fully achieved
-3. **Failure acknowledgment** — If you cannot complete, explain why and call complete_mission with failed status
-4. **No silent exits** — Every execution should end with either a deliverable or an explanation"#,
+2. **Complete ALL steps** — If the task has multiple steps, complete them all in one turn
+3. **Check deliverables exist** — Before completing, verify any required output files were created
+4. **Explicit completion** — Use complete_mission tool when the goal is fully achieved
+5. **Failure acknowledgment** — If you cannot complete, explain why and call complete_mission with failed status
+6. **No silent exits** — Every execution should end with either a deliverable or an explanation
+7. **Large files in chunks** — If writing files >2000 chars, verify content isn't truncated"#,
             session_metadata = session_metadata,
             memory_context = memory_context,
             working_dir = working_dir,

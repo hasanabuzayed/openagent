@@ -172,6 +172,41 @@ impl OpenRouterClient {
             }
         }
 
+        // Check for non-standard tool calling formats in the content
+        // Some models (like deepseek-r1-distill) output tool calls in their own format
+        if let Some(ref content) = choice.message.content {
+            if tool_calls.is_none() || tool_calls.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+                // Check for known non-standard formats
+                if content.contains("<｜tool") || content.contains("<|tool") {
+                    tracing::warn!(
+                        "Model {} uses non-standard tool calling format (DeepSeek-style). \
+                         This model is not compatible with function calling. \
+                         Content preview: {}",
+                        request.model,
+                        &content[..content.len().min(200)]
+                    );
+                    // Return error so the system can retry with a different model
+                    return Err(LlmError::incompatible_model(format!(
+                        "Model {} uses non-standard tool calling format and cannot be used for function calling",
+                        request.model
+                    )));
+                }
+                
+                // Check for XML-style tool calls (some models)
+                if content.contains("<function_call>") || content.contains("<tool_call>") {
+                    tracing::warn!(
+                        "Model {} uses XML-style tool calling format. Content preview: {}",
+                        request.model,
+                        &content[..content.len().min(200)]
+                    );
+                    return Err(LlmError::incompatible_model(format!(
+                        "Model {} uses XML-style tool calling format and cannot be used for function calling",
+                        request.model
+                    )));
+                }
+            }
+        }
+
         Ok(ChatResponse {
             content: choice.message.content,
             tool_calls,

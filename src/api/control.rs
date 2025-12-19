@@ -1461,6 +1461,8 @@ async fn control_actor_loop(
                                     state: "running".to_string(),
                                     queue_len: queue.len(),
                                     history_len: history.len(),
+                                    seconds_since_activity: 0, // Main runner doesn't track this yet
+                                    expected_deliverables: 0,
                                 });
                             }
                         }

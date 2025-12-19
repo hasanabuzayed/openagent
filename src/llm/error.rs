@@ -68,6 +68,16 @@ impl LlmError {
         }
     }
 
+    /// Create an incompatible model error.
+    pub fn incompatible_model(message: String) -> Self {
+        Self {
+            kind: LlmErrorKind::IncompatibleModel,
+            status_code: None,
+            message,
+            retry_after: None,
+        }
+    }
+
     /// Check if this error is transient and should be retried.
     pub fn is_transient(&self) -> bool {
         self.kind.is_transient()
@@ -130,15 +140,23 @@ pub enum LlmErrorKind {
     NetworkError,
     /// Response parsing error - usually permanent
     ParseError,
+    /// Model is incompatible (e.g., uses non-standard tool calling format)
+    /// Should trigger model fallback, not retry with same model
+    IncompatibleModel,
 }
 
 impl LlmErrorKind {
-    /// Check if this error kind is transient (should retry).
+    /// Check if this error kind is transient (should retry with same model).
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
             LlmErrorKind::RateLimited | LlmErrorKind::ServerError | LlmErrorKind::NetworkError
         )
+    }
+    
+    /// Check if this error should trigger a model fallback.
+    pub fn should_fallback(&self) -> bool {
+        matches!(self, LlmErrorKind::IncompatibleModel)
     }
 }
 
@@ -150,6 +168,7 @@ impl std::fmt::Display for LlmErrorKind {
             LlmErrorKind::ClientError => write!(f, "Client error"),
             LlmErrorKind::NetworkError => write!(f, "Network error"),
             LlmErrorKind::ParseError => write!(f, "Parse error"),
+            LlmErrorKind::IncompatibleModel => write!(f, "Incompatible model"),
         }
     }
 }
@@ -188,7 +207,8 @@ impl RetryConfig {
             LlmErrorKind::RateLimited => self.retry_rate_limits,
             LlmErrorKind::ServerError => self.retry_server_errors,
             LlmErrorKind::NetworkError => self.retry_network_errors,
-            LlmErrorKind::ClientError | LlmErrorKind::ParseError => false,
+            // These should not be retried with the same model
+            LlmErrorKind::ClientError | LlmErrorKind::ParseError | LlmErrorKind::IncompatibleModel => false,
         }
     }
 }

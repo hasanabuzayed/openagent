@@ -6,9 +6,12 @@
 //! - Message queue  
 //! - Execution state
 //! - Cancellation token
+//! - Deliverable tracking
+//! - Health monitoring
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -19,7 +22,7 @@ use crate::budget::{Budget, ModelPricing, SharedBenchmarkRegistry, SharedModelRe
 use crate::config::Config;
 use crate::llm::OpenRouterClient;
 use crate::memory::{ContextBuilder, MemorySystem};
-use crate::task::VerificationCriteria;
+use crate::task::{VerificationCriteria, DeliverableSet, extract_deliverables};
 use crate::tools::ToolRegistry;
 
 use super::control::{
@@ -37,6 +40,26 @@ pub enum MissionRunState {
     WaitingForTool,
     /// Finished (check result)
     Finished,
+}
+
+/// Health status of a mission.
+#[derive(Debug, Clone, serde::Serialize)]
+pub enum MissionHealth {
+    /// Mission is progressing normally
+    Healthy,
+    /// Mission may be stalled
+    Stalled {
+        seconds_since_activity: u64,
+        last_state: String,
+    },
+    /// Mission completed without deliverables
+    MissingDeliverables {
+        missing: Vec<String>,
+    },
+    /// Mission ended unexpectedly
+    UnexpectedEnd {
+        reason: String,
+    },
 }
 
 /// A message queued for this mission.
@@ -75,6 +98,15 @@ pub struct MissionRunner {
     
     /// Progress snapshot for this mission
     pub progress_snapshot: Arc<RwLock<ExecutionProgress>>,
+    
+    /// Expected deliverables extracted from the initial message
+    pub deliverables: DeliverableSet,
+    
+    /// Last activity timestamp for health monitoring
+    pub last_activity: Instant,
+    
+    /// Whether complete_mission was explicitly called
+    pub explicitly_completed: bool,
 }
 
 impl MissionRunner {
@@ -90,6 +122,9 @@ impl MissionRunner {
             running_handle: None,
             tree_snapshot: Arc::new(RwLock::new(None)),
             progress_snapshot: Arc::new(RwLock::new(ExecutionProgress::default())),
+            deliverables: DeliverableSet::default(),
+            last_activity: Instant::now(),
+            explicitly_completed: false,
         }
     }
     
@@ -101,6 +136,49 @@ impl MissionRunner {
     /// Check if this runner has finished.
     pub fn is_finished(&self) -> bool {
         matches!(self.state, MissionRunState::Finished)
+    }
+    
+    /// Update the last activity timestamp.
+    pub fn touch(&mut self) {
+        self.last_activity = Instant::now();
+    }
+    
+    /// Check the health of this mission.
+    pub async fn check_health(&self) -> MissionHealth {
+        let seconds_since = self.last_activity.elapsed().as_secs();
+        
+        // If running and no activity for 60+ seconds, consider stalled
+        if self.is_running() && seconds_since > 60 {
+            return MissionHealth::Stalled {
+                seconds_since_activity: seconds_since,
+                last_state: format!("{:?}", self.state),
+            };
+        }
+        
+        // If finished without explicit completion and has deliverables, check them
+        if !self.is_running() && !self.explicitly_completed && !self.deliverables.deliverables.is_empty() {
+            let missing = self.deliverables.missing_paths().await;
+            if !missing.is_empty() {
+                return MissionHealth::MissingDeliverables { missing };
+            }
+        }
+        
+        MissionHealth::Healthy
+    }
+    
+    /// Extract deliverables from initial mission message.
+    pub fn set_initial_message(&mut self, message: &str) {
+        self.deliverables = extract_deliverables(message);
+        if !self.deliverables.deliverables.is_empty() {
+            tracing::info!(
+                "Mission {} has {} expected deliverables: {:?}",
+                self.mission_id,
+                self.deliverables.deliverables.len(),
+                self.deliverables.deliverables.iter()
+                    .filter_map(|d| d.path())
+                    .collect::<Vec<_>>()
+            );
+        }
     }
     
     /// Queue a message for this mission.
@@ -208,10 +286,31 @@ impl MissionRunner {
         if handle.is_finished() {
             match handle.await {
                 Ok(result) => {
+                    self.touch(); // Update last activity
                     self.state = MissionRunState::Queued; // Ready for next message
+                    
+                    // Check if complete_mission was called
+                    if result.2.output.contains("Mission marked as") || 
+                       result.2.output.contains("complete_mission") {
+                        self.explicitly_completed = true;
+                    }
+                    
                     // Add to history
                     self.history.push(("user".to_string(), result.1.clone()));
                     self.history.push(("assistant".to_string(), result.2.output.clone()));
+                    
+                    // Log warning if deliverables are missing and task ended
+                    if !self.explicitly_completed && !self.deliverables.deliverables.is_empty() {
+                        let missing = self.deliverables.missing_paths().await;
+                        if !missing.is_empty() {
+                            tracing::warn!(
+                                "Mission {} ended but deliverables are missing: {:?}",
+                                self.mission_id,
+                                missing
+                            );
+                        }
+                    }
+                    
                     Some(result)
                 }
                 Err(e) => {
@@ -261,11 +360,48 @@ async fn run_mission_turn(
     let context_builder = ContextBuilder::new(&config.context, &working_dir);
     let history_context = context_builder.build_history_context(&history);
 
+    // Extract deliverables to include in instructions
+    let deliverable_set = extract_deliverables(&user_message);
+    let deliverable_reminder = if !deliverable_set.deliverables.is_empty() {
+        let paths: Vec<String> = deliverable_set.deliverables.iter()
+            .filter_map(|d| d.path())
+            .map(|p| p.display().to_string())
+            .collect();
+        format!(
+            "\n\n**REQUIRED DELIVERABLES** (do not stop until these exist):\n{}\n",
+            paths.iter().map(|p| format!("- {}", p)).collect::<Vec<_>>().join("\n")
+        )
+    } else {
+        String::new()
+    };
+
+    let is_multi_step = deliverable_set.is_research_task || 
+                        deliverable_set.requires_report ||
+                        user_message.contains("1.") || 
+                        user_message.contains("- ") ||
+                        user_message.to_lowercase().contains("then");
+
+    let multi_step_instructions = if is_multi_step {
+        r#"
+
+**MULTI-STEP TASK RULES:**
+- This task has multiple steps. Complete ALL steps before stopping.
+- After each tool call, ask yourself: "Have I completed the FULL goal?"
+- DO NOT stop after just one step - keep working until ALL deliverables exist.
+- If you made progress but aren't done, continue in the same turn.
+- Only call complete_mission when ALL requested outputs have been created."#
+    } else {
+        ""
+    };
+
     let mut convo = String::new();
     convo.push_str(&history_context);
     convo.push_str("User:\n");
     convo.push_str(&user_message);
-    convo.push_str("\n\nInstructions:\n- Continue the conversation helpfully.\n- You may use tools to gather information or make changes.\n- When appropriate, use Tool UI tools (ui_*) for structured output or to ask for user selections.\n- For large data processing tasks (>10KB), use run_command to execute Python scripts rather than processing inline.\n- When you have fully completed the user's goal or determined it cannot be completed, use the complete_mission tool to mark the mission status.\n");
+    convo.push_str(&deliverable_reminder);
+    convo.push_str("\n\nInstructions:\n- Continue the conversation helpfully.\n- You may use tools to gather information or make changes.\n- When appropriate, use Tool UI tools (ui_*) for structured output or to ask for user selections.\n- For large data processing tasks (>10KB), use run_command to execute Python scripts rather than processing inline.\n- USE information already provided in the message - do not ask for URLs, paths, or details that were already given.\n- When you have fully completed the user's goal or determined it cannot be completed, use the complete_mission tool to mark the mission status.");
+    convo.push_str(multi_step_instructions);
+    convo.push_str("\n");
 
     let budget = Budget::new(1000);
     let verification = VerificationCriteria::None;
@@ -320,6 +456,8 @@ pub struct RunningMissionInfo {
     pub state: String,
     pub queue_len: usize,
     pub history_len: usize,
+    pub seconds_since_activity: u64,
+    pub expected_deliverables: usize,
 }
 
 impl From<&MissionRunner> for RunningMissionInfo {
@@ -335,6 +473,8 @@ impl From<&MissionRunner> for RunningMissionInfo {
             },
             queue_len: runner.queue.len(),
             history_len: runner.history.len(),
+            seconds_since_activity: runner.last_activity.elapsed().as_secs(),
+            expected_deliverables: runner.deliverables.deliverables.len(),
         }
     }
 }

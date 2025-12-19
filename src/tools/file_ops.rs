@@ -143,7 +143,59 @@ impl Tool for WriteFile {
 
         tokio::fs::write(&full_path, content).await?;
 
-        Ok(format!("Successfully wrote {} bytes to {}", content.len(), path))
+        // Verify write by reading back
+        let written = tokio::fs::read_to_string(&full_path).await?;
+        if written.len() != content.len() {
+            return Err(anyhow::anyhow!(
+                "Write verification failed: expected {} bytes, got {}",
+                content.len(),
+                written.len()
+            ));
+        }
+
+        // Check for potential truncation indicators
+        let mut warnings = Vec::new();
+        
+        // Check if content appears truncated (common patterns)
+        let content_trimmed = content.trim();
+        
+        // Markdown with unclosed code blocks
+        let code_block_count = content.matches("```").count();
+        if code_block_count % 2 != 0 {
+            warnings.push("Content has unclosed code block (odd number of ```)");
+        }
+        
+        // Sentence cut off mid-word (ends with letter, no punctuation)
+        if !content_trimmed.is_empty() {
+            let last_char = content_trimmed.chars().last().unwrap();
+            if last_char.is_alphabetic() && !content_trimmed.ends_with("etc") {
+                let last_line = content_trimmed.lines().last().unwrap_or("");
+                // Check if last line looks incomplete (short and no punctuation)
+                if last_line.len() < 80 && !last_line.ends_with(|c: char| c.is_ascii_punctuation()) {
+                    warnings.push("Content may be truncated (ends mid-sentence)");
+                }
+            }
+        }
+        
+        // Markdown headings without content after them
+        if content_trimmed.ends_with('#') || content_trimmed.ends_with("##") || content_trimmed.ends_with("###") {
+            warnings.push("Content ends with empty heading");
+        }
+
+        let mut result = format!("Successfully wrote {} bytes to {}", content.len(), path);
+        
+        if !warnings.is_empty() {
+            result.push_str("\n\n⚠️ **POTENTIAL TRUNCATION WARNINGS:**\n");
+            for warning in &warnings {
+                result.push_str(&format!("- {}\n", warning));
+            }
+            result.push_str("\nIf the content appears incomplete, consider:\n");
+            result.push_str("1. Re-generating the content in smaller sections\n");
+            result.push_str("2. Using append_file to add remaining content\n");
+            result.push_str("3. Verifying with read_file that the output is complete");
+        }
+
+        Ok(result)
     }
 }
 
