@@ -523,11 +523,14 @@ Use `search_memory` when you encounter a problem you might have solved before or
             if let Some(tool_calls) = &response.tool_calls {
                 if !tool_calls.is_empty() {
                     // Add assistant message with tool calls
+                    // IMPORTANT: Preserve reasoning blocks for "thinking" models (Gemini 3, etc.)
+                    // These contain thought_signature that must be sent back for continuations.
                     messages.push(ChatMessage {
                         role: Role::Assistant,
                         content: response.content.clone().map(MessageContent::text),
                         tool_calls: Some(tool_calls.clone()),
                         tool_call_id: None,
+                        reasoning: response.reasoning.clone(),
                     });
 
                     // Check for repetitive actions
@@ -715,6 +718,7 @@ Use `search_memory` when you encounter a problem you might have solved before or
                             content: Some(message_content),
                             tool_calls: None,
                             tool_call_id: Some(tool_call.id.clone()),
+                            reasoning: None, // Tool results don't have reasoning
                         });
                     }
 

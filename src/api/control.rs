@@ -27,7 +27,7 @@ use crate::agents::{AgentContext, AgentRef};
 use crate::budget::{Budget, ModelPricing};
 use crate::config::Config;
 use crate::llm::OpenRouterClient;
-use crate::memory::{ContextBuilder, MissionMessage, MemorySystem};
+use crate::memory::{ContextBuilder, MemorySystem, MissionMessage};
 use crate::task::VerificationCriteria;
 use crate::tools::ToolRegistry;
 
@@ -221,7 +221,10 @@ impl AgentEvent {
 /// Internal control commands (queued and processed by the actor).
 #[derive(Debug)]
 pub enum ControlCommand {
-    UserMessage { id: Uuid, content: String },
+    UserMessage {
+        id: Uuid,
+        content: String,
+    },
     ToolResult {
         tool_call_id: String,
         name: String,
@@ -229,11 +232,20 @@ pub enum ControlCommand {
     },
     Cancel,
     /// Load a mission (switch to it)
-    LoadMission { id: Uuid, respond: oneshot::Sender<Result<Mission, String>> },
+    LoadMission {
+        id: Uuid,
+        respond: oneshot::Sender<Result<Mission, String>>,
+    },
     /// Create a new mission
-    CreateMission { respond: oneshot::Sender<Result<Mission, String>> },
+    CreateMission {
+        respond: oneshot::Sender<Result<Mission, String>>,
+    },
     /// Update mission status
-    SetMissionStatus { id: Uuid, status: MissionStatus, respond: oneshot::Sender<Result<(), String>> },
+    SetMissionStatus {
+        id: Uuid,
+        status: MissionStatus,
+        respond: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 // ==================== Mission Types ====================
@@ -303,11 +315,7 @@ impl FrontendToolHub {
     }
 
     /// Resolve a pending tool call by id.
-    pub async fn resolve(
-        &self,
-        tool_call_id: &str,
-        result: serde_json::Value,
-    ) -> Result<(), ()> {
+    pub async fn resolve(&self, tool_call_id: &str, result: serde_json::Value) -> Result<(), ()> {
         let mut pending = self.pending.lock().await;
         let Some(tx) = pending.remove(tool_call_id) else {
             return Err(());
@@ -382,7 +390,12 @@ pub async fn post_message(
         .cmd_tx
         .send(ControlCommand::UserMessage { id, content })
         .await
-        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "control session unavailable".to_string()))?;
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
 
     Ok(Json(ControlMessageResponse { id, queued }))
 }
@@ -411,7 +424,12 @@ pub async fn post_tool_result(
             result: req.result,
         })
         .await
-        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "control session unavailable".to_string()))?;
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -425,7 +443,12 @@ pub async fn post_cancel(
         .cmd_tx
         .send(ControlCommand::Cancel)
         .await
-        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "control session unavailable".to_string()))?;
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -436,30 +459,39 @@ pub async fn list_missions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Mission>>, (StatusCode, String)> {
     let mem = state.memory.as_ref().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, "Memory not configured".to_string())
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Memory not configured".to_string(),
+        )
     })?;
-    
-    let db_missions = mem.supabase.list_missions(50, 0).await
+
+    let db_missions = mem
+        .supabase
+        .list_missions(50, 0)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    
-    let missions: Vec<Mission> = db_missions.into_iter().map(|m| {
-        let history: Vec<MissionHistoryEntry> = serde_json::from_value(m.history.clone())
-            .unwrap_or_default();
-        let status = match m.status.as_str() {
-            "completed" => MissionStatus::Completed,
-            "failed" => MissionStatus::Failed,
-            _ => MissionStatus::Active,
-        };
-        Mission {
-            id: m.id,
-            status,
-            title: m.title,
-            history,
-            created_at: m.created_at,
-            updated_at: m.updated_at,
-        }
-    }).collect();
-    
+
+    let missions: Vec<Mission> = db_missions
+        .into_iter()
+        .map(|m| {
+            let history: Vec<MissionHistoryEntry> =
+                serde_json::from_value(m.history.clone()).unwrap_or_default();
+            let status = match m.status.as_str() {
+                "completed" => MissionStatus::Completed,
+                "failed" => MissionStatus::Failed,
+                _ => MissionStatus::Active,
+            };
+            Mission {
+                id: m.id,
+                status,
+                title: m.title,
+                history,
+                created_at: m.created_at,
+                updated_at: m.updated_at,
+            }
+        })
+        .collect();
+
     Ok(Json(missions))
 }
 
@@ -469,21 +501,27 @@ pub async fn get_mission(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Mission>, (StatusCode, String)> {
     let mem = state.memory.as_ref().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, "Memory not configured".to_string())
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Memory not configured".to_string(),
+        )
     })?;
-    
-    let db_mission = mem.supabase.get_mission(id).await
+
+    let db_mission = mem
+        .supabase
+        .get_mission(id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Mission {} not found", id)))?;
-    
-    let history: Vec<MissionHistoryEntry> = serde_json::from_value(db_mission.history.clone())
-        .unwrap_or_default();
+
+    let history: Vec<MissionHistoryEntry> =
+        serde_json::from_value(db_mission.history.clone()).unwrap_or_default();
     let status = match db_mission.status.as_str() {
         "completed" => MissionStatus::Completed,
         "failed" => MissionStatus::Failed,
         _ => MissionStatus::Active,
     };
-    
+
     Ok(Json(Mission {
         id: db_mission.id,
         status,
@@ -499,14 +537,26 @@ pub async fn create_mission(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Mission>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
-    
-    state.control.cmd_tx
+
+    state
+        .control
+        .cmd_tx
         .send(ControlCommand::CreateMission { respond: tx })
         .await
-        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "control session unavailable".to_string()))?;
-    
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
+
     rx.await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to receive response".to_string()))?
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to receive response".to_string(),
+            )
+        })?
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
@@ -517,14 +567,26 @@ pub async fn load_mission(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Mission>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
-    
-    state.control.cmd_tx
+
+    state
+        .control
+        .cmd_tx
         .send(ControlCommand::LoadMission { id, respond: tx })
         .await
-        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "control session unavailable".to_string()))?;
-    
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
+
     rx.await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to receive response".to_string()))?
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to receive response".to_string(),
+            )
+        })?
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
@@ -536,14 +598,30 @@ pub async fn set_mission_status(
     Json(req): Json<SetMissionStatusRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
-    
-    state.control.cmd_tx
-        .send(ControlCommand::SetMissionStatus { id, status: req.status, respond: tx })
+
+    state
+        .control
+        .cmd_tx
+        .send(ControlCommand::SetMissionStatus {
+            id,
+            status: req.status,
+            respond: tx,
+        })
         .await
-        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "control session unavailable".to_string()))?;
-    
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
+
     rx.await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Failed to receive response".to_string()))?
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to receive response".to_string(),
+            )
+        })?
         .map(|_| Json(serde_json::json!({ "ok": true })))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
@@ -553,20 +631,26 @@ pub async fn get_current_mission(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Option<Mission>>, (StatusCode, String)> {
     let current_id = state.control.current_mission.read().await.clone();
-    
+
     match current_id {
         Some(id) => {
             let mem = state.memory.as_ref().ok_or_else(|| {
-                (StatusCode::SERVICE_UNAVAILABLE, "Memory not configured".to_string())
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Memory not configured".to_string(),
+                )
             })?;
-            
-            let db_mission = mem.supabase.get_mission(id).await
+
+            let db_mission = mem
+                .supabase
+                .get_mission(id)
+                .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            
+
             match db_mission {
                 Some(m) => {
-                    let history: Vec<MissionHistoryEntry> = serde_json::from_value(m.history.clone())
-                        .unwrap_or_default();
+                    let history: Vec<MissionHistoryEntry> =
+                        serde_json::from_value(m.history.clone()).unwrap_or_default();
                     let status = match m.status.as_str() {
                         "completed" => MissionStatus::Completed,
                         "failed" => MissionStatus::Failed,
@@ -590,17 +674,13 @@ pub async fn get_current_mission(
 
 /// Get current agent tree snapshot (for refresh resilience).
 /// Returns the last emitted tree state, or null if no tree is active.
-pub async fn get_tree(
-    State(state): State<Arc<AppState>>,
-) -> Json<Option<AgentTreeNode>> {
+pub async fn get_tree(State(state): State<Arc<AppState>>) -> Json<Option<AgentTreeNode>> {
     let tree = state.control.current_tree.read().await.clone();
     Json(tree)
 }
 
 /// Get current execution progress (for progress indicator).
-pub async fn get_progress(
-    State(state): State<Arc<AppState>>,
-) -> Json<ExecutionProgress> {
+pub async fn get_progress(State(state): State<Arc<AppState>>) -> Json<ExecutionProgress> {
     let progress = state.control.progress.read().await.clone();
     Json(progress)
 }
@@ -655,7 +735,7 @@ pub async fn stream(
     Ok(Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()
             .interval(std::time::Duration::from_secs(15))
-            .text("keepalive")
+            .text("keepalive"),
     ))
 }
 
@@ -675,9 +755,10 @@ pub fn spawn_control_session(
         queue_len: 0,
     }));
     let current_mission = Arc::new(RwLock::new(None));
-    
+
     // Channel for agent-initiated mission control commands
-    let (mission_cmd_tx, mission_cmd_rx) = mpsc::channel::<crate::tools::mission::MissionControlCommand>(64);
+    let (mission_cmd_tx, mission_cmd_rx) =
+        mpsc::channel::<crate::tools::mission::MissionControlCommand>(64);
 
     let current_tree = Arc::new(RwLock::new(None));
     let progress = Arc::new(RwLock::new(ExecutionProgress::default()));
@@ -732,7 +813,8 @@ async fn control_actor_loop(
     let mut history: Vec<(String, String)> = Vec::new(); // (role, content) pairs (user/assistant)
     let pricing = Arc::new(ModelPricing::new());
 
-    let mut running: Option<tokio::task::JoinHandle<(Uuid, String, crate::agents::AgentResult)>> = None;
+    let mut running: Option<tokio::task::JoinHandle<(Uuid, String, crate::agents::AgentResult)>> =
+        None;
     let mut running_cancel: Option<CancellationToken> = None;
 
     // Helper to extract file paths from text (for mission summaries)
@@ -740,9 +822,10 @@ async fn control_actor_loop(
         let mut paths = Vec::new();
         // Match common file path patterns
         for word in text.split_whitespace() {
-            let word = word.trim_matches(|c| c == '`' || c == '\'' || c == '"' || c == ',' || c == ':');
-            if (word.starts_with('/') || word.starts_with("./")) 
-                && word.len() > 3 
+            let word =
+                word.trim_matches(|c| c == '`' || c == '\'' || c == '"' || c == ',' || c == ':');
+            if (word.starts_with('/') || word.starts_with("./"))
+                && word.len() > 3
                 && !word.contains("http")
                 && word.chars().filter(|c| *c == '/').count() >= 1
             {
@@ -752,7 +835,7 @@ async fn control_actor_loop(
         }
         paths
     }
-    
+
     // Helper to persist history to current mission
     async fn persist_mission_history(
         memory: &Option<MemorySystem>,
@@ -761,7 +844,8 @@ async fn control_actor_loop(
     ) {
         let mission_id = current_mission.read().await.clone();
         if let (Some(mem), Some(mid)) = (memory, mission_id) {
-            let messages: Vec<MissionMessage> = history.iter()
+            let messages: Vec<MissionMessage> = history
+                .iter()
                 .map(|(role, content)| MissionMessage {
                     role: role.clone(),
                     content: content.clone(),
@@ -770,7 +854,7 @@ async fn control_actor_loop(
             if let Err(e) = mem.supabase.update_mission_history(mid, &messages).await {
                 tracing::warn!("Failed to persist mission history: {}", e);
             }
-            
+
             // Update title from first user message if not set
             if history.len() == 2 {
                 if let Some((role, content)) = history.first() {
@@ -795,18 +879,21 @@ async fn control_actor_loop(
         id: Uuid,
     ) -> Result<Mission, String> {
         let mem = memory.as_ref().ok_or("Memory not configured")?;
-        let db_mission = mem.supabase.get_mission(id).await
+        let db_mission = mem
+            .supabase
+            .get_mission(id)
+            .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Mission {} not found", id))?;
-        
-        let history: Vec<MissionHistoryEntry> = serde_json::from_value(db_mission.history.clone())
-            .unwrap_or_default();
+
+        let history: Vec<MissionHistoryEntry> =
+            serde_json::from_value(db_mission.history.clone()).unwrap_or_default();
         let status = match db_mission.status.as_str() {
             "completed" => MissionStatus::Completed,
             "failed" => MissionStatus::Failed,
             _ => MissionStatus::Active,
         };
-        
+
         Ok(Mission {
             id: db_mission.id,
             status,
@@ -818,13 +905,14 @@ async fn control_actor_loop(
     }
 
     // Helper to create a new mission
-    async fn create_new_mission(
-        memory: &Option<MemorySystem>,
-    ) -> Result<Mission, String> {
+    async fn create_new_mission(memory: &Option<MemorySystem>) -> Result<Mission, String> {
         let mem = memory.as_ref().ok_or("Memory not configured")?;
-        let db_mission = mem.supabase.create_mission(None).await
+        let db_mission = mem
+            .supabase
+            .create_mission(None)
+            .await
             .map_err(|e| e.to_string())?;
-        
+
         Ok(Mission {
             id: db_mission.id,
             status: MissionStatus::Active,
@@ -851,7 +939,7 @@ async fn control_actor_loop(
                                 }
                             }
                         }
-                        
+
                         queue.push_back((id, content));
                         set_and_emit_status(
                             &status,
@@ -924,7 +1012,7 @@ async fn control_actor_loop(
                     ControlCommand::LoadMission { id, respond } => {
                         // First persist current mission history
                         persist_mission_history(&memory, &current_mission, &history).await;
-                        
+
                         // Load the new mission
                         match load_mission_from_db(&memory, id).await {
                             Ok(mission) => {
@@ -943,7 +1031,7 @@ async fn control_actor_loop(
                     ControlCommand::CreateMission { respond } => {
                         // First persist current mission history
                         persist_mission_history(&memory, &current_mission, &history).await;
-                        
+
                         // Create a new mission
                         match create_new_mission(&memory).await {
                             Ok(mission) => {
@@ -986,7 +1074,7 @@ async fn control_actor_loop(
                                     crate::tools::mission::MissionStatusValue::Failed => MissionStatus::Failed,
                                 };
                                 let success = matches!(status, crate::tools::mission::MissionStatusValue::Completed);
-                                
+
                                 if let Some(mem) = &memory {
                                     if let Ok(()) = mem.supabase.update_mission_status(id, &new_status.to_string()).await {
                                         // Generate and store mission summary
@@ -997,10 +1085,10 @@ async fn control_actor_loop(
                                                 .flat_map(|(_, content)| extract_file_paths(content))
                                                 .take(10)
                                                 .collect();
-                                            
+
                                             // Generate embedding for the summary
                                             let embedding = mem.embedder.embed(summary_text).await.ok();
-                                            
+
                                             // Store mission summary
                                             if let Err(e) = mem.supabase.insert_mission_summary(
                                                 id,
@@ -1015,7 +1103,7 @@ async fn control_actor_loop(
                                                 tracing::info!("Stored mission summary for {}", id);
                                             }
                                         }
-                                        
+
                                         let _ = events_tx.send(AgentEvent::MissionStatusChanged {
                                             mission_id: id,
                                             status: new_status,
@@ -1134,7 +1222,7 @@ async fn run_single_control_turn(
     let working_dir = config.working_dir.to_string_lossy().to_string();
     let context_builder = ContextBuilder::new(&config.context, &working_dir);
     let history_context = context_builder.build_history_context(&history);
-    
+
     let mut convo = String::new();
     convo.push_str(&history_context);
     convo.push_str("User:\n");
@@ -1153,12 +1241,12 @@ async fn run_single_control_turn(
 
     // Context for agent execution.
     let llm = Arc::new(OpenRouterClient::new(config.api_key.clone()));
-    
+
     // Create shared memory reference for memory tools
-    let shared_memory: Option<crate::tools::memory::SharedMemory> = memory.as_ref().map(|m| {
-        Arc::new(tokio::sync::RwLock::new(Some(m.clone())))
-    });
-    
+    let shared_memory: Option<crate::tools::memory::SharedMemory> = memory
+        .as_ref()
+        .map(|m| Arc::new(tokio::sync::RwLock::new(Some(m.clone()))));
+
     let tools = ToolRegistry::with_options(mission_control.clone(), shared_memory);
     let mut ctx = AgentContext::with_memory(
         config.clone(),
@@ -1181,4 +1269,3 @@ async fn run_single_control_turn(
     let result = root_agent.execute(&mut task, &ctx).await;
     result
 }
-

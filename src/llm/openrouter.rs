@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use super::error::{classify_http_status, LlmError, LlmErrorKind, RetryConfig};
 use super::{
-    ChatMessage, ChatOptions, ChatResponse, LlmClient, TokenUsage, ToolCall, ToolDefinition,
+    ChatMessage, ChatOptions, ChatResponse, LlmClient, ReasoningContent, TokenUsage, ToolCall,
+    ToolDefinition,
 };
 
 const OPENROUTER_API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -110,6 +111,14 @@ impl OpenRouterClient {
             .next()
             .ok_or_else(|| LlmError::parse_error("No choices in response".to_string()))?;
 
+        // Log if we received reasoning blocks (for debugging thinking models)
+        if choice.message.reasoning.is_some() {
+            tracing::debug!(
+                "Received {} reasoning blocks from model",
+                choice.message.reasoning.as_ref().map_or(0, |r| r.len())
+            );
+        }
+
         Ok(ChatResponse {
             content: choice.message.content,
             tool_calls: choice.message.tool_calls,
@@ -118,6 +127,7 @@ impl OpenRouterClient {
                 .usage
                 .map(|u| TokenUsage::new(u.prompt_tokens, u.completion_tokens)),
             model: parsed.model.or_else(|| Some(request.model.clone())),
+            reasoning: choice.message.reasoning,
         })
     }
 
@@ -278,6 +288,10 @@ struct OpenRouterChoice {
 struct OpenRouterMessage {
     content: Option<String>,
     tool_calls: Option<Vec<ToolCall>>,
+    /// Reasoning blocks from "thinking" models (Gemini 3, etc.)
+    /// Contains thought_signature that must be preserved for tool call continuations.
+    #[serde(default)]
+    reasoning: Option<Vec<ReasoningContent>>,
 }
 
 /// Usage data (OpenAI-compatible).

@@ -81,6 +81,33 @@ pub enum MessageContent {
     Parts(Vec<ContentPart>),
 }
 
+/// Reasoning content block from "thinking" models (e.g., Gemini 3, Claude with extended thinking).
+/// 
+/// These blocks contain the model's internal reasoning and must be preserved in subsequent
+/// requests when using tool calls. The `thought_signature` is an encrypted hash that allows
+/// the model to resume its chain of thought.
+/// 
+/// Reference: https://openrouter.ai/docs/use-cases/reasoning-tokens
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReasoningContent {
+    /// The reasoning/thinking content (may be redacted or empty for some models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Encrypted thought signature for resuming reasoning (required for Gemini)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
+    /// Type of reasoning block (typically "thinking")
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub reasoning_type: Option<String>,
+}
+
+impl ReasoningContent {
+    /// Check if this reasoning block has a thought signature that needs preservation.
+    pub fn needs_preservation(&self) -> bool {
+        self.thought_signature.is_some()
+    }
+}
+
 impl MessageContent {
     /// Create simple text content.
     pub fn text(text: impl Into<String>) -> Self {
@@ -122,6 +149,10 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Reasoning/thinking content for "thinking" models (Gemini 3, etc.).
+    /// Must be preserved and sent back in subsequent requests when using tool calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<Vec<ReasoningContent>>,
 }
 
 impl ChatMessage {
@@ -132,6 +163,7 @@ impl ChatMessage {
             content: Some(MessageContent::text(content)),
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
         }
     }
 
@@ -142,12 +174,31 @@ impl ChatMessage {
             content: Some(MessageContent::text_and_image(text, image_url)),
             tool_calls: None,
             tool_call_id: None,
+            reasoning: None,
         }
     }
 
     /// Get the text content of this message.
     pub fn text_content(&self) -> Option<&str> {
         self.content.as_ref().and_then(|c| c.as_text())
+    }
+
+    /// Attach reasoning content to this message (for thinking models).
+    /// 
+    /// This should be called when preserving an assistant message that included
+    /// reasoning blocks, so they can be sent back in subsequent requests.
+    pub fn with_reasoning(mut self, reasoning: Vec<ReasoningContent>) -> Self {
+        if !reasoning.is_empty() {
+            self.reasoning = Some(reasoning);
+        }
+        self
+    }
+
+    /// Check if this message has reasoning content that needs preservation.
+    pub fn has_reasoning(&self) -> bool {
+        self.reasoning.as_ref().map_or(false, |r| {
+            r.iter().any(|rc| rc.needs_preservation())
+        })
     }
 }
 
@@ -193,6 +244,9 @@ pub struct ChatResponse {
     pub finish_reason: Option<String>,
     pub usage: Option<TokenUsage>,
     pub model: Option<String>,
+    /// Reasoning/thinking content from "thinking" models.
+    /// Must be preserved and included in subsequent requests for tool call continuations.
+    pub reasoning: Option<Vec<ReasoningContent>>,
 }
 
 /// Token usage information (if provided by the upstream provider).
