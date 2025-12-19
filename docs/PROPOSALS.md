@@ -1147,3 +1147,200 @@ Before rerunning the security audit experiment:
 - [ ] Check that AUDIT_REPORT.md mentions "Rabby" not "Vulcan"
 - [ ] Check sources.md manifest was created
 - [ ] Verify no analysis of `/root/context/` files
+
+---
+
+## 9. Session Context Contamination (2025-12-19 Findings)
+
+### Problem Observed
+
+During a Rabby Wallet security audit session, the agent exhibited severe **context contamination**:
+
+1. **Cross-mission bleeding**: When starting a new Rabby audit, the agent kept analyzing Oraxen (a previous mission's target) despite explicit instructions
+2. **Wrong file paths**: Agent searched `/root/work/oraxen-folia/` when told to search `/root/work/rabby_analysis/`
+3. **Mixed reports**: Generated "Security Audit Report: Oraxen" when the mission was explicitly about Rabby Wallet
+4. **Repeated failures**: Required 4+ attempts with increasingly explicit prompts before the agent correctly targeted Rabby
+
+### Root Causes
+
+1. **Mission history accumulation**: Multiple missions from the same day accumulated in the database, their context bleeding into new prompts
+2. **No context isolation**: The `ContextBuilder` injects past task chunks and mission summaries without scoping to the current mission's domain
+3. **Working directory pollution**: `/root/work/` had 40+ directories from various missions, confusing the agent about which project to analyze
+4. **Stale mission queue**: Mission runner had 3 queued messages that never got processed, causing the service to appear stuck
+
+### Other Issues Observed
+
+| Issue | Symptom | Root Cause |
+|-------|---------|------------|
+| **Premature completion** | Agent called `complete_mission` after creating directories without doing actual work | System prompt not strong enough about deliverable requirements |
+| **Queue stall** | `queue_len: 3, state: running` but no log output | Possible deadlock in mission runner async loop |
+| **Model confusion** | Used GPT-4.1-mini for subtasks when Gemini was requested | Model override only applied to top-level, not delegated subtasks |
+
+### Proposed Fixes
+
+#### 9.1 Mission Domain Scoping
+
+Add explicit "domain" or "target" field to missions that restricts tool operations:
+
+```rust
+pub struct Mission {
+    // ... existing fields ...
+    
+    /// Restrict file operations to this path prefix
+    pub workspace_root: Option<PathBuf>,
+    
+    /// Keywords that should appear in search results (for relevance filtering)  
+    pub domain_keywords: Vec<String>,
+}
+```
+
+Tool implementations would then filter/warn on operations outside the workspace:
+
+```rust
+// In file_ops.rs
+if let Some(workspace) = context.mission_workspace() {
+    if !path.starts_with(workspace) {
+        warn!("Operation on path {} outside mission workspace {}", path, workspace);
+    }
+}
+```
+
+#### 9.2 Context Retrieval Scoping
+
+Modify `ContextBuilder::build_memory_context()` to filter past chunks by mission domain:
+
+```rust
+// Only inject chunks from missions with similar titles/keywords
+let relevant_chunks = retriever
+    .search(query, limit)
+    .await?
+    .into_iter()
+    .filter(|chunk| chunk.mission_keywords.intersects(&current_mission.domain_keywords))
+    .collect();
+```
+
+#### 9.3 Automatic Workspace Cleanup
+
+Add cleanup hooks to mission lifecycle:
+
+```rust
+impl MissionRunner {
+    pub async fn on_mission_complete(&mut self) {
+        // Archive work directory
+        let archive_path = format!("/root/archive/{}-{}", 
+            self.mission.id, 
+            chrono::Utc::now().format("%Y%m%d"));
+        fs::rename(&self.work_dir, &archive_path).await?;
+    }
+}
+```
+
+#### 9.4 Model Override Propagation
+
+Ensure model override flows to all child agents:
+
+```rust
+// In RootAgent::delegate_subtask
+let child_config = TaskConfig {
+    model: self.model_override.clone().or(parent_config.model),
+    // ... other fields
+};
+```
+
+#### 9.5 Queue Health Monitoring
+
+Add watchdog to detect and recover from stalled queues:
+
+```rust
+impl MissionRunner {
+    /// Check if the queue is stalled (messages waiting but no activity)
+    pub fn is_stalled(&self, threshold_secs: u64) -> bool {
+        !self.queue.is_empty() 
+            && self.last_activity.elapsed().as_secs() > threshold_secs
+    }
+}
+
+// In control loop
+if runner.is_stalled(120) {
+    warn!("Mission {} queue stalled, attempting recovery", runner.mission.id);
+    // Force wake or restart the execution loop
+}
+```
+
+### Immediate Mitigations (Done)
+
+1. ✅ Cleaned `/root/work/` to only contain essential directories
+2. ✅ Marked all stale missions as `failed` in database
+3. ✅ Restarted service with clean state
+
+### Recommended Future Work
+
+| Priority | Task | Effort |
+|----------|------|--------|
+| **High** | Add `workspace_root` to missions, validate in tools | 2-4 hours |
+| **High** | Propagate model override to child agents | 1 hour |
+| **Medium** | Add queue stall detection + recovery | 2 hours |
+| **Medium** | Auto-archive completed mission work dirs | 1-2 hours |
+| **Low** | Domain-scoped context retrieval | 4-6 hours |
+
+---
+
+## 10. Mission Runner Reliability
+
+### Observed Issues
+
+1. **Silent stalls**: Mission shows `state: running` but no execution logs
+2. **Queue accumulation**: Multiple messages queue up but aren't processed
+3. **No timeout**: Missions can run indefinitely without progress
+
+### Proposed: Mission Health Watchdog
+
+```rust
+pub struct MissionWatchdog {
+    check_interval: Duration,
+    stall_threshold: Duration,
+    max_mission_duration: Duration,
+}
+
+impl MissionWatchdog {
+    pub async fn monitor(&self, runner: &MissionRunner) -> WatchdogAction {
+        let elapsed = runner.start_time.elapsed();
+        let since_activity = runner.last_activity.elapsed();
+        
+        if elapsed > self.max_mission_duration {
+            return WatchdogAction::ForceComplete {
+                reason: "Exceeded maximum duration",
+            };
+        }
+        
+        if since_activity > self.stall_threshold && !runner.queue.is_empty() {
+            return WatchdogAction::RestartExecution {
+                reason: "Queue stalled",
+            };
+        }
+        
+        WatchdogAction::Continue
+    }
+}
+```
+
+### Proposed: Execution Receipts
+
+Log every state transition for debugging:
+
+```rust
+#[derive(Debug, Serialize)]
+pub struct ExecutionReceipt {
+    timestamp: DateTime<Utc>,
+    mission_id: Uuid,
+    event: ExecutionEvent,
+}
+
+pub enum ExecutionEvent {
+    MessageQueued { message_id: Uuid },
+    ExecutionStarted { iteration: u32 },
+    ToolCallMade { tool: String, duration_ms: u64 },
+    ToolCallCompleted { tool: String, success: bool },
+    ExecutionCompleted { result: String },
+    ErrorOccurred { error: String },
+}

@@ -288,6 +288,8 @@ pub enum ControlCommand {
     StartParallel {
         mission_id: Uuid,
         content: String,
+        /// Model override from API request (takes priority over DB)
+        model: Option<String>,
         respond: oneshot::Sender<Result<(), String>>,
     },
     /// Cancel a specific mission
@@ -802,6 +804,9 @@ pub async fn list_running_missions(
 #[derive(Debug, Deserialize)]
 pub struct StartParallelRequest {
     pub content: String,
+    /// Optional model override for this parallel mission
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Start a mission in parallel (if capacity allows).
@@ -818,6 +823,7 @@ pub async fn start_mission_parallel(
         .send(ControlCommand::StartParallel {
             mission_id,
             content: req.content,
+            model: req.model,
             respond: tx,
         })
         .await
@@ -1356,15 +1362,15 @@ async fn control_actor_loop(
                             let _ = respond.send(Err("Memory not configured".to_string()));
                         }
                     }
-                    ControlCommand::StartParallel { mission_id, content, respond } => {
-                        tracing::info!("StartParallel requested for mission {}", mission_id);
-                        
+                    ControlCommand::StartParallel { mission_id, content, model, respond } => {
+                        tracing::info!("StartParallel requested for mission {} with model {:?}", mission_id, model);
+
                         // Count currently running parallel missions
                         let parallel_running = parallel_runners.values().filter(|r| r.is_running()).count();
                         let main_running = if running.is_some() { 1 } else { 0 };
                         let total_running = parallel_running + main_running;
                         let max_parallel = config.max_parallel_missions;
-                        
+
                         if total_running >= max_parallel {
                             let _ = respond.send(Err(format!(
                                 "Maximum parallel missions ({}) reached. {} running.",
@@ -1376,8 +1382,8 @@ async fn control_actor_loop(
                                 mission_id
                             )));
                         } else {
-                            // Load mission to get model_override
-                            let model_override = match load_mission_from_db(&memory, mission_id).await {
+                            // Load mission to get DB model_override as fallback
+                            let db_model = match load_mission_from_db(&memory, mission_id).await {
                                 Ok(m) => m.model_override,
                                 Err(e) => {
                                     let _ = respond.send(Err(format!("Failed to load mission: {}", e)));
@@ -1385,6 +1391,9 @@ async fn control_actor_loop(
                                 }
                             };
                             
+                            // Request model takes priority over DB model
+                            let model_override = model.or(db_model);
+
                             // Create a new MissionRunner
                             let mut runner = super::mission_runner::MissionRunner::new(
                                 mission_id,
