@@ -789,16 +789,17 @@ pub fn spawn_control_session(
         progress: Arc::clone(&progress),
     };
 
+    // Spawn the main control actor
     tokio::spawn(control_actor_loop(
-        config,
+        config.clone(),
         root_agent,
-        memory,
+        memory.clone(),
         benchmarks,
         resolver,
         cmd_rx,
         mission_cmd_rx,
         mission_cmd_tx,
-        events_tx,
+        events_tx.clone(),
         tool_hub,
         status,
         current_mission,
@@ -806,7 +807,67 @@ pub fn spawn_control_session(
         progress,
     ));
 
+    // Spawn background stale mission cleanup task (if enabled)
+    if config.stale_mission_hours > 0 {
+        if let Some(mem) = memory {
+            tokio::spawn(stale_mission_cleanup_loop(
+                mem,
+                config.stale_mission_hours,
+                events_tx,
+            ));
+        }
+    }
+
     state
+}
+
+/// Background task that periodically closes stale missions.
+async fn stale_mission_cleanup_loop(
+    memory: MemorySystem,
+    stale_hours: u64,
+    events_tx: broadcast::Sender<AgentEvent>,
+) {
+    // Check every hour
+    let check_interval = std::time::Duration::from_secs(3600);
+    
+    tracing::info!(
+        "Stale mission cleanup task started: closing missions inactive for {} hours",
+        stale_hours
+    );
+    
+    loop {
+        tokio::time::sleep(check_interval).await;
+        
+        match memory.supabase.get_stale_active_missions(stale_hours).await {
+            Ok(stale_missions) => {
+                for mission in stale_missions {
+                    tracing::info!(
+                        "Auto-closing stale mission {}: '{}' (inactive since {})",
+                        mission.id,
+                        mission.title.as_deref().unwrap_or("Untitled"),
+                        mission.updated_at
+                    );
+                    
+                    if let Err(e) = memory.supabase.update_mission_status(mission.id, "completed").await {
+                        tracing::warn!("Failed to auto-close stale mission {}: {}", mission.id, e);
+                    } else {
+                        // Notify listeners
+                        let _ = events_tx.send(AgentEvent::MissionStatusChanged {
+                            mission_id: mission.id,
+                            status: MissionStatus::Completed,
+                            summary: Some(format!(
+                                "Auto-closed after {} hours of inactivity",
+                                stale_hours
+                            )),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check for stale missions: {}", e);
+            }
+        }
+    }
 }
 
 async fn control_actor_loop(

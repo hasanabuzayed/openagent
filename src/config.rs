@@ -223,6 +223,9 @@ pub struct Config {
     /// Maximum iterations for the agent loop
     pub max_iterations: usize,
     
+    /// Hours of inactivity after which an active mission is auto-closed (0 = disabled)
+    pub stale_mission_hours: u64,
+    
     /// Development mode (disables auth; more permissive defaults)
     pub dev_mode: bool,
 
@@ -337,6 +340,13 @@ impl Config {
             .parse()
             .map_err(|e| ConfigError::InvalidValue("MAX_ITERATIONS".to_string(), format!("{}", e)))?;
 
+        // Hours of inactivity after which an active mission is auto-closed
+        // Default: 24 hours. Set to 0 to disable.
+        let stale_mission_hours = std::env::var("STALE_MISSION_HOURS")
+            .unwrap_or_else(|_| "24".to_string())
+            .parse()
+            .map_err(|e| ConfigError::InvalidValue("STALE_MISSION_HOURS".to_string(), format!("{}", e)))?;
+
         let dev_mode = std::env::var("DEV_MODE")
             .ok()
             .map(|v| parse_bool(&v).map_err(|e| ConfigError::InvalidValue("DEV_MODE".to_string(), e)))
@@ -402,6 +412,7 @@ impl Config {
             host,
             port,
             max_iterations,
+            stale_mission_hours,
             dev_mode,
             auth,
             console_ssh,
@@ -423,6 +434,7 @@ impl Config {
             host: "127.0.0.1".to_string(),
             port: 3000,
             max_iterations: 50,
+            stale_mission_hours: 24,
             dev_mode: true,
             auth: AuthConfig::default(),
             console_ssh: ConsoleSshConfig::default(),

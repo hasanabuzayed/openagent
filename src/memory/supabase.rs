@@ -573,6 +573,24 @@ impl SupabaseClient {
         Ok(resp.json().await?)
     }
     
+    /// Get active missions that haven't been updated in the specified hours.
+    pub async fn get_stale_active_missions(&self, stale_hours: u64) -> anyhow::Result<Vec<DbMission>> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::hours(stale_hours as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+        
+        let resp = self.client
+            .get(format!(
+                "{}/missions?status=eq.active&updated_at=lt.{}",
+                self.rest_url(), cutoff_str
+            ))
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .send()
+            .await?;
+        
+        Ok(resp.json().await?)
+    }
+    
     /// Update mission status.
     pub async fn update_mission_status(&self, id: Uuid, status: &str) -> anyhow::Result<()> {
         let body = serde_json::json!({
