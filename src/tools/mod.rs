@@ -161,6 +161,8 @@ impl ToolRegistry {
         mission_control: Option<mission::MissionControl>,
         shared_memory: Option<memory::SharedMemory>,
     ) -> Self {
+        let registry_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        tracing::debug!("Creating ToolRegistry {}", registry_id);
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         // File operations
@@ -243,6 +245,7 @@ impl ToolRegistry {
                 "browser_list_elements".to_string(),
                 Arc::new(browser::BrowserListElements),
             );
+            tracing::info!("Registry {}: Added 9 browser tools, total now: {}", registry_id, tools.len());
         }
 
         // Desktop automation (conditional on DESKTOP_ENABLED)
