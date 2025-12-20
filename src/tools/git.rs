@@ -1,26 +1,19 @@
 //! Git operation tools.
 //!
-//! These tools can operate on any git repository on the system.
-//! The repo path can be specified explicitly or defaults to the working directory.
+//! ## Workspace-First Design
+//! 
+//! Git tools operate on the workspace by default:
+//! - `git_status()` → status of workspace repo
+//! - `git_status("subproject/")` → status of nested repo
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-use super::Tool;
-
-/// Resolve a path - if absolute, use as-is; if relative, join with working_dir.
-fn resolve_path(path_str: &str, working_dir: &Path) -> PathBuf {
-    let path = Path::new(path_str);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        working_dir.join(path)
-    }
-}
+use super::{resolve_path_simple as resolve_path, Tool};
 
 /// Get git status.
 pub struct GitStatus;

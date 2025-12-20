@@ -1,25 +1,18 @@
 //! Directory operation tools: list directory, search files by name.
 //!
-//! These tools have full system access - they can browse any directory on the machine.
-//! Paths can be absolute (e.g., `/var/log`) or relative to the working directory.
+//! ## Workspace-First Design
+//! 
+//! These tools work relative to the workspace by default:
+//! - `src/` → lists `{workspace}/src/`
+//! - `/var/log` → absolute path for system directories
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use walkdir::WalkDir;
 
-use super::Tool;
-
-/// Resolve a path - if absolute, use as-is; if relative, join with working_dir.
-fn resolve_path(path_str: &str, working_dir: &Path) -> PathBuf {
-    let path = Path::new(path_str);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        working_dir.join(path)
-    }
-}
+use super::{resolve_path, Tool};
 
 /// List contents of a directory.
 pub struct ListDirectory;
@@ -31,7 +24,7 @@ impl Tool for ListDirectory {
     }
 
     fn description(&self) -> &str {
-        "List files and directories anywhere on the system. Returns a tree-like view of the directory structure."
+        "List files and directories. Use '.' for current workspace, relative paths like 'src/', or absolute paths for system directories."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -40,7 +33,7 @@ impl Tool for ListDirectory {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the directory. Can be absolute (e.g., /var/log) or relative to working directory. Use '.' for working directory."
+                    "description": "Directory path. Use '.' for workspace root, relative paths (e.g., 'src/', 'output/') for subdirectories, or absolute paths for system dirs."
                 },
                 "max_depth": {
                     "type": "integer",
@@ -57,15 +50,17 @@ impl Tool for ListDirectory {
             .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
         let max_depth = args["max_depth"].as_u64().unwrap_or(3) as usize;
 
-        let full_path = resolve_path(path, working_dir);
+        let resolution = resolve_path(path, working_dir);
 
-        if !full_path.exists() {
-            return Err(anyhow::anyhow!("Directory not found: {}", path));
+        if !resolution.resolved.exists() {
+            return Err(anyhow::anyhow!("Directory not found: {} (resolved to: {})", path, resolution.resolved.display()));
         }
 
-        if !full_path.is_dir() {
+        if !resolution.resolved.is_dir() {
             return Err(anyhow::anyhow!("Not a directory: {}", path));
         }
+
+        let full_path = resolution.resolved;
 
         let mut entries = Vec::new();
         let walker = WalkDir::new(&full_path)
@@ -109,7 +104,7 @@ impl Tool for SearchFiles {
     }
 
     fn description(&self) -> &str {
-        "Search for files by name pattern (glob-style) anywhere on the system. Returns matching file paths."
+        "Search for files by name pattern (glob-style). Searches workspace by default, or specify a path."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -122,7 +117,7 @@ impl Tool for SearchFiles {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in. Can be absolute (e.g., /home) or relative to working directory. Defaults to working directory."
+                    "description": "Directory to search in. Defaults to workspace ('.'). Use relative paths or absolute for system-wide search."
                 }
             },
             "required": ["pattern"]
@@ -135,10 +130,11 @@ impl Tool for SearchFiles {
             .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' argument"))?;
         let path = args["path"].as_str().unwrap_or(".");
 
-        let full_path = resolve_path(path, working_dir);
+        let resolution = resolve_path(path, working_dir);
+        let full_path = resolution.resolved;
 
         if !full_path.exists() {
-            return Err(anyhow::anyhow!("Directory not found: {}", path));
+            return Err(anyhow::anyhow!("Directory not found: {} (resolved to: {})", path, full_path.display()));
         }
 
         // Convert glob pattern to simple matching

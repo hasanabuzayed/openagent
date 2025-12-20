@@ -1,26 +1,19 @@
 //! Terminal/shell command execution tool.
 //!
-//! This tool has full system access - it can execute any command on the machine.
-//! The working directory can be specified explicitly or defaults to the agent's working directory.
+//! ## Workspace-First Design
+//! 
+//! Commands run in the workspace by default:
+//! - `run_command("ls")` → lists workspace contents
+//! - `run_command("cat output/report.md")` → reads workspace file
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-use super::Tool;
-
-/// Resolve a path - if absolute, use as-is; if relative, join with working_dir.
-fn resolve_path(path_str: &str, working_dir: &Path) -> PathBuf {
-    let path = Path::new(path_str);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        working_dir.join(path)
-    }
-}
+use super::{resolve_path_simple as resolve_path, Tool};
 
 /// Dangerous command patterns that should be blocked.
 /// These patterns cause infinite loops or could damage the system.
@@ -80,7 +73,7 @@ impl Tool for RunCommand {
     }
 
     fn description(&self) -> &str {
-        "Execute any shell command on the system. Returns stdout and stderr. Use for running tests, installing packages, compiling code, system administration, etc."
+        "Execute a shell command. Runs in workspace by default. Use for tests, builds, package installs, etc."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -89,11 +82,11 @@ impl Tool for RunCommand {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "The shell command to execute. Relative paths in commands resolve from workspace."
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Optional: working directory for the command. Can be absolute (e.g., /var/log) or relative. Defaults to agent's working directory."
+                    "description": "Optional: working directory. Defaults to workspace. Use relative paths (e.g., 'subdir/') or absolute for system access."
                 },
                 "timeout_secs": {
                     "type": "integer",

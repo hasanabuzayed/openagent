@@ -14,17 +14,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use walkdir::WalkDir;
 
-use super::Tool;
-
-/// Resolve a path - if absolute, use as-is; if relative, join with working_dir.
-fn resolve_path(path_str: &str, working_dir: &Path) -> PathBuf {
-    let path = Path::new(path_str);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        working_dir.join(path)
-    }
-}
+use super::{resolve_path_simple as resolve_path, Tool};
 
 fn default_index_dir(working_dir: &Path) -> PathBuf {
     working_dir.join(".open_agent").join("index")

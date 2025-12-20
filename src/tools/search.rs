@@ -1,26 +1,19 @@
 //! Code search tools: grep/regex search.
 //!
-//! These tools have full system access - they can search any directory on the machine.
-//! Paths can be absolute (e.g., `/var/log`) or relative to the working directory.
+//! ## Workspace-First Design
+//! 
+//! Searches workspace by default:
+//! - `grep_search("TODO")` → searches in `{workspace}/`
+//! - `grep_search("error", "/var/log")` → searches system logs
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-use super::Tool;
-
-/// Resolve a path - if absolute, use as-is; if relative, join with working_dir.
-fn resolve_path(path_str: &str, working_dir: &Path) -> PathBuf {
-    let path = Path::new(path_str);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        working_dir.join(path)
-    }
-}
+use super::{resolve_path, Tool};
 
 /// Search file contents with regex/grep.
 pub struct GrepSearch;
@@ -32,7 +25,7 @@ impl Tool for GrepSearch {
     }
 
     fn description(&self) -> &str {
-        "Search for a pattern in file contents anywhere on the system using regex. Returns matching lines with file paths and line numbers. Great for finding function definitions, usages, config values, or specific patterns."
+        "Search for a pattern in file contents using regex. Searches workspace by default. Great for finding function definitions, usages, or patterns."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -45,7 +38,7 @@ impl Tool for GrepSearch {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in. Can be absolute (e.g., /var/log, /etc) or relative to working directory. Defaults to working directory."
+                    "description": "Directory to search. Defaults to workspace ('.'). Use relative paths for subdirectories or absolute for system search."
                 },
                 "file_pattern": {
                     "type": "string",
@@ -68,7 +61,8 @@ impl Tool for GrepSearch {
         let file_pattern = args["file_pattern"].as_str();
         let case_sensitive = args["case_sensitive"].as_bool().unwrap_or(false);
 
-        let search_path = resolve_path(path, working_dir);
+        let resolution = resolve_path(path, working_dir);
+        let search_path = resolution.resolved;
 
         // Try to use ripgrep (rg) if available, fall back to grep
         let mut cmd = if which_exists("rg") {

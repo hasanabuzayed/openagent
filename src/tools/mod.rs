@@ -3,9 +3,14 @@
 //! Tools are the "hands and eyes" of the agent - they allow it to interact with
 //! the entire file system, run commands anywhere, search the machine, and access the web.
 //!
-//! The agent has **full system access** - it can read/write any file, execute any command,
-//! and search anywhere on the machine. The `working_dir` parameter is the default directory
-//! for relative paths (typically `/root` in production).
+//! ## Workspace-First Design
+//! 
+//! Tools are designed to work **relative to the workspace** by default:
+//! - Relative paths (e.g., `output/report.md`) resolve from the workspace directory
+//! - Absolute paths (e.g., `/etc/hosts`) work as an escape hatch for system access
+//! 
+//! This encourages agents to stay within their assigned workspace while preserving
+//! flexibility for tasks that require broader access.
 
 mod desktop;
 mod directory;
@@ -21,8 +26,87 @@ mod ui;
 mod web;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+// ============================================================================
+// Path Resolution Utilities
+// ============================================================================
+
+/// Result of resolving a path relative to the workspace.
+#[derive(Debug, Clone)]
+pub struct PathResolution {
+    /// The original path string provided by the agent.
+    pub original: String,
+    /// The fully resolved absolute path.
+    pub resolved: PathBuf,
+    /// Whether the resolved path is outside the workspace.
+    pub is_outside_workspace: bool,
+    /// Whether the original path was absolute.
+    pub was_absolute: bool,
+}
+
+impl PathResolution {
+    /// Format a note about path resolution for tool output.
+    /// 
+    /// Returns empty string if path was relative and inside workspace (normal case).
+    /// Returns a note if path was absolute or outside workspace.
+    pub fn note(&self) -> String {
+        if self.was_absolute {
+            format!("[absolute path: {}]", self.resolved.display())
+        } else if self.is_outside_workspace {
+            format!("[resolved to: {}]", self.resolved.display())
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// Resolve a path relative to the workspace.
+/// 
+/// - Relative paths are joined with `workspace`
+/// - Absolute paths are used as-is (escape hatch)
+/// 
+/// Returns a `PathResolution` with metadata about the resolution.
+pub fn resolve_path(path_str: &str, workspace: &Path) -> PathResolution {
+    let path = Path::new(path_str);
+    let was_absolute = path.is_absolute();
+    
+    let resolved = if was_absolute {
+        path.to_path_buf()
+    } else {
+        workspace.join(path)
+    };
+    
+    // Canonicalize for accurate comparison (handles .., symlinks, etc.)
+    let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+    let canonical_workspace = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    
+    let is_outside_workspace = !canonical_resolved.starts_with(&canonical_workspace);
+    
+    PathResolution {
+        original: path_str.to_string(),
+        resolved,
+        is_outside_workspace,
+        was_absolute,
+    }
+}
+
+/// Simple path resolution that just returns the resolved path.
+/// 
+/// Use this when you don't need the full `PathResolution` metadata.
+pub fn resolve_path_simple(path_str: &str, workspace: &Path) -> PathBuf {
+    let path = Path::new(path_str);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace.join(path)
+    }
+}
+
+// ============================================================================
+// Tool Trait and Registry
+// ============================================================================
 
 use async_trait::async_trait;
 use serde_json::Value;

@@ -1,24 +1,17 @@
 //! File operation tools: read, write, delete files.
 //!
-//! These tools have full system access - they can read/write any file on the machine.
-//! Paths can be absolute (e.g., `/etc/hosts`) or relative to the working directory.
+//! ## Workspace-First Design
+//! 
+//! These tools work relative to the workspace by default:
+//! - `output/report.md` → writes to `{workspace}/output/report.md`
+//! - `/etc/hosts` → absolute path for system access (escape hatch)
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::Tool;
-
-/// Resolve a path - if absolute, use as-is; if relative, join with working_dir.
-fn resolve_path(path_str: &str, working_dir: &Path) -> PathBuf {
-    let path = Path::new(path_str);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        working_dir.join(path)
-    }
-}
+use super::{resolve_path, Tool};
 
 /// Read the contents of a file.
 pub struct ReadFile;
@@ -30,7 +23,7 @@ impl Tool for ReadFile {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file from anywhere on the system. Returns the file content as text. Use this to inspect files before editing them."
+        "Read a file's contents. Use relative paths like 'src/main.rs' (recommended) or absolute paths like '/etc/hosts' for system files."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -39,7 +32,7 @@ impl Tool for ReadFile {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file. Can be absolute (e.g., /etc/hosts) or relative to working directory."
+                    "description": "File path. Use relative paths (e.g., 'output/data.json') for workspace files, or absolute paths (e.g., '/var/log/app.log') for system files."
                 },
                 "start_line": {
                     "type": "integer",
@@ -59,13 +52,13 @@ impl Tool for ReadFile {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
 
-        let full_path = resolve_path(path, working_dir);
+        let resolution = resolve_path(path, working_dir);
 
-        if !full_path.exists() {
-            return Err(anyhow::anyhow!("File not found: {}", path));
+        if !resolution.resolved.exists() {
+            return Err(anyhow::anyhow!("File not found: {} (resolved to: {})", path, resolution.resolved.display()));
         }
 
-        let content = tokio::fs::read_to_string(&full_path).await?;
+        let content = tokio::fs::read_to_string(&resolution.resolved).await?;
 
         // Handle optional line range
         let start_line = args["start_line"].as_u64().map(|n| n as usize);
@@ -122,7 +115,7 @@ impl Tool for WriteFile {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file anywhere on the system. Creates the file if it doesn't exist, or overwrites if it does. Creates parent directories as needed."
+        "Write content to a file. Use relative paths like 'output/report.md' (recommended) to stay in your workspace. Creates parent directories as needed."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -131,7 +124,7 @@ impl Tool for WriteFile {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file. Can be absolute (e.g., /root/tools/script.py) or relative to working directory."
+                    "description": "File path. Use relative paths (e.g., 'output/report.md', 'temp/data.json') for workspace files."
                 },
                 "content": {
                     "type": "string",
@@ -150,17 +143,17 @@ impl Tool for WriteFile {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
 
-        let full_path = resolve_path(path, working_dir);
+        let resolution = resolve_path(path, working_dir);
 
         // Create parent directories if needed
-        if let Some(parent) = full_path.parent() {
+        if let Some(parent) = resolution.resolved.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        tokio::fs::write(&full_path, content).await?;
+        tokio::fs::write(&resolution.resolved, content).await?;
 
         // Verify write by reading back
-        let written = tokio::fs::read_to_string(&full_path).await?;
+        let written = tokio::fs::read_to_string(&resolution.resolved).await?;
         if written.len() != content.len() {
             return Err(anyhow::anyhow!(
                 "Write verification failed: expected {} bytes, got {}",
@@ -202,7 +195,13 @@ impl Tool for WriteFile {
             warnings.push("Content ends with empty heading");
         }
 
-        let mut result = format!("Successfully wrote {} bytes to {}", content.len(), path);
+        // Show the actual resolved path so the agent knows where the file went
+        let path_display = if resolution.was_absolute {
+            path.to_string()
+        } else {
+            resolution.resolved.display().to_string()
+        };
+        let mut result = format!("Successfully wrote {} bytes to {}", content.len(), path_display);
 
         if !warnings.is_empty() {
             result.push_str("\n\n⚠️ **POTENTIAL TRUNCATION WARNINGS:**\n");
@@ -229,7 +228,7 @@ impl Tool for DeleteFile {
     }
 
     fn description(&self) -> &str {
-        "Delete a file anywhere on the system. Use with caution."
+        "Delete a file. Use relative paths to delete workspace files, or absolute paths for system files (use with caution)."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -238,7 +237,7 @@ impl Tool for DeleteFile {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to delete. Can be absolute or relative to working directory."
+                    "description": "File path. Use relative paths (e.g., 'temp/old_file.txt') for workspace files."
                 }
             },
             "required": ["path"]
@@ -250,14 +249,14 @@ impl Tool for DeleteFile {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
 
-        let full_path = resolve_path(path, working_dir);
+        let resolution = resolve_path(path, working_dir);
 
-        if !full_path.exists() {
-            return Err(anyhow::anyhow!("File not found: {}", path));
+        if !resolution.resolved.exists() {
+            return Err(anyhow::anyhow!("File not found: {} (resolved to: {})", path, resolution.resolved.display()));
         }
 
-        tokio::fs::remove_file(&full_path).await?;
+        tokio::fs::remove_file(&resolution.resolved).await?;
 
-        Ok(format!("Successfully deleted {}", path))
+        Ok(format!("Successfully deleted {}", resolution.resolved.display()))
     }
 }
