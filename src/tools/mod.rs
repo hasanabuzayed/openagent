@@ -203,11 +203,10 @@ impl ToolRegistry {
         tools.insert("upload_image".to_string(), Arc::new(storage::UploadImage));
 
         // Browser automation (conditional on BROWSER_ENABLED)
-        if std::env::var("BROWSER_ENABLED")
-            .map(|v| v.to_lowercase() == "true" || v == "1")
-            .unwrap_or(false)
-        {
-            tracing::info!("Registering browser automation tools (BROWSER_ENABLED=true)");
+        let browser_enabled = std::env::var("BROWSER_ENABLED").unwrap_or_default();
+        tracing::info!("BROWSER_ENABLED env var = '{}'", browser_enabled);
+        if browser_enabled.to_lowercase() == "true" || browser_enabled == "1" {
+            tracing::info!("Registering browser automation tools");
             tools.insert(
                 "browser_navigate".to_string(),
                 Arc::new(browser::BrowserNavigate),
