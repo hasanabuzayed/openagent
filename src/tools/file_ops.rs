@@ -73,8 +73,16 @@ impl Tool for ReadFile {
 
         if start_line.is_some() || end_line.is_some() {
             let lines: Vec<&str> = content.lines().collect();
-            let start = start_line.unwrap_or(1).saturating_sub(1);
-            let end = end_line.unwrap_or(lines.len()).min(lines.len());
+            let total_lines = lines.len();
+            let start = start_line.unwrap_or(1).saturating_sub(1).min(total_lines);
+            let end = end_line.unwrap_or(total_lines).min(total_lines);
+            
+            // Ensure start <= end
+            let (start, end) = if start > end { (end, start) } else { (start, end) };
+
+            if start >= total_lines {
+                return Ok(format!("File has {} lines, requested start line {} is beyond end of file", total_lines, start + 1));
+            }
 
             let selected: Vec<String> = lines[start..end]
                 .iter()
