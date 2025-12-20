@@ -326,17 +326,18 @@ impl Tool for FetchUrl {
             // Save full content to file
             std::fs::write(&file_path, &body)?;
 
-            // Return path with preview
+            // Return path with preview (safe for UTF-8)
             let preview_len = std::cmp::min(2000, display_content.len());
-            let preview = &display_content[..preview_len];
+            let safe_end = crate::memory::safe_truncate_index(&display_content, preview_len);
+            let preview = &display_content[..safe_end];
             
             Ok(format!(
                 "Response too large ({} bytes). Full content saved to: {}\n\nPreview (first {} chars):\n{}{}",
                 body.len(),
                 file_path.display(),
-                preview_len,
+                safe_end,
                 preview,
-                if display_content.len() > preview_len { "\n..." } else { "" }
+                if display_content.len() > safe_end { "\n..." } else { "" }
             ))
         } else {
             Ok(display_content)

@@ -395,12 +395,13 @@ impl Tool for BrowserGetContent {
                 }
             };
 
-            // Truncate if too long
+            // Truncate if too long (safe for UTF-8)
             let max_len = 50000;
             if content.len() > max_len {
+                let safe_end = crate::memory::safe_truncate_index(&content, max_len);
                 Ok(format!(
                     "{}\n\n... [truncated, {} total characters]",
-                    &content[..max_len],
+                    &content[..safe_end],
                     content.len()
                 ))
             } else {

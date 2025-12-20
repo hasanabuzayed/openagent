@@ -106,9 +106,11 @@ impl Tool for GitDiff {
         if result.is_empty() {
             Ok("No changes".to_string())
         } else if result.len() > 10000 {
+            let safe_end = crate::memory::safe_truncate_index(&result, 10000);
             Ok(format!(
-                "{}... [diff truncated, showing first 10000 chars]",
-                &result[..10000]
+                "{}... [diff truncated, showing first {} chars]",
+                &result[..safe_end],
+                safe_end
             ))
         } else {
             Ok(result)

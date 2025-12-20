@@ -308,12 +308,13 @@ Only return the JSON array, nothing else."#,
     }
 }
 
-/// Truncate a string to max length.
+/// Truncate a string to max length, safe for UTF-8.
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s
     } else {
-        &s[..max]
+        let safe_end = super::context::safe_truncate_index(s, max);
+        &s[..safe_end]
     }
 }
 

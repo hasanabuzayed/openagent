@@ -244,6 +244,7 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        let safe_end = crate::memory::safe_truncate_index(s, max);
+        format!("{}...", &s[..safe_end])
     }
 }

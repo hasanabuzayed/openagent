@@ -1038,10 +1038,18 @@ Use `search_memory` when you encounter a problem you might have solved before or
                         }
 
                         // Truncate tool result if too large to prevent context overflow
+                        // Use char_indices to find a safe UTF-8 boundary for truncation
                         let truncated_content = if tool_message_content.len() > max_tool_result_chars {
+                            // Find the last valid char boundary before or at max_tool_result_chars
+                            let safe_end = tool_message_content
+                                .char_indices()
+                                .take_while(|(i, _)| *i < max_tool_result_chars)
+                                .last()
+                                .map(|(i, c)| i + c.len_utf8())
+                                .unwrap_or(0);
                             format!(
                                 "{}... [truncated, {} chars total. For large data, consider writing to a file and reading specific sections]",
-                                &tool_message_content[..max_tool_result_chars],
+                                &tool_message_content[..safe_end],
                                 tool_message_content.len()
                             )
                         } else {

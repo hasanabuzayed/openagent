@@ -1137,7 +1137,8 @@ async fn control_actor_loop(
                 if let Some((role, content)) = history.first() {
                     if role == "user" {
                         let title = if content.len() > 100 {
-                            format!("{}...", &content[..100])
+                            let safe_end = crate::memory::safe_truncate_index(content, 100);
+                            format!("{}...", &content[..safe_end])
                         } else {
                             content.clone()
                         };

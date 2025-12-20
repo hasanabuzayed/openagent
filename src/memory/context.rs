@@ -267,14 +267,15 @@ impl<'a> ContextBuilder<'a> {
         context
     }
 
-    /// Truncate tool result content if too large.
+    /// Truncate tool result content if too large, safe for UTF-8.
     pub fn truncate_tool_result(&self, content: &str) -> String {
         if content.len() <= self.config.max_tool_result_chars {
             content.to_string()
         } else {
+            let safe_end = safe_truncate_index(content, self.config.max_tool_result_chars);
             format!(
                 "{}... [truncated, {} chars total. For large data, consider writing to a file and reading specific sections]",
-                &content[..self.config.max_tool_result_chars],
+                &content[..safe_end],
                 content.len()
             )
         }
@@ -306,23 +307,39 @@ impl<'a> ContextBuilder<'a> {
     }
 }
 
-/// Truncate a string with ellipsis.
+/// Find a safe UTF-8 boundary for truncation.
+/// Returns the byte index that is at or before `max_bytes` and on a char boundary.
+pub fn safe_truncate_index(s: &str, max_bytes: usize) -> usize {
+    if s.len() <= max_bytes {
+        return s.len();
+    }
+    // Find the last valid char boundary at or before max_bytes
+    s.char_indices()
+        .take_while(|(i, _)| *i < max_bytes)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0)
+}
+
+/// Truncate a string with ellipsis, safe for UTF-8.
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        let safe_end = safe_truncate_index(s, max);
+        format!("{}...", &s[..safe_end])
     }
 }
 
-/// Truncate a message with size info.
+/// Truncate a message with size info, safe for UTF-8.
 fn truncate_message(content: &str, max_chars: usize) -> String {
     if content.len() <= max_chars {
         content.to_string()
     } else {
+        let safe_end = safe_truncate_index(content, max_chars);
         format!(
             "{}... [truncated, {} chars total]",
-            &content[..max_chars],
+            &content[..safe_end],
             content.len()
         )
     }

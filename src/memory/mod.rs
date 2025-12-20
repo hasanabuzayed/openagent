@@ -38,7 +38,7 @@ pub use supabase::SupabaseClient;
 pub use embed::EmbeddingClient;
 pub use writer::{MemoryWriter, EventRecorder, RecordedEvent};
 pub use retriever::MemoryRetriever;
-pub use context::{ContextBuilder, SessionContext, MemoryContext};
+pub use context::{ContextBuilder, SessionContext, MemoryContext, safe_truncate_index};
 
 use crate::config::MemoryConfig;
 use std::sync::Arc;

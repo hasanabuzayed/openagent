@@ -434,7 +434,8 @@ async fn run_agent_task(
             
             let response_event = crate::memory::RecordedEvent::new("TaskExecutor", crate::memory::EventKind::LlmResponse)
                 .with_preview(&if result.output.len() > 1000 {
-                    result.output[..1000].to_string()
+                    let safe_end = crate::memory::safe_truncate_index(&result.output, 1000);
+                    result.output[..safe_end].to_string()
                 } else {
                     result.output.clone()
                 })
@@ -461,7 +462,8 @@ async fn run_agent_task(
             "Task: {}\nResult: {}\nSuccess: {}",
             task_description,
             if result.output.len() > 500 {
-                &result.output[..500]
+                let safe_end = crate::memory::safe_truncate_index(&result.output, 500);
+                &result.output[..safe_end]
             } else {
                 &result.output
             },
