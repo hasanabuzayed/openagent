@@ -276,6 +276,9 @@ impl ModelPricing {
             "qwen/qwen-2.5-72b",
             "qwen/qwq-32b",
             "qwen/qwen3-vl-235b-a22b-thinking",
+            "qwen/qwen3-next-80b-a3b-thinking",
+            "qwen/qwen3-next-80b-a3b-instruct",
+            "qwen/qwen3-235b-a22b-instruct",
             
             // === Test Models for Benchmarking ===
             // MoonshotAI

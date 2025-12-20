@@ -223,10 +223,14 @@ impl Tool for BrowserScreenshot {
 
     fn description(&self) -> &str {
         "Take a screenshot of the current browser page.\n\n\
-        Two modes:\n\
-        - return_image=true: YOU can see the screenshot (for navigation/verification)\n\
-        - upload=true: Screenshot is uploaded and you get markdown to SHARE with the user\n\n\
-        IMPORTANT: When sharing with user, you MUST include the 'markdown' value in your response!"
+        BEFORE screenshotting to share with user:\n\
+        1. Use browser_get_content to verify the page loaded correctly\n\
+        2. Check for 404 errors, loading states, or empty pages\n\
+        3. Only screenshot pages with actual content\n\n\
+        Modes:\n\
+        - return_image=true: YOU can see the screenshot (requires vision model)\n\
+        - upload=true: Screenshot is uploaded and you get markdown to share\n\n\
+        When sharing, you MUST include the 'markdown' value in your response!"
     }
 
     fn parameters_schema(&self) -> Value {
