@@ -53,31 +53,9 @@ impl SessionContext {
             out.push_str(&format!("- **Mission**: {}\n", title));
         }
 
-        // Add mission working directory rules if this is a mission-specific directory
+        // Add brief mission mode indicator
         if self.working_dir.contains("mission-") {
-            out.push_str(r#"
-## ⚠️ MISSION WORKING DIRECTORY RULES
-
-Your working directory has been set to this mission's dedicated folder.
-**ALL files you create MUST go in this directory or its subdirectories.**
-
-Structure:
-```
-"#);
-            out.push_str(&self.working_dir);
-            out.push_str(r#"/
-├── output/    # Final deliverables (reports, results)
-└── temp/      # Temporary/intermediate files
-```
-
-**RULES:**
-1. ❌ DO NOT create files in /root/work/ directly
-2. ❌ DO NOT create files in other mission directories
-3. ❌ DO NOT access files from other missions (context contamination)
-4. ✅ CREATE all outputs in your assigned directory above
-5. ✅ PUT final deliverables in the output/ subfolder
-
-"#);
+            out.push_str("\n⚠️ **MISSION MODE**: All files must go in your working directory above.\n");
         }
 
         out
