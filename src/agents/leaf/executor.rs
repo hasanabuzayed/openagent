@@ -597,6 +597,18 @@ Use `search_memory` when you encounter a problem you might have solved before or
         // Get tool schemas (built-in + MCP)
         let builtin_count = ctx.tools.get_tool_schemas().len();
         let mut tool_schemas = ctx.tools.get_tool_schemas();
+        
+        // Check if browser tools are present
+        let browser_tools: Vec<_> = tool_schemas.iter()
+            .filter(|t| t.function.name.starts_with("browser_"))
+            .map(|t| t.function.name.as_str())
+            .collect();
+        if browser_tools.is_empty() {
+            tracing::warn!("No browser tools found in built-in tools!");
+        } else {
+            tracing::info!("Browser tools available: {:?}", browser_tools);
+        }
+        
         tracing::info!("Discovered {} built-in tools, {} MCP tools", builtin_count, mcp_tool_schemas.len());
         tool_schemas.extend(mcp_tool_schemas);
 
