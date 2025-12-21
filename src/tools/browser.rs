@@ -276,18 +276,43 @@ async fn get_browser_session() -> anyhow::Result<Arc<Mutex<Option<BrowserSession
     Ok(state)
 }
 
-/// Launch a new Chrome instance with optional proxy configuration
+/// Launch a new Chrome instance with optional proxy configuration.
+/// 
+/// When proxy auth is needed, Chrome is launched on a virtual display (Xvfb)
+/// because headless mode doesn't support extensions properly.
 async fn launch_browser(
     proxy_config: Option<ProxyConfig>,
 ) -> anyhow::Result<(Browser, chromiumoxide::Handler, Option<PathBuf>)> {
-    let headless = std::env::var("BROWSER_HEADLESS")
-        .map(|v| v.to_lowercase() != "false" && v != "0")
-        .unwrap_or(true);
+    let needs_extension = proxy_config.as_ref().map(|p| p.username.is_some()).unwrap_or(false);
+    
+    // If proxy auth is needed, we must use a virtual display (extensions don't work in headless)
+    let use_virtual_display = needs_extension;
+    
+    let headless = if use_virtual_display {
+        false // Can't use headless with proxy auth extensions
+    } else {
+        std::env::var("BROWSER_HEADLESS")
+            .map(|v| v.to_lowercase() != "false" && v != "0")
+            .unwrap_or(true)
+    };
+
+    // Start Xvfb if we need a virtual display
+    let (virtual_display, _xvfb_process) = if use_virtual_display {
+        let disp = start_virtual_display().await?;
+        tracing::info!("Started virtual display: {}", disp);
+        (Some(disp), true)
+    } else {
+        (None, false)
+    };
 
     let mut config_builder = BrowserConfig::builder();
 
-    // Configure headless mode
-    if headless {
+    // Configure display/headless mode
+    if let Some(ref disp) = virtual_display {
+        // Set DISPLAY environment for the browser process
+        std::env::set_var("DISPLAY", disp);
+        config_builder = config_builder.with_head();
+    } else if headless {
         config_builder = config_builder.arg("--headless=new");
     } else {
         config_builder = config_builder.with_head();
@@ -340,7 +365,7 @@ async fn launch_browser(
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build browser config: {}", e))?;
 
-    tracing::info!("Launching Chrome browser...");
+    tracing::info!("Launching Chrome browser (headless: {}, virtual_display: {:?})...", headless, virtual_display);
 
     let (browser, handler) = Browser::launch(config).await.map_err(|e| {
         anyhow::anyhow!(
@@ -352,6 +377,49 @@ async fn launch_browser(
     tracing::info!("Chrome browser launched successfully");
 
     Ok((browser, handler, proxy_ext_dir))
+}
+
+/// Start a virtual X11 display using Xvfb
+async fn start_virtual_display() -> anyhow::Result<String> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::process::Command;
+    
+    static DISPLAY_COUNTER: AtomicU32 = AtomicU32::new(50);
+    
+    let display_num = DISPLAY_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let display_id = format!(":{}", display_num);
+    let resolution = std::env::var("DESKTOP_RESOLUTION").unwrap_or_else(|_| "1920x1080".to_string());
+    
+    // Clean up any existing files
+    let lock_file = format!("/tmp/.X{}-lock", display_num);
+    let socket_file = format!("/tmp/.X11-unix/X{}", display_num);
+    let _ = std::fs::remove_file(&lock_file);
+    let _ = std::fs::remove_file(&socket_file);
+    
+    // Start Xvfb
+    let xvfb_args = format!("{} -screen 0 {}x24", display_id, resolution);
+    let mut xvfb = Command::new("Xvfb")
+        .args(xvfb_args.split_whitespace())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to start Xvfb: {}. Is Xvfb installed?", e))?;
+    
+    // Wait for Xvfb to be ready
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    
+    // Verify Xvfb is running
+    if let Ok(Some(status)) = xvfb.try_wait() {
+        return Err(anyhow::anyhow!("Xvfb exited immediately with status: {:?}", status));
+    }
+    
+    tracing::info!("Xvfb started on display {} (pid: {:?})", display_id, xvfb.id());
+    
+    // Keep the process handle alive by leaking it (it will be cleaned up on process exit)
+    // This is intentional - we want Xvfb to keep running
+    std::mem::forget(xvfb);
+    
+    Ok(display_id)
 }
 
 /// Get the current page, creating a new session if needed
