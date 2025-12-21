@@ -398,7 +398,10 @@ export default function ControlClient() {
   // Check if the mission we're viewing is actually running (not just any mission)
   const viewingMissionIsRunning = useMemo(() => {
     if (!viewingMissionId) return runState !== "idle";
-    return runningMissions.some((m) => m.mission_id === viewingMissionId);
+    const mission = runningMissions.find((m) => m.mission_id === viewingMissionId);
+    if (!mission) return false;
+    // Check the actual state from the backend
+    return mission.state === "running" || mission.state === "waiting_for_tool";
   }, [viewingMissionId, runningMissions, runState]);
 
   const isBusy = viewingMissionIsRunning;
@@ -677,6 +680,9 @@ export default function ControlClient() {
       setViewingMissionId(mission.id); // Also update viewing to the new mission
       setItems([]);
       setShowParallelPanel(true); // Show the missions panel so user can see the new mission
+      // Refresh running missions to get accurate state
+      const running = await getRunningMissions();
+      setRunningMissions(running);
       router.replace(`/control?mission=${mission.id}`, { scroll: false });
       toast.success("New mission created");
     } catch (err) {
