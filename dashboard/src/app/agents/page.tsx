@@ -206,6 +206,7 @@ export default function AgentsPage() {
     if (state === 'running' || state === 'waiting_for_tool') return 'running';
     if (missionStatus === 'completed') return 'completed';
     if (missionStatus === 'failed') return 'failed';
+    if (missionStatus === 'interrupted') return 'pending'; // Show as pending (resumable)
     return 'pending';
   };
 

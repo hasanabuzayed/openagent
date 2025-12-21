@@ -132,6 +132,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         .route("/api/control/missions/:id/load", post(control::load_mission))
         .route("/api/control/missions/:id/status", post(control::set_mission_status))
         .route("/api/control/missions/:id/cancel", post(control::cancel_mission))
+        .route("/api/control/missions/:id/resume", post(control::resume_mission))
         .route("/api/control/missions/:id/parallel", post(control::start_mission_parallel))
         // Parallel execution endpoints
         .route("/api/control/running", get(control::list_running_missions))
@@ -175,15 +176,71 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         .merge(protected_routes)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(Arc::clone(&state));
 
     let addr = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("Server listening on {}", addr);
-    axum::serve(listener, app).await?;
+    
+    // Setup graceful shutdown on SIGTERM/SIGINT
+    let shutdown_state = Arc::clone(&state);
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_signal(shutdown_state).await;
+        })
+        .await?;
 
     Ok(())
+}
+
+/// Wait for shutdown signal and mark running missions as interrupted.
+async fn shutdown_signal(state: Arc<AppState>) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutdown signal received, marking running missions as interrupted...");
+    
+    // Send graceful shutdown command to control session
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if let Err(e) = state.control.cmd_tx.send(control::ControlCommand::GracefulShutdown { respond: tx }).await {
+        tracing::error!("Failed to send shutdown command: {}", e);
+        return;
+    }
+    
+    match rx.await {
+        Ok(interrupted_ids) => {
+            if interrupted_ids.is_empty() {
+                tracing::info!("No running missions to interrupt");
+            } else {
+                tracing::info!("Marked {} missions as interrupted: {:?}", interrupted_ids.len(), interrupted_ids);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to receive shutdown response: {}", e);
+        }
+    }
+    
+    tracing::info!("Graceful shutdown complete");
 }
 
 /// Health check endpoint.

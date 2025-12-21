@@ -302,17 +302,32 @@ pub enum ControlCommand {
     ListRunning {
         respond: oneshot::Sender<Vec<super::mission_runner::RunningMissionInfo>>,
     },
+    /// Resume an interrupted mission
+    ResumeMission {
+        mission_id: Uuid,
+        respond: oneshot::Sender<Result<Mission, String>>,
+    },
+    /// Graceful shutdown - mark running missions as interrupted
+    GracefulShutdown {
+        respond: oneshot::Sender<Vec<Uuid>>,
+    },
 }
 
 // ==================== Mission Types ====================
 
 /// Mission status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum MissionStatus {
     Active,
     Completed,
     Failed,
+    /// Mission was interrupted (server shutdown, cancellation, etc.)
+    Interrupted,
+    /// Mission blocked by external factors (type mismatch, access denied, etc.)
+    Blocked,
+    /// Mission not feasible as specified (wrong assumptions in request)
+    NotFeasible,
 }
 
 impl std::fmt::Display for MissionStatus {
@@ -321,6 +336,9 @@ impl std::fmt::Display for MissionStatus {
             Self::Active => write!(f, "active"),
             Self::Completed => write!(f, "completed"),
             Self::Failed => write!(f, "failed"),
+            Self::Blocked => write!(f, "blocked"),
+            Self::NotFeasible => write!(f, "not_feasible"),
+            Self::Interrupted => write!(f, "interrupted"),
         }
     }
 }
@@ -337,6 +355,12 @@ pub struct Mission {
     pub history: Vec<MissionHistoryEntry>,
     pub created_at: String,
     pub updated_at: String,
+    /// When this mission was interrupted (if status is Interrupted)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupted_at: Option<String>,
+    /// Whether this mission can be resumed
+    #[serde(default)]
+    pub resumable: bool,
 }
 
 /// A single entry in the mission history.
@@ -546,6 +570,9 @@ pub async fn list_missions(
             let status = match m.status.as_str() {
                 "completed" => MissionStatus::Completed,
                 "failed" => MissionStatus::Failed,
+                "interrupted" => MissionStatus::Interrupted,
+                "blocked" => MissionStatus::Blocked,
+                "not_feasible" => MissionStatus::NotFeasible,
                 _ => MissionStatus::Active,
             };
             Mission {
@@ -554,8 +581,10 @@ pub async fn list_missions(
                 title: m.title,
                 model_override: m.model_override,
                 history,
-                created_at: m.created_at,
-                updated_at: m.updated_at,
+                created_at: m.created_at.clone(),
+                updated_at: m.updated_at.clone(),
+                interrupted_at: if status == MissionStatus::Interrupted { Some(m.updated_at) } else { None },
+                resumable: matches!(status, MissionStatus::Interrupted | MissionStatus::Blocked),
             }
         })
         .collect();
@@ -587,6 +616,9 @@ pub async fn get_mission(
     let status = match db_mission.status.as_str() {
         "completed" => MissionStatus::Completed,
         "failed" => MissionStatus::Failed,
+        "interrupted" => MissionStatus::Interrupted,
+        "blocked" => MissionStatus::Blocked,
+        "not_feasible" => MissionStatus::NotFeasible,
         _ => MissionStatus::Active,
     };
 
@@ -596,8 +628,10 @@ pub async fn get_mission(
         title: db_mission.title,
         model_override: db_mission.model_override,
         history,
-        created_at: db_mission.created_at,
-        updated_at: db_mission.updated_at,
+        created_at: db_mission.created_at.clone(),
+        updated_at: db_mission.updated_at.clone(),
+        interrupted_at: if status == MissionStatus::Interrupted { Some(db_mission.updated_at) } else { None },
+        resumable: matches!(status, MissionStatus::Interrupted | MissionStatus::Blocked),
     }))
 }
 
@@ -739,6 +773,7 @@ pub async fn get_current_mission(
                     let status = match m.status.as_str() {
                         "completed" => MissionStatus::Completed,
                         "failed" => MissionStatus::Failed,
+                        "interrupted" => MissionStatus::Interrupted,
                         _ => MissionStatus::Active,
                     };
                     Ok(Json(Some(Mission {
@@ -747,8 +782,10 @@ pub async fn get_current_mission(
                         title: m.title,
                         model_override: m.model_override,
                         history,
-                        created_at: m.created_at,
-                        updated_at: m.updated_at,
+                        created_at: m.created_at.clone(),
+                        updated_at: m.updated_at.clone(),
+                        interrupted_at: if status == MissionStatus::Interrupted { Some(m.updated_at) } else { None },
+                        resumable: matches!(status, MissionStatus::Interrupted | MissionStatus::Blocked),
                     })))
                 }
                 None => Ok(Json(None)),
@@ -917,6 +954,40 @@ pub async fn cancel_mission(
         })?
         .map(|_| Json(serde_json::json!({ "ok": true, "cancelled": mission_id })))
         .map_err(|e| (StatusCode::NOT_FOUND, e))
+}
+
+/// Resume an interrupted mission.
+/// This reconstructs context from history and work directory, then restarts execution.
+pub async fn resume_mission(
+    State(state): State<Arc<AppState>>,
+    Path(mission_id): Path<Uuid>,
+) -> Result<Json<Mission>, (StatusCode, String)> {
+    let (tx, rx) = oneshot::channel();
+    
+    state
+        .control
+        .cmd_tx
+        .send(ControlCommand::ResumeMission {
+            mission_id,
+            respond: tx,
+        })
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
+    
+    rx.await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to receive response".to_string(),
+            )
+        })?
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
 
 /// Get parallel execution configuration.
@@ -1209,6 +1280,7 @@ async fn control_actor_loop(
         let status = match db_mission.status.as_str() {
             "completed" => MissionStatus::Completed,
             "failed" => MissionStatus::Failed,
+            "interrupted" => MissionStatus::Interrupted,
             _ => MissionStatus::Active,
         };
 
@@ -1218,8 +1290,10 @@ async fn control_actor_loop(
             title: db_mission.title,
             model_override: db_mission.model_override,
             history,
-            created_at: db_mission.created_at,
-            updated_at: db_mission.updated_at,
+            created_at: db_mission.created_at.clone(),
+            updated_at: db_mission.updated_at.clone(),
+            interrupted_at: if status == MissionStatus::Interrupted { Some(db_mission.updated_at) } else { None },
+            resumable: matches!(status, MissionStatus::Interrupted | MissionStatus::Blocked),
         })
     }
 
@@ -1249,7 +1323,118 @@ async fn control_actor_loop(
             history: vec![],
             created_at: db_mission.created_at,
             updated_at: db_mission.updated_at,
+            interrupted_at: None,
+            resumable: false,
         })
+    }
+
+    // Helper to build resume context for an interrupted mission
+    async fn resume_mission_impl(
+        memory: &Option<MemorySystem>,
+        config: &Config,
+        mission_id: Uuid,
+    ) -> Result<(Mission, String), String> {
+        let mission = load_mission_from_db(memory, mission_id).await?;
+        
+        // Check if mission can be resumed
+        if mission.status != MissionStatus::Interrupted {
+            return Err(format!(
+                "Mission {} cannot be resumed (status: {})",
+                mission_id, mission.status
+            ));
+        }
+        
+        // Build resume context
+        let mut resume_parts = Vec::new();
+        
+        // Add interruption notice
+        if let Some(interrupted_at) = &mission.interrupted_at {
+            resume_parts.push(format!(
+                "**MISSION RESUMED**\nThis mission was interrupted at {} and is now being continued.",
+                interrupted_at
+            ));
+        } else {
+            resume_parts.push("**MISSION RESUMED**\nThis mission was interrupted and is now being continued.".to_string());
+        }
+        
+        // Add history summary
+        if !mission.history.is_empty() {
+            resume_parts.push("\n## Previous Conversation Summary".to_string());
+            
+            // Include the original user request
+            if let Some(first_user) = mission.history.iter().find(|h| h.role == "user") {
+                resume_parts.push(format!("\n**Original Request:**\n{}", first_user.content));
+            }
+            
+            // Include last assistant response (what was being worked on)
+            if let Some(last_assistant) = mission.history.iter().rev().find(|h| h.role == "assistant") {
+                let truncated = if last_assistant.content.len() > 2000 {
+                    format!("{}...", &last_assistant.content[..2000])
+                } else {
+                    last_assistant.content.clone()
+                };
+                resume_parts.push(format!("\n**Last Progress:**\n{}", truncated));
+            }
+        }
+        
+        // Scan work directory for artifacts
+        let short_id = &mission_id.to_string()[..8];
+        let mission_dir = config.working_dir.join("work").join(format!("mission-{}", short_id));
+        
+        if mission_dir.exists() {
+            resume_parts.push("\n## Work Directory Contents".to_string());
+            
+            let mut files_found = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&mission_dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let dir_name = path.file_name().unwrap_or_default().to_string_lossy();
+                        // Skip common non-artifact directories
+                        if dir_name == "venv" || dir_name == ".venv" || dir_name == ".open_agent" || dir_name == "temp" {
+                            continue;
+                        }
+                        // List files in subdirectory
+                        if let Ok(subentries) = std::fs::read_dir(&path) {
+                            for subentry in subentries.filter_map(|e| e.ok()) {
+                                let subpath = subentry.path();
+                                if subpath.is_file() {
+                                    let rel_path = subpath.strip_prefix(&mission_dir)
+                                        .map(|p| p.display().to_string())
+                                        .unwrap_or_else(|_| subpath.display().to_string());
+                                    files_found.push(rel_path);
+                                }
+                            }
+                        }
+                    } else if path.is_file() {
+                        let rel_path = path.strip_prefix(&mission_dir)
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|_| path.display().to_string());
+                        files_found.push(rel_path);
+                    }
+                }
+            }
+            
+            if !files_found.is_empty() {
+                resume_parts.push(format!("Files created:\n{}", 
+                    files_found.iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n")
+                ));
+            } else {
+                resume_parts.push("No output files created yet.".to_string());
+            }
+        }
+        
+        // Add instructions
+        resume_parts.push("\n## Instructions".to_string());
+        resume_parts.push(
+            "Please continue from where you left off. Review the previous progress and work directory contents, \
+            then continue working towards completing the original request. Do not repeat work that was already done."
+                .to_string()
+        );
+        
+        let resume_prompt = resume_parts.join("\n");
+        
+        Ok((mission, resume_prompt))
     }
 
     loop {
@@ -1543,6 +1728,137 @@ async fn control_actor_loop(
                         
                         let _ = respond.send(running_list);
                     }
+                    ControlCommand::ResumeMission { mission_id, respond } => {
+                        // Resume an interrupted mission by building resume context
+                        match resume_mission_impl(&memory, &config, mission_id).await {
+                            Ok((mission, resume_prompt)) => {
+                                // First persist current mission history (if any)
+                                persist_mission_history(&memory, &current_mission, &history).await;
+                                
+                                // Load the mission's history into current state
+                                history = mission.history.iter()
+                                    .map(|e| (e.role.clone(), e.content.clone()))
+                                    .collect();
+                                *current_mission.write().await = Some(mission_id);
+                                
+                                // Update mission status back to active
+                                if let Some(mem) = &memory {
+                                    let _ = mem.supabase.update_mission_status(mission_id, "active").await;
+                                }
+                                
+                                // Queue the resume prompt as a message
+                                let msg_id = Uuid::new_v4();
+                                queue.push_back((msg_id, resume_prompt, mission.model_override.clone()));
+                                
+                                // Start execution if not already running
+                                if running.is_none() {
+                                    if let Some((mid, msg, model_override)) = queue.pop_front() {
+                                        set_and_emit_status(&status, &events_tx, ControlRunState::Running, queue.len()).await;
+                                        let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), mission_id: Some(mission_id) });
+                                        let cfg = config.clone();
+                                        let agent = Arc::clone(&root_agent);
+                                        let mem = memory.clone();
+                                        let bench = Arc::clone(&benchmarks);
+                                        let res = Arc::clone(&resolver);
+                                        let mcp_ref = Arc::clone(&mcp);
+                                        let events = events_tx.clone();
+                                        let tools_hub = Arc::clone(&tool_hub);
+                                        let status_ref = Arc::clone(&status);
+                                        let cancel = CancellationToken::new();
+                                        let pricing = Arc::clone(&pricing);
+                                        let hist_snapshot = history.clone();
+                                        let mission_ctrl = crate::tools::mission::MissionControl {
+                                            current_mission_id: Arc::clone(&current_mission),
+                                            cmd_tx: mission_cmd_tx.clone(),
+                                        };
+                                        let tree_ref = Arc::clone(&current_tree);
+                                        let progress_ref = Arc::clone(&progress);
+                                        running_cancel = Some(cancel.clone());
+                                        running = Some(tokio::spawn(async move {
+                                            let result = run_single_control_turn(
+                                                cfg,
+                                                agent,
+                                                mem,
+                                                bench,
+                                                res,
+                                                mcp_ref,
+                                                pricing,
+                                                events,
+                                                tools_hub,
+                                                status_ref,
+                                                cancel,
+                                                hist_snapshot,
+                                                msg.clone(),
+                                                model_override,
+                                                Some(mission_ctrl),
+                                                tree_ref,
+                                                progress_ref,
+                                            )
+                                            .await;
+                                            (mid, msg, result)
+                                        }));
+                                    }
+                                }
+                                
+                                // Return the updated mission
+                                let mut updated_mission = mission;
+                                updated_mission.status = MissionStatus::Active;
+                                updated_mission.resumable = false;
+                                updated_mission.interrupted_at = None;
+                                let _ = respond.send(Ok(updated_mission));
+                            }
+                            Err(e) => {
+                                let _ = respond.send(Err(e));
+                            }
+                        }
+                    }
+                    ControlCommand::GracefulShutdown { respond } => {
+                        // Mark all running missions as interrupted
+                        let mut interrupted_ids = Vec::new();
+                        
+                        // Handle main mission
+                        if running.is_some() {
+                            if let Some(mission_id) = current_mission.read().await.clone() {
+                                // Persist current history before marking as interrupted
+                                persist_mission_history(&memory, &current_mission, &history).await;
+                                
+                                if let Some(mem) = &memory {
+                                    if let Ok(()) = mem.supabase.update_mission_status(mission_id, "interrupted").await {
+                                        interrupted_ids.push(mission_id);
+                                        tracing::info!("Marked mission {} as interrupted", mission_id);
+                                    }
+                                }
+                                
+                                // Cancel execution
+                                if let Some(token) = &running_cancel {
+                                    token.cancel();
+                                }
+                            }
+                        }
+                        
+                        // Handle parallel missions
+                        for (mission_id, runner) in parallel_runners.iter_mut() {
+                            // Persist history for parallel mission
+                            if let Some(mem) = &memory {
+                                let messages: Vec<MissionMessage> = runner.history.iter()
+                                    .map(|(role, content)| MissionMessage {
+                                        role: role.clone(),
+                                        content: content.clone(),
+                                    })
+                                    .collect();
+                                let _ = mem.supabase.update_mission_history(*mission_id, &messages).await;
+                                
+                                if let Ok(()) = mem.supabase.update_mission_status(*mission_id, "interrupted").await {
+                                    interrupted_ids.push(*mission_id);
+                                    tracing::info!("Marked parallel mission {} as interrupted", mission_id);
+                                }
+                            }
+                            
+                            runner.cancel();
+                        }
+                        
+                        let _ = respond.send(interrupted_ids);
+                    }
                 }
             }
             // Handle agent-initiated mission status changes (from complete_mission tool)
@@ -1555,6 +1871,8 @@ async fn control_actor_loop(
                                 let new_status = match status {
                                     crate::tools::mission::MissionStatusValue::Completed => MissionStatus::Completed,
                                     crate::tools::mission::MissionStatusValue::Failed => MissionStatus::Failed,
+                                    crate::tools::mission::MissionStatusValue::Blocked => MissionStatus::Blocked,
+                                    crate::tools::mission::MissionStatusValue::NotFeasible => MissionStatus::NotFeasible,
                                 };
                                 let success = matches!(status, crate::tools::mission::MissionStatusValue::Completed);
 

@@ -14,6 +14,7 @@ import {
   getMission,
   createMission,
   setMissionStatus,
+  resumeMission,
   getCurrentMission,
   uploadFile,
   getProgress,
@@ -46,6 +47,7 @@ import {
   Cpu,
   Layers,
   RefreshCw,
+  PlayCircle,
 } from "lucide-react";
 import {
   OptionList,
@@ -136,6 +138,12 @@ function missionStatusLabel(status: MissionStatus): {
       };
     case "failed":
       return { label: "Failed", className: "bg-red-500/20 text-red-400" };
+    case "interrupted":
+      return { label: "Interrupted", className: "bg-amber-500/20 text-amber-400" };
+    case "blocked":
+      return { label: "Blocked", className: "bg-orange-500/20 text-orange-400" };
+    case "not_feasible":
+      return { label: "Not Feasible", className: "bg-rose-500/20 text-rose-400" };
   }
 }
 
@@ -707,6 +715,23 @@ export default function ControlClient() {
     }
   };
 
+  // Handle resuming an interrupted mission
+  const handleResumeMission = async () => {
+    if (!currentMission || currentMission.status !== "interrupted") return;
+    try {
+      setMissionLoading(true);
+      const resumed = await resumeMission(currentMission.id);
+      setCurrentMission(resumed);
+      setShowStatusMenu(false);
+      toast.success("Mission resumed");
+    } catch (err) {
+      console.error("Failed to resume mission:", err);
+      toast.error("Failed to resume mission");
+    } finally {
+      setMissionLoading(false);
+    }
+  };
+
   // Auto-reconnecting stream with exponential backoff
   useEffect(() => {
     let cleanup: (() => void) | null = null;
@@ -1082,7 +1107,17 @@ export default function ControlClient() {
                     <XCircle className="h-4 w-4 text-red-400" />
                     Mark Failed
                   </button>
-                  {currentMission.status !== "active" && (
+                  {currentMission.status === "interrupted" && (
+                    <button
+                      onClick={handleResumeMission}
+                      disabled={missionLoading}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-white/70 hover:bg-white/[0.04] disabled:opacity-50"
+                    >
+                      <PlayCircle className="h-4 w-4 text-emerald-400" />
+                      Resume Mission
+                    </button>
+                  )}
+                  {currentMission.status !== "active" && currentMission.status !== "interrupted" && (
                     <button
                       onClick={() => handleSetStatus("active")}
                       className="flex w-full items-center gap-2 px-3 py-2 text-sm text-white/70 hover:bg-white/[0.04]"
@@ -1354,13 +1389,15 @@ export default function ControlClient() {
                 ) : currentMission && currentMission.status !== "active" ? (
                   <>
                     <h2 className="text-lg font-medium text-white">
-                      No conversation history
+                      {currentMission.status === "interrupted" ? "Mission Interrupted" : "No conversation history"}
                     </h2>
                     <p className="mt-2 text-sm text-white/40 max-w-sm">
-                      This mission was {currentMission.status} without any
-                      messages.
-                      {currentMission.status === "completed" &&
-                        " You can reactivate it to continue."}
+                      {currentMission.status === "interrupted" ? (
+                        <>This mission was interrupted (server shutdown or cancellation). Click the <strong className="text-amber-400">Resume</strong> button in the mission menu to continue where you left off.</>
+                      ) : (
+                        <>This mission was {currentMission.status} without any messages.
+                        {currentMission.status === "completed" && " You can reactivate it to continue."}</>
+                      )}
                     </p>
                   </>
                 ) : (

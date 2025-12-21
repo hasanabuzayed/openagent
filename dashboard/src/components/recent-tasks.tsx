@@ -21,6 +21,9 @@ const statusIcons: Record<string, typeof Clock> = {
   completed: CheckCircle,
   failed: XCircle,
   cancelled: Ban,
+  interrupted: Ban,
+  blocked: Ban,
+  not_feasible: XCircle,
 };
 
 const statusColors: Record<string, string> = {
@@ -30,6 +33,9 @@ const statusColors: Record<string, string> = {
   completed: "text-emerald-400",
   failed: "text-red-400",
   cancelled: "text-white/40",
+  interrupted: "text-amber-400",
+  blocked: "text-orange-400",
+  not_feasible: "text-rose-400",
 };
 
 export function RecentTasks() {

@@ -30,6 +30,9 @@ const statusIcons = {
   failed: XCircle,
   cancelled: Ban,
   active: Clock,
+  interrupted: Ban,
+  blocked: Ban,
+  not_feasible: XCircle,
 };
 
 const statusConfig = {
@@ -39,6 +42,9 @@ const statusConfig = {
   failed: { color: "text-red-400", bg: "bg-red-500/10" },
   cancelled: { color: "text-white/40", bg: "bg-white/[0.04]" },
   active: { color: "text-indigo-400", bg: "bg-indigo-500/10" },
+  interrupted: { color: "text-amber-400", bg: "bg-amber-500/10" },
+  blocked: { color: "text-orange-400", bg: "bg-orange-500/10" },
+  not_feasible: { color: "text-rose-400", bg: "bg-rose-500/10" },
 };
 
 type SortField = 'date' | 'status' | 'messages';

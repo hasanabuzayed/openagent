@@ -22,8 +22,14 @@ pub enum MissionControlCommand {
 /// Mission status values (mirrors api::control::MissionStatus but simplified for tool use).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionStatusValue {
+    /// Task was fully completed with real deliverables
     Completed,
+    /// Task failed due to errors during execution
     Failed,
+    /// Task cannot be completed due to blockers (type mismatch, access issues, etc.)
+    Blocked,
+    /// Task is not feasible as specified (wrong assumptions in request)
+    NotFeasible,
 }
 
 impl std::fmt::Display for MissionStatusValue {
@@ -31,6 +37,8 @@ impl std::fmt::Display for MissionStatusValue {
         match self {
             Self::Completed => write!(f, "completed"),
             Self::Failed => write!(f, "failed"),
+            Self::Blocked => write!(f, "blocked"),
+            Self::NotFeasible => write!(f, "not_feasible"),
         }
     }
 }
@@ -61,10 +69,14 @@ impl CompleteMission {
 
 #[derive(Debug, Deserialize)]
 struct CompleteMissionArgs {
-    /// Status: "completed" or "failed"
+    /// Status: "completed", "failed", "blocked", or "not_feasible"
     status: String,
-    /// Optional summary explaining the outcome
+    /// Summary explaining the outcome (required for blocked/not_feasible)
     summary: Option<String>,
+    /// Type of blocker (for blocked status)
+    blocker_type: Option<String>,
+    /// List of approaches attempted before giving up
+    attempted: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -74,7 +86,13 @@ impl Tool for CompleteMission {
     }
 
     fn description(&self) -> &str {
-        "Mark the current mission as completed or failed. Use this when you have finished the user's goal or when you cannot complete it. The user can still reopen or change the mission status later."
+        r#"Mark the current mission status. Use the appropriate status:
+- 'completed': Task fully done with REAL deliverables (not examples/placeholders)
+- 'failed': Errors occurred during execution  
+- 'blocked': Cannot proceed due to blockers (wrong project type, access denied, etc.)
+- 'not_feasible': Task cannot be done as specified (wrong assumptions in request)
+
+IMPORTANT: Use 'blocked' or 'not_feasible' instead of producing fake/placeholder content!"#
     }
 
     fn parameters_schema(&self) -> Value {
@@ -83,12 +101,22 @@ impl Tool for CompleteMission {
             "properties": {
                 "status": {
                     "type": "string",
-                    "enum": ["completed", "failed"],
-                    "description": "The final status of the mission. Use 'completed' when the goal has been achieved, 'failed' when it cannot be completed."
+                    "enum": ["completed", "failed", "blocked", "not_feasible"],
+                    "description": "The mission status:\n- 'completed': Goal achieved with real deliverables\n- 'failed': Errors during execution\n- 'blocked': Cannot proceed (type mismatch, access issues)\n- 'not_feasible': Task impossible as specified"
                 },
                 "summary": {
                     "type": "string",
-                    "description": "Optional summary explaining the outcome (e.g., what was accomplished or why it failed)."
+                    "description": "REQUIRED for blocked/not_feasible. Explain what blocked you or why it's not feasible. For completed, summarize what was done."
+                },
+                "blocker_type": {
+                    "type": "string",
+                    "enum": ["type_mismatch", "access_denied", "resource_unavailable", "tool_failure", "other"],
+                    "description": "For blocked status: what kind of blocker was encountered"
+                },
+                "attempted": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "For blocked/not_feasible: list of approaches you tried before giving up"
                 }
             },
             "required": ["status"]
@@ -102,9 +130,11 @@ impl Tool for CompleteMission {
         let status = match args.status.to_lowercase().as_str() {
             "completed" => MissionStatusValue::Completed,
             "failed" => MissionStatusValue::Failed,
+            "blocked" => MissionStatusValue::Blocked,
+            "not_feasible" => MissionStatusValue::NotFeasible,
             other => {
                 return Err(anyhow::anyhow!(
-                    "Invalid status '{}'. Must be 'completed' or 'failed'.",
+                    "Invalid status '{}'. Must be 'completed', 'failed', 'blocked', or 'not_feasible'.",
                     other
                 ))
             }
@@ -120,6 +150,19 @@ impl Tool for CompleteMission {
             return Ok("No active mission to complete. Start a mission first.".to_string());
         }
 
+        // For blocked/not_feasible, require a summary explaining why
+        if (status == MissionStatusValue::Blocked || status == MissionStatusValue::NotFeasible) 
+            && args.summary.is_none() {
+            return Ok(format!(
+                "⚠️ A summary is required when marking a mission as '{}'. \n\
+                Please call complete_mission again with a summary explaining:\n\
+                - What blocked you or why the task isn't feasible\n\
+                - What approaches you tried\n\
+                - What would be needed to proceed",
+                status
+            ));
+        }
+
         // Validate completion: check if output folder has any files
         if status == MissionStatusValue::Completed {
             let output_dir = working_dir.join("output");
@@ -131,22 +174,48 @@ impl Tool for CompleteMission {
                 true
             };
 
-            // If output is empty and no summary provided, ask agent to continue
-            if output_empty && args.summary.is_none() {
-                tracing::warn!("complete_mission called with empty output folder and no summary");
+            if output_empty {
+                // Return a soft warning - don't block, but encourage the agent to continue
+                tracing::warn!("complete_mission called with empty output folder");
                 return Ok(
-                    "⚠️ INCOMPLETE: The output/ folder is empty and no summary was provided.\n\n\
-                    You must either:\n\
-                    1. Create the requested deliverables in output/ and call complete_mission again, OR\n\
-                    2. Call complete_mission with a summary explaining why no files were needed\n\n\
-                    Do not call complete_mission without deliverables or explanation.".to_string()
+                    "⚠️ WARNING: The output/ folder is empty. You haven't created any deliverables yet.\n\n\
+                    Before completing the mission, please:\n\
+                    1. Create the requested files in output/\n\
+                    2. Verify the deliverables exist\n\
+                    3. Then call complete_mission again\n\n\
+                    If this task genuinely produces no files, call complete_mission with a summary explaining why.\n\n\
+                    If you encountered a BLOCKER (wrong project type, access denied, etc.), use:\n\
+                    complete_mission(status='blocked', summary='explanation of what blocked you')".to_string()
                 );
             }
-            
-            // Log if completing with empty output (but with summary)
-            if output_empty {
-                tracing::info!("Mission completing with empty output folder (summary provided)");
+        }
+
+        // Build enhanced summary for blocked/not_feasible
+        let enhanced_summary = if status == MissionStatusValue::Blocked || status == MissionStatusValue::NotFeasible {
+            let mut parts = vec![];
+            if let Some(ref summary) = args.summary {
+                parts.push(summary.clone());
             }
+            if let Some(ref blocker_type) = args.blocker_type {
+                parts.push(format!("Blocker type: {}", blocker_type));
+            }
+            if let Some(ref attempted) = args.attempted {
+                if !attempted.is_empty() {
+                    parts.push(format!("Attempted: {}", attempted.join(", ")));
+                }
+            }
+            Some(parts.join("\n"))
+        } else {
+            args.summary.clone()
+        };
+
+        // Log blocked/not_feasible status clearly
+        if status == MissionStatusValue::Blocked || status == MissionStatusValue::NotFeasible {
+            tracing::warn!(
+                "Mission marked as {} - {}",
+                status,
+                enhanced_summary.as_deref().unwrap_or("no summary")
+            );
         }
 
         // Send the command
@@ -154,13 +223,12 @@ impl Tool for CompleteMission {
             .cmd_tx
             .send(MissionControlCommand::SetStatus {
                 status,
-                summary: args.summary.clone(),
+                summary: enhanced_summary.clone(),
             })
             .await
             .map_err(|_| anyhow::anyhow!("Failed to send mission control command"))?;
 
-        let summary_msg = args
-            .summary
+        let summary_msg = enhanced_summary
             .map(|s| format!(" Summary: {}", s))
             .unwrap_or_default();
 

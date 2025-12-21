@@ -271,7 +271,7 @@ export async function getRunTasks(
 
 // ==================== Missions ====================
 
-export type MissionStatus = "active" | "completed" | "failed";
+export type MissionStatus = "active" | "completed" | "failed" | "interrupted" | "blocked" | "not_feasible";
 
 export interface MissionHistoryEntry {
   role: string;
@@ -286,6 +286,8 @@ export interface Mission {
   history: MissionHistoryEntry[];
   created_at: string;
   updated_at: string;
+  interrupted_at?: string;
+  resumable?: boolean;
 }
 
 // List all missions
@@ -391,6 +393,18 @@ export async function setMissionStatus(
     body: JSON.stringify({ status }),
   });
   if (!res.ok) throw new Error("Failed to set mission status");
+}
+
+// Resume an interrupted mission
+export async function resumeMission(id: string): Promise<Mission> {
+  const res = await apiFetch(`/api/control/missions/${id}/resume`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to resume mission: ${text}`);
+  }
+  return res.json();
 }
 
 // ==================== Global Control Session ====================

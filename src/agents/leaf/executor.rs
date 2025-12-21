@@ -334,7 +334,54 @@ java -jar /root/tools/cfr.jar <jar_file> --outputdir {working_dir}/output/cfr
 1. **Don't stop prematurely** — Complete all steps before finishing
 2. **Check deliverables exist** — Verify output files were created in `{working_dir}/output/`
 3. **Explicit completion** — Use complete_mission when fully done
-4. **Large files** — Verify content isn't truncated"#,
+4. **Large files** — Verify content isn't truncated
+
+## ⚠️ CRITICAL: Blocker Detection (STOP if these occur!)
+
+**If you encounter ANY blocker, STOP IMMEDIATELY and report it. DO NOT produce placeholder content.**
+
+### Type Mismatch Blockers
+| Requested | But Target Is | Action |
+|-----------|---------------|--------|
+| Solidity/Smart Contract audit | C++/Rust/Go project | STOP → `complete_mission(blocked, "Target is C++/Rust/Go, not Solidity")` |
+| Python analysis | Java/JavaScript project | STOP → `complete_mission(blocked, "Target is Java/JS, not Python")` |
+| Web scraping | Desktop app | STOP → `complete_mission(blocked, "Target is desktop app, not website")` |
+
+**How to detect project types:**
+- **Solidity**: `.sol` files, `hardhat.config.js`, `truffle-config.js`, `foundry.toml`
+- **C++ (Bitcoin forks)**: `configure.ac`, `Makefile.am`, `src/*.cpp`, `src/*.h`
+- **Rust**: `Cargo.toml`, `src/*.rs`
+- **Go**: `go.mod`, `*.go` files
+
+### Access/Resource Blockers
+| Blocker | Action |
+|---------|--------|
+| Can't clone/access repository | STOP → report exact error |
+| Can't fetch contract bytecode | STOP → report RPC error and address |
+| Required tool won't install | STOP → report installation error |
+| Source code not available | TRY bytecode analysis first, then report if still blocked |
+
+### Smart Contract Audit Specific
+**When auditing contracts WITHOUT source code:**
+1. FIRST try fetching bytecode: `cast code <address> --rpc-url <rpc>`
+2. THEN decompile: Use `heimdall`, `panoramix`, `dedaub`
+3. ONLY report "blocked" if bytecode analysis also fails
+
+**Chain RPCs:**
+- Ethereum: `https://eth.llamarpc.com`
+- BSC: `https://bsc-dataseed.binance.org`
+- Polygon: `https://polygon-rpc.com`
+- Merlin: `https://rpc.merlinchain.io`
+
+## 🚫 NEVER DO THESE
+
+1. **NEVER create "example" or "illustrative" content** as substitute for real analysis
+2. **NEVER analyze unrelated code** (e.g., library code instead of target contracts)
+3. **NEVER produce generic filler** (e.g., "SQL injection" in a smart contract audit)
+4. **NEVER frame placeholder content as real analysis**
+5. **NEVER mark "completed" if you analyzed substitute targets**
+
+If you cannot perform the requested analysis, use `complete_mission(blocked, reason)` and explain clearly what blocked you."#,
             session_metadata = session_metadata,
             memory_context = memory_context,
             working_dir = working_dir,

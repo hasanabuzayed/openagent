@@ -22,36 +22,8 @@ use super::types::*;
 /// MCP protocol version we support
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// MCP tools that are blocked because they overlap with better built-in tools.
-/// These tools will be filtered out from the tool list presented to the LLM.
-const BLOCKED_MCP_TOOLS: &[&str] = &[
-    // Filesystem tools - built-in versions are better integrated
-    "read_file",
-    "read_text_file", 
-    "read_media_file",
-    "read_multiple_files",
-    "write_file",
-    "edit_file",
-    "create_directory",
-    "list_directory",
-    "list_directory_with_sizes",
-    "directory_tree",
-    "move_file",
-    "search_files",
-    "get_file_info",
-    "list_allowed_directories",
-    // Puppeteer tools - use browser_* instead
-    "puppeteer_navigate",
-    "puppeteer_screenshot",
-    "puppeteer_click",
-    "puppeteer_fill",
-    "puppeteer_select",
-    "puppeteer_hover",
-    "puppeteer_evaluate",
-];
-
 /// Sanitize MCP server name to create a valid function name prefix.
-/// 
+///
 /// Converts names like "filesystem" or "My Server" to lowercase alphanumeric.
 fn sanitize_mcp_prefix(name: &str) -> String {
     name.chars()
@@ -753,53 +725,36 @@ impl McpRegistry {
     }
 
     /// List all tools from all connected MCPs.
-    /// 
+    ///
     /// Tool names are prefixed with the MCP server name to avoid conflicts
     /// with built-in tools (e.g., `filesystem_read_file` instead of `read_file`).
-    /// 
-    /// Tools in BLOCKED_MCP_TOOLS are filtered out to reduce overlap with built-in tools.
     pub async fn list_tools(&self) -> Vec<McpTool> {
         let states = self.states.read().await;
         let disabled = self.disabled_tools.read().await;
 
         let mut tools = Vec::new();
-        let mut blocked_count = 0;
-        
         for state in states.values() {
             if state.config.enabled && state.status == McpStatus::Connected {
                 // Derive prefix from MCP server name (sanitized for function names)
                 let prefix = sanitize_mcp_prefix(&state.config.name);
-                
+
                 for descriptor in &state.config.tool_descriptors {
-                    // Skip blocked tools (overlap with built-in)
-                    if BLOCKED_MCP_TOOLS.contains(&descriptor.name.as_str()) {
-                        blocked_count += 1;
-                        continue;
-                    }
-                    
                     // Prefix tool name with MCP server name to avoid conflicts
                     let prefixed_name = format!("{}_{}", prefix, descriptor.name);
-                    let prefixed_description = format!(
-                        "[{}] {}",
-                        state.config.name,
-                        descriptor.description
-                    );
-                    
+                    let prefixed_description =
+                        format!("[{}] {}", state.config.name, descriptor.description);
+
                     tools.push(McpTool {
                         name: prefixed_name.clone(),
                         description: prefixed_description,
                         parameters_schema: descriptor.input_schema.clone(),
                         mcp_id: state.config.id,
-                        enabled: !disabled.contains(&descriptor.name) && !disabled.contains(&prefixed_name),
+                        enabled: !disabled.contains(&descriptor.name)
+                            && !disabled.contains(&prefixed_name),
                     });
                 }
             }
         }
-        
-        if blocked_count > 0 {
-            tracing::debug!("Filtered out {} MCP tools that overlap with built-in tools", blocked_count);
-        }
-        
         tools
     }
 
@@ -819,7 +774,7 @@ impl McpRegistry {
     }
 
     /// Find a tool by name (prefixed) and return its MCP ID if found.
-    /// 
+    ///
     /// Tool names should be in prefixed format (e.g., `filesystem_read_file`).
     pub async fn find_tool(&self, name: &str) -> Option<McpTool> {
         let states = self.states.read().await;
@@ -828,14 +783,20 @@ impl McpRegistry {
         for state in states.values() {
             if state.config.enabled && state.status == McpStatus::Connected {
                 let prefix = sanitize_mcp_prefix(&state.config.name);
-                
+
                 for descriptor in &state.config.tool_descriptors {
                     let prefixed_name = format!("{}_{}", prefix, descriptor.name);
-                    
-                    if prefixed_name == name && !disabled.contains(&descriptor.name) && !disabled.contains(&prefixed_name) {
+
+                    if prefixed_name == name
+                        && !disabled.contains(&descriptor.name)
+                        && !disabled.contains(&prefixed_name)
+                    {
                         return Some(McpTool {
                             name: prefixed_name,
-                            description: format!("[{}] {}", state.config.name, descriptor.description),
+                            description: format!(
+                                "[{}] {}",
+                                state.config.name, descriptor.description
+                            ),
                             parameters_schema: descriptor.input_schema.clone(),
                             mcp_id: state.config.id,
                             enabled: true,
@@ -846,9 +807,9 @@ impl McpRegistry {
         }
         None
     }
-    
+
     /// Get the original (unprefixed) tool name for an MCP call.
-    /// 
+    ///
     /// When calling the MCP server, we need to use the original tool name.
     pub fn strip_prefix(prefixed_name: &str) -> String {
         // Find the first underscore and return everything after it

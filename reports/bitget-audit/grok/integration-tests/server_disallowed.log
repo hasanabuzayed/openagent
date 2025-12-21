@@ -1,8 +1,0 @@
-127.0.0.1 - - [20/Dec/2025 14:29:05] "GET /index.html HTTP/1.1" 200 -
-127.0.0.1 - - [20/Dec/2025 14:29:05] "GET /mock-bridge.js HTTP/1.1" 200 -
-127.0.0.1 - - [20/Dec/2025 14:29:05] code 404, message File not found
-127.0.0.1 - - [20/Dec/2025 14:29:05] "GET /favicon.ico HTTP/1.1" 404 -
-127.0.0.1 - - [20/Dec/2025 14:29:58] "GET /index.html HTTP/1.1" 200 -
-127.0.0.1 - - [20/Dec/2025 14:29:58] "GET /mock-bridge.js HTTP/1.1" 200 -
-127.0.0.1 - - [20/Dec/2025 14:29:58] code 404, message File not found
-127.0.0.1 - - [20/Dec/2025 14:29:58] "GET /favicon.ico HTTP/1.1" 404 -
