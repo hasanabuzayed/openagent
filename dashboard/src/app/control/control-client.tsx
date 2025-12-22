@@ -493,6 +493,31 @@ export default function ControlClient() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Handle file upload - wrapped in useCallback to avoid stale closures
+  const handleFileUpload = useCallback(async (file: File) => {
+    setUploadQueue((prev) => [...prev, file.name]);
+
+    try {
+      // Upload to mission-specific context folder if we have a mission
+      const contextPath = currentMission?.id 
+        ? `/root/context/${currentMission.id}/`
+        : "/root/context/";
+      const result = await uploadFile(file, contextPath);
+      toast.success(`Uploaded ${result.name}`);
+
+      // Add a message about the upload
+      setInput((prev) => {
+        const uploadNote = `[Uploaded: ${result.name}]`;
+        return prev ? `${prev}\n${uploadNote}` : uploadNote;
+      });
+    } catch (error) {
+      console.error("Upload failed:", error);
+      toast.error(`Failed to upload ${file.name}`);
+    } finally {
+      setUploadQueue((prev) => prev.filter((name) => name !== file.name));
+    }
+  }, [currentMission?.id]);
+
   // Handle paste to upload files
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -523,32 +548,7 @@ export default function ControlClient() {
 
     textarea.addEventListener("paste", handlePaste);
     return () => textarea.removeEventListener("paste", handlePaste);
-  }, []);
-
-  // Handle file upload
-  const handleFileUpload = async (file: File) => {
-    setUploadQueue((prev) => [...prev, file.name]);
-
-    try {
-      // Upload to mission-specific context folder if we have a mission
-      const contextPath = currentMission?.id 
-        ? `/root/context/${currentMission.id}/`
-        : "/root/context/";
-      const result = await uploadFile(file, contextPath);
-      toast.success(`Uploaded ${result.name}`);
-
-      // Add a message about the upload
-      setInput((prev) => {
-        const uploadNote = `[Uploaded: ${result.name}]`;
-        return prev ? `${prev}\n${uploadNote}` : uploadNote;
-      });
-    } catch (error) {
-      console.error("Upload failed:", error);
-      toast.error(`Failed to upload ${file.name}`);
-    } finally {
-      setUploadQueue((prev) => prev.filter((name) => name !== file.name));
-    }
-  };
+  }, [handleFileUpload]);
 
   // Handle file input change
   const handleFileChange = async (
