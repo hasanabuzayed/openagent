@@ -43,9 +43,9 @@ headers: { 'Authorization': `Bearer ${token}` }
 ```
 dashboard/src/
 ├── app/              # Next.js App Router pages
+│   ├── control/      # Mission control panel (chat interface)
+│   ├── history/      # Agents page - mission history + tree modal
 │   ├── console/      # SSH terminal + file explorer
-│   ├── control/      # Task control panel + agent tree panel
-│   ├── history/      # Mission history with tree preview
 │   ├── modules/      # MCP module management
 │   ├── files/        # File explorer
 │   └── settings/     # Configuration
@@ -56,6 +56,17 @@ dashboard/src/
 ├── hooks/            # React hooks
 └── lib/              # Utilities (api, auth, settings)
 ```
+
+## Navigation Structure
+
+| Nav Item | Route | Description |
+|----------|-------|-------------|
+| Overview | `/` | Global stats and recent missions |
+| Mission | `/control` | Active mission chat interface |
+| Agents | `/history` | Mission history with tree visualization modal |
+| Console | `/console` | SSH terminal access |
+| Modules | `/modules` | MCP server management |
+| Settings | `/settings` | Configuration |
 
 ## Refresh Resilience Pattern
 
@@ -97,9 +108,11 @@ useEffect(() => {
 
 ## Agent Tree Visualization
 
-Dynamic, animated tree visualization for hierarchical agent execution. Uses SVG + framer-motion for smooth animations. The tree is embedded in:
-- **Control page**: Collapsible side panel showing live execution
-- **History page**: Preview panel when clicking tree icon on a mission
+Dynamic, animated tree visualization for hierarchical agent execution. Uses SVG + framer-motion for smooth animations. 
+
+The tree is accessed via a **modal** from the Agents page (formerly History):
+- Click the tree icon on any mission row to open the full-screen modal
+- Modal shows the agent execution tree with pan/zoom controls
 
 ### Component Structure
 

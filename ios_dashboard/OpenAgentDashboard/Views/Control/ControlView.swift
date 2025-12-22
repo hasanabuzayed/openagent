@@ -27,6 +27,9 @@ struct ControlView: View {
     @State private var showRunningMissions = false
     @State private var pollingTask: Task<Void, Never>?
     
+    // Track pending fetch to prevent race conditions
+    @State private var fetchingMissionId: String?
+    
     @FocusState private var isInputFocused: Bool
     
     private let api = APIService.shared
@@ -547,11 +550,20 @@ struct ControlView: View {
     }
     
     private func loadMission(id: String) async {
+        // Set target immediately for race condition tracking
+        fetchingMissionId = id
+        
         isLoading = true
         defer { isLoading = false }
 
         do {
             let mission = try await api.getMission(id: id)
+            
+            // Race condition guard: only update if this is still the mission we want
+            guard fetchingMissionId == id else {
+                return // Another mission was requested, discard this response
+            }
+            
             currentMission = mission
             viewingMissionId = mission.id
             messages = mission.history.enumerated().map { index, entry in
@@ -568,6 +580,9 @@ struct ControlView: View {
                 shouldScrollToBottom = true
             }
         } catch {
+            // Race condition guard
+            guard fetchingMissionId == id else { return }
+            
             print("Failed to load mission: \(error)")
         }
     }
@@ -694,6 +709,10 @@ struct ControlView: View {
     private func switchToMission(id: String) async {
         guard id != viewingMissionId else { return }
         
+        // Set the target mission ID immediately for race condition tracking
+        viewingMissionId = id
+        fetchingMissionId = id
+        
         isLoading = true
         defer { isLoading = false }
         
@@ -701,8 +720,10 @@ struct ControlView: View {
             // Load the mission from API
             let mission = try await api.getMission(id: id)
             
-            // Update state
-            viewingMissionId = id
+            // Race condition guard: only update if this is still the mission we want
+            guard fetchingMissionId == id else {
+                return // Another mission was requested, discard this response
+            }
             
             // If this is not a parallel mission, also update currentMission
             if runningMissions.contains(where: { $0.missionId == id }) {
@@ -729,6 +750,9 @@ struct ControlView: View {
             HapticService.selectionChanged()
             shouldScrollToBottom = true
         } catch {
+            // Race condition guard: only show error if this is still the mission we want
+            guard fetchingMissionId == id else { return }
+            
             print("Failed to switch mission: \(error)")
             HapticService.error()
         }

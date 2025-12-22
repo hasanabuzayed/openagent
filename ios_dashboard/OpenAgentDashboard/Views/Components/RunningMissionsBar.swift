@@ -114,7 +114,8 @@ struct RunningMissionsBar: View {
     private func runningMissionChip(_ mission: RunningMissionInfo) -> some View {
         let isViewing = viewingMissionId == mission.missionId
         let isStalled = mission.isStalled
-        let isSeverlyStalled = mission.secondsSinceActivity > 120
+        // Only show severely stalled state for running missions
+        let isSeverlyStalled = mission.isRunning && mission.secondsSinceActivity > 120
         
         let borderColor: Color = {
             if isViewing { return Theme.accent.opacity(0.3) }
@@ -208,7 +209,8 @@ struct RunningMissionsBar: View {
     // MARK: - Helpers
     
     private func statusColor(for mission: RunningMissionInfo) -> Color {
-        if mission.secondsSinceActivity > 120 {
+        // Only show stalled/severely-stalled states for running missions
+        if mission.isRunning && mission.secondsSinceActivity > 120 {
             return Theme.error
         } else if mission.isStalled {
             return Theme.warning

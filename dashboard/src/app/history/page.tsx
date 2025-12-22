@@ -117,6 +117,9 @@ export default function HistoryPage() {
   const [previewMissionId, setPreviewMissionId] = useState<string | null>(null);
   const [previewTree, setPreviewTree] = useState<AgentNode | null>(null);
   const [loadingTree, setLoadingTree] = useState(false);
+  
+  // Track the mission ID being fetched to prevent race conditions
+  const fetchingTreeMissionIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (fetchedRef.current) return;
@@ -143,13 +146,22 @@ export default function HistoryPage() {
       // Toggle off
       setPreviewMissionId(null);
       setPreviewTree(null);
+      fetchingTreeMissionIdRef.current = null;
       return;
     }
 
     setPreviewMissionId(missionId);
     setLoadingTree(true);
+    fetchingTreeMissionIdRef.current = missionId;
+    
     try {
       const tree = await getMissionTree(missionId);
+      
+      // Race condition guard: only update if this is still the mission we want
+      if (fetchingTreeMissionIdRef.current !== missionId) {
+        return; // Another mission was requested, discard this response
+      }
+      
       if (tree && isRecord(tree)) {
         setPreviewTree(convertTreeNode(tree as Record<string, unknown>));
       } else {
@@ -157,10 +169,18 @@ export default function HistoryPage() {
         toast.error("No tree data available for this mission");
       }
     } catch {
+      // Race condition guard: only update if this is still the mission we want
+      if (fetchingTreeMissionIdRef.current !== missionId) {
+        return;
+      }
+      
       setPreviewTree(null);
       toast.error("Failed to load tree");
     } finally {
-      setLoadingTree(false);
+      // Only clear loading if this is still the current fetch
+      if (fetchingTreeMissionIdRef.current === missionId) {
+        setLoadingTree(false);
+      }
     }
   }, [previewMissionId]);
 
@@ -207,9 +227,9 @@ export default function HistoryPage() {
     <div className="p-6">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-xl font-semibold text-white">History</h1>
+        <h1 className="text-xl font-semibold text-white">Agents</h1>
         <p className="mt-1 text-sm text-white/50">
-          View all past and current tasks
+          Mission history and agent tree visualization
         </p>
       </div>
 
@@ -219,7 +239,7 @@ export default function HistoryPage() {
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/30" />
           <input
             type="text"
-            placeholder="Search tasks..."
+            placeholder="Search missions..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] py-2.5 pl-10 pr-4 text-sm text-white placeholder-white/30 focus:border-indigo-500/50 focus:outline-none transition-colors"
@@ -245,9 +265,7 @@ export default function HistoryPage() {
       </div>
 
       {/* Content */}
-      <div className="flex gap-6">
-        {/* Main content */}
-        <div className={cn("flex-1 min-w-0", previewMissionId && "max-w-[calc(100%-22rem)]")}>
+      <div>
           {loading ? (
             <div className="space-y-6">
               {/* Shimmer for missions table */}
@@ -418,46 +436,70 @@ export default function HistoryPage() {
             </div>
             </div>
           )}
-        </div>
+      </div>
 
-        {/* Tree Preview Panel */}
-        {previewMissionId && (
-          <div className="w-80 shrink-0 rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
-              <div className="flex items-center gap-2">
-                <Network className="h-4 w-4 text-emerald-400" />
-                <span className="text-sm font-medium text-white">Agent Tree</span>
+      {/* Agent Tree Modal */}
+      {previewMissionId && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => {
+            setPreviewMissionId(null);
+            setPreviewTree(null);
+          }}
+        >
+          <div
+            className="relative w-[90vw] h-[85vh] max-w-6xl rounded-2xl bg-[#0a0a0a] border border-white/[0.08] shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10">
+                  <Network className="h-5 w-5 text-emerald-400" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-white">Agent Tree</h2>
+                  <p className="text-xs text-white/40">
+                    {missions.find((m) => m.id === previewMissionId)?.title?.slice(0, 50) || "Mission visualization"}
+                  </p>
+                </div>
               </div>
               <button
                 onClick={() => {
                   setPreviewMissionId(null);
                   setPreviewTree(null);
                 }}
-                className="p-1 rounded hover:bg-white/[0.04] text-white/40 hover:text-white/70 transition-colors"
+                className="flex h-10 w-10 items-center justify-center rounded-xl text-white/40 hover:bg-white/[0.04] hover:text-white/70 transition-colors"
               >
-                <X className="h-4 w-4" />
+                <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="flex-1 min-h-[400px]">
+
+            {/* Modal Content */}
+            <div className="flex-1 min-h-0">
               {loadingTree ? (
-                <div className="flex items-center justify-center h-full">
-                  <Loader className="h-6 w-6 animate-spin text-white/40" />
+                <div className="flex flex-col items-center justify-center h-full">
+                  <Loader className="h-8 w-8 animate-spin text-emerald-400 mb-3" />
+                  <p className="text-sm text-white/60">Loading agent tree...</p>
                 </div>
               ) : previewTree ? (
-                <AgentTreeCanvas tree={previewTree} compact className="w-full h-full" />
+                <AgentTreeCanvas tree={previewTree} className="w-full h-full" />
               ) : (
-                <div className="flex flex-col items-center justify-center h-full text-center p-4">
-                  <Network className="h-8 w-8 text-white/20 mb-2" />
-                  <p className="text-sm text-white/40">No tree data available</p>
-                  <p className="text-xs text-white/30 mt-1">
-                    Tree data is captured during execution
+                <div className="flex flex-col items-center justify-center h-full text-center p-8">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-white/[0.02] mb-4">
+                    <Network className="h-10 w-10 text-white/20" />
+                  </div>
+                  <p className="text-lg font-medium text-white/60">No tree data available</p>
+                  <p className="text-sm text-white/30 mt-2 max-w-md">
+                    Agent tree data is captured during mission execution. 
+                    This mission may have been completed before tree tracking was enabled.
                   </p>
                 </div>
               )}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

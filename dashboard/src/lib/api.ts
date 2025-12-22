@@ -748,3 +748,18 @@ export async function uploadFile(
 
   return res.json();
 }
+
+// ==================== Models ====================
+
+export interface ModelsResponse {
+  models: string[];
+  count: number;
+}
+
+// List available models
+export async function listModels(tier?: string): Promise<ModelsResponse> {
+  const params = tier ? `?tier=${encodeURIComponent(tier)}` : "";
+  const res = await apiFetch(`/api/models${params}`);
+  if (!res.ok) throw new Error("Failed to fetch models");
+  return res.json();
+}
