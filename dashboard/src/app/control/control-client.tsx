@@ -530,8 +530,12 @@ export default function ControlClient() {
     setUploadQueue((prev) => [...prev, file.name]);
 
     try {
-      const result = await uploadFile(file, "/root/context/");
-      toast.success(`Uploaded ${result.name} to /root/context/`);
+      // Upload to mission-specific context folder if we have a mission
+      const contextPath = currentMission?.id 
+        ? `/root/context/${currentMission.id}/`
+        : "/root/context/";
+      const result = await uploadFile(file, contextPath);
+      toast.success(`Uploaded ${result.name}`);
 
       // Add a message about the upload
       setInput((prev) => {
@@ -1455,7 +1459,7 @@ export default function ControlClient() {
                       it&apos;s busy
                     </p>
                     <p className="mt-1 text-xs text-white/30">
-                      Tip: Paste files directly to upload to /root/context/
+                      Tip: Paste files directly to upload to context folder
                     </p>
                   </>
                 )}

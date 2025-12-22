@@ -554,7 +554,6 @@ struct ControlView: View {
         fetchingMissionId = id
         
         isLoading = true
-        defer { isLoading = false }
 
         do {
             let mission = try await api.getMission(id: id)
@@ -573,6 +572,7 @@ struct ControlView: View {
                     content: entry.content
                 )
             }
+            isLoading = false
             HapticService.success()
             
             // Scroll to bottom after loading
@@ -583,6 +583,7 @@ struct ControlView: View {
             // Race condition guard
             guard fetchingMissionId == id else { return }
             
+            isLoading = false
             print("Failed to load mission: \(error)")
         }
     }
@@ -714,7 +715,6 @@ struct ControlView: View {
         fetchingMissionId = id
         
         isLoading = true
-        defer { isLoading = false }
         
         do {
             // Load the mission from API
@@ -747,12 +747,14 @@ struct ControlView: View {
                 }
             }
             
+            isLoading = false
             HapticService.selectionChanged()
             shouldScrollToBottom = true
         } catch {
             // Race condition guard: only show error if this is still the mission we want
             guard fetchingMissionId == id else { return }
             
+            isLoading = false
             print("Failed to switch mission: \(error)")
             HapticService.error()
         }

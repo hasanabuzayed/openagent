@@ -445,6 +445,7 @@ export default function HistoryPage() {
           onClick={() => {
             setPreviewMissionId(null);
             setPreviewTree(null);
+            fetchingTreeMissionIdRef.current = null;
           }}
         >
           <div
@@ -468,6 +469,7 @@ export default function HistoryPage() {
                 onClick={() => {
                   setPreviewMissionId(null);
                   setPreviewTree(null);
+                  fetchingTreeMissionIdRef.current = null;
                 }}
                 className="flex h-10 w-10 items-center justify-center rounded-xl text-white/40 hover:bg-white/[0.04] hover:text-white/70 transition-colors"
               >
