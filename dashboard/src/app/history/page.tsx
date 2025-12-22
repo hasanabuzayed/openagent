@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { listTasks, listRuns, listMissions, TaskState, Run, Mission } from "@/lib/api";
+import { listMissions, getMissionTree, Mission } from "@/lib/api";
 import { ShimmerTableRow } from "@/components/ui/shimmer";
 import { CopyButton } from "@/components/ui/copy-button";
 import { RelativeTime } from "@/components/ui/relative-time";
+import { AgentTreeCanvas, type AgentNode } from "@/components/agent-tree";
 import {
   CheckCircle,
   XCircle,
@@ -21,9 +22,11 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Network,
+  X,
 } from "lucide-react";
 
-const statusIcons = {
+const statusIcons: Record<string, typeof Clock> = {
   pending: Clock,
   running: Loader,
   completed: CheckCircle,
@@ -35,7 +38,7 @@ const statusIcons = {
   not_feasible: XCircle,
 };
 
-const statusConfig = {
+const statusConfig: Record<string, { color: string; bg: string }> = {
   pending: { color: "text-amber-400", bg: "bg-amber-500/10" },
   running: { color: "text-indigo-400", bg: "bg-indigo-500/10" },
   completed: { color: "text-emerald-400", bg: "bg-emerald-500/10" },
@@ -46,6 +49,10 @@ const statusConfig = {
   blocked: { color: "text-orange-400", bg: "bg-orange-500/10" },
   not_feasible: { color: "text-rose-400", bg: "bg-rose-500/10" },
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 type SortField = 'date' | 'status' | 'messages';
 type SortDirection = 'asc' | 'desc';
@@ -80,16 +87,36 @@ function SortButton({
   );
 }
 
+// Convert backend tree node to frontend AgentNode
+function convertTreeNode(node: Record<string, unknown>): AgentNode {
+  const children = (node["children"] as Record<string, unknown>[] | undefined) ?? [];
+  return {
+    id: String(node["id"] ?? ""),
+    type: String(node["node_type"] ?? "Node") as AgentNode["type"],
+    status: String(node["status"] ?? "pending") as AgentNode["status"],
+    name: String(node["name"] ?? ""),
+    description: String(node["description"] ?? ""),
+    model: node["selected_model"] != null ? String(node["selected_model"]) : undefined,
+    budgetAllocated: Number(node["budget_allocated"] ?? 0),
+    budgetSpent: Number(node["budget_spent"] ?? 0),
+    complexity: node["complexity"] != null ? Number(node["complexity"]) : undefined,
+    children: children.map((c) => convertTreeNode(c)),
+  };
+}
+
 export default function HistoryPage() {
-  const [tasks, setTasks] = useState<TaskState[]>([]);
-  const [runs, setRuns] = useState<Run[]>([]);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
-  const [sortField, setSortField] = useState<SortField>('date');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+  const [sortField, setSortField] = useState<SortField>("date");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const fetchedRef = useRef(false);
+
+  // Tree preview state
+  const [previewMissionId, setPreviewMissionId] = useState<string | null>(null);
+  const [previewTree, setPreviewTree] = useState<AgentNode | null>(null);
+  const [loadingTree, setLoadingTree] = useState(false);
 
   useEffect(() => {
     if (fetchedRef.current) return;
@@ -97,13 +124,7 @@ export default function HistoryPage() {
 
     const fetchData = async () => {
       try {
-        const [tasksData, runsData, missionsData] = await Promise.all([
-          listTasks().catch(() => []),
-          listRuns().catch(() => ({ runs: [] })),
-          listMissions().catch(() => []),
-        ]);
-        setTasks(tasksData);
-        setRuns(runsData.runs || []);
+        const missionsData = await listMissions().catch(() => []);
         setMissions(missionsData);
       } catch (error) {
         console.error("Failed to fetch data:", error);
@@ -116,31 +137,44 @@ export default function HistoryPage() {
     fetchData();
   }, []);
 
+  // Load tree for preview
+  const handlePreviewTree = useCallback(async (missionId: string) => {
+    if (previewMissionId === missionId) {
+      // Toggle off
+      setPreviewMissionId(null);
+      setPreviewTree(null);
+      return;
+    }
+
+    setPreviewMissionId(missionId);
+    setLoadingTree(true);
+    try {
+      const tree = await getMissionTree(missionId);
+      if (tree && isRecord(tree)) {
+        setPreviewTree(convertTreeNode(tree as Record<string, unknown>));
+      } else {
+        setPreviewTree(null);
+        toast.error("No tree data available for this mission");
+      }
+    } catch {
+      setPreviewTree(null);
+      toast.error("Failed to load tree");
+    } finally {
+      setLoadingTree(false);
+    }
+  }, [previewMissionId]);
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
     } else {
       setSortField(field);
-      setSortDirection('desc');
+      setSortDirection("desc");
     }
   };
 
-  const filteredTasks = tasks.filter((task) => {
-    if (filter !== "all" && task.status !== filter) return false;
-    if (search && !task.task.toLowerCase().includes(search.toLowerCase()))
-      return false;
-    return true;
-  });
-
-  const filteredRuns = runs.filter((run) => {
-    if (filter !== "all" && run.status !== filter) return false;
-    if (search && !run.input_text.toLowerCase().includes(search.toLowerCase()))
-      return false;
-    return true;
-  });
-
   const filteredMissions = useMemo(() => {
-    let filtered = missions.filter((mission) => {
+    const filtered = missions.filter((mission) => {
       if (filter !== "all" && mission.status !== filter) return false;
       const title = mission.title || "";
       if (search && !title.toLowerCase().includes(search.toLowerCase()))
@@ -152,21 +186,22 @@ export default function HistoryPage() {
     return filtered.sort((a, b) => {
       let comparison = 0;
       switch (sortField) {
-        case 'date':
-          comparison = new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+        case "date":
+          comparison =
+            new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
           break;
-        case 'status':
+        case "status":
           comparison = a.status.localeCompare(b.status);
           break;
-        case 'messages':
+        case "messages":
           comparison = b.history.length - a.history.length;
           break;
       }
-      return sortDirection === 'asc' ? -comparison : comparison;
+      return sortDirection === "asc" ? -comparison : comparison;
     });
   }, [missions, filter, search, sortField, sortDirection]);
 
-  const hasData = filteredTasks.length > 0 || filteredRuns.length > 0 || filteredMissions.length > 0;
+  const hasData = filteredMissions.length > 0;
 
   return (
     <div className="p-6">
@@ -210,128 +245,65 @@ export default function HistoryPage() {
       </div>
 
       {/* Content */}
-      {loading ? (
-        <div className="space-y-6">
-          {/* Shimmer for missions table */}
-          <div>
-            <div className="h-4 w-24 bg-white/[0.04] rounded mb-3 animate-pulse" />
-            <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-white/[0.04]">
-                    <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">Status</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">Mission</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">Messages</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">Updated</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.04]">
-                  <ShimmerTableRow columns={5} />
-                  <ShimmerTableRow columns={5} />
-                  <ShimmerTableRow columns={5} />
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      ) : !hasData ? (
-        <div className="flex flex-col items-center py-16 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/[0.02] mb-4">
-            <MessageSquare className="h-8 w-8 text-white/30" />
-          </div>
-          <p className="text-white/80">No history yet</p>
-          <p className="mt-2 text-sm text-white/40">
-            Start a conversation in the{" "}
-            <Link
-              href="/control"
-              className="text-indigo-400 hover:text-indigo-300"
-            >
-              Control
-            </Link>{" "}
-            page
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {/* Archived Runs - shown first for visibility */}
-          {filteredRuns.length > 0 && (
-            <div>
-              <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-white/40">
-                Recent Runs ({filteredRuns.length})
-              </h2>
-              <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-white/[0.04]">
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Status
-                      </th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Input
-                      </th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Created
-                      </th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Cost
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/[0.04]">
-                    {filteredRuns.map((run) => {
-                      const status = run.status as keyof typeof statusIcons;
-                      const Icon = statusIcons[status] || Clock;
-                      const config =
-                        statusConfig[status] || statusConfig.pending;
-                      return (
-                        <tr
-                          key={run.id}
-                          className="group hover:bg-white/[0.02] transition-colors"
-                        >
-                          <td className="px-4 py-3">
-                            <span
-                              className={cn(
-                                "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium",
-                                config.bg,
-                                config.color
-                              )}
-                            >
-                              <Icon className="h-3 w-3" />
-                              {run.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <p className="max-w-md truncate text-sm text-white/80">
-                                {run.input_text}
-                              </p>
-                              <CopyButton text={run.input_text} showOnHover label="Copied input" />
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <RelativeTime 
-                              date={run.created_at} 
-                              className="text-xs text-white/40"
-                            />
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className="text-sm text-emerald-400 tabular-nums">
-                              ${(run.total_cost_cents / 100).toFixed(2)}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+      <div className="flex gap-6">
+        {/* Main content */}
+        <div className={cn("flex-1 min-w-0", previewMissionId && "max-w-[calc(100%-22rem)]")}>
+          {loading ? (
+            <div className="space-y-6">
+              {/* Shimmer for missions table */}
+              <div>
+                <div className="h-4 w-24 bg-white/[0.04] rounded mb-3 animate-pulse" />
+                <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] overflow-hidden">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-white/[0.04]">
+                        <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
+                          Status
+                        </th>
+                        <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
+                          Mission
+                        </th>
+                        <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
+                          Messages
+                        </th>
+                        <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
+                          Updated
+                        </th>
+                        <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/[0.04]">
+                      <ShimmerTableRow columns={5} />
+                      <ShimmerTableRow columns={5} />
+                      <ShimmerTableRow columns={5} />
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-          )}
-
-          {/* Missions */}
-          {filteredMissions.length > 0 && (
-            <div>
+          ) : !hasData ? (
+            <div className="flex flex-col items-center py-16 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/[0.02] mb-4">
+                <MessageSquare className="h-8 w-8 text-white/30" />
+              </div>
+              <p className="text-white/80">No history yet</p>
+              <p className="mt-2 text-sm text-white/40">
+                Start a conversation in the{" "}
+                <Link
+                  href="/control"
+                  className="text-indigo-400 hover:text-indigo-300"
+                >
+                  Control
+                </Link>{" "}
+                page
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {/* Missions */}
+              <div>
               <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-white/40">
                 Missions ({filteredMissions.length})
               </h2>
@@ -342,7 +314,7 @@ export default function HistoryPage() {
                       <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
                         <span className="flex items-center">
                           Status
-                          <SortButton field="status" currentField={sortField} direction={sortDirection} onClick={() => handleSort('status')} />
+                          <SortButton field="status" currentField={sortField} direction={sortDirection} onClick={() => handleSort("status")} />
                         </span>
                       </th>
                       <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
@@ -351,13 +323,13 @@ export default function HistoryPage() {
                       <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
                         <span className="flex items-center">
                           Messages
-                          <SortButton field="messages" currentField={sortField} direction={sortDirection} onClick={() => handleSort('messages')} />
+                          <SortButton field="messages" currentField={sortField} direction={sortDirection} onClick={() => handleSort("messages")} />
                         </span>
                       </th>
                       <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
                         <span className="flex items-center">
                           Updated
-                          <SortButton field="date" currentField={sortField} direction={sortDirection} onClick={() => handleSort('date')} />
+                          <SortButton field="date" currentField={sortField} direction={sortDirection} onClick={() => handleSort("date")} />
                         </span>
                       </th>
                       <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
@@ -417,9 +389,21 @@ export default function HistoryPage() {
                                 {mission.status === "active" ? "Continue" : "View"}{" "}
                                 <ArrowRight className="h-3 w-3" />
                               </Link>
-                              <CopyButton 
-                                text={mission.id} 
-                                showOnHover 
+                              <button
+                                onClick={() => handlePreviewTree(mission.id)}
+                                className={cn(
+                                  "inline-flex items-center gap-1 text-xs transition-colors",
+                                  previewMissionId === mission.id
+                                    ? "text-emerald-400 hover:text-emerald-300"
+                                    : "text-white/40 hover:text-white/60"
+                                )}
+                                title="View agent tree"
+                              >
+                                <Network className="h-3 w-3" />
+                              </button>
+                              <CopyButton
+                                text={mission.id}
+                                showOnHover
                                 label="Copied mission ID"
                                 className="opacity-0 group-hover:opacity-100"
                               />
@@ -432,106 +416,48 @@ export default function HistoryPage() {
                 </table>
               </div>
             </div>
-          )}
-
-          {/* Active Tasks */}
-          {filteredTasks.length > 0 && (
-            <div>
-              <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-white/40">
-                Active Tasks ({filteredTasks.length})
-              </h2>
-              <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-white/[0.04]">
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Status
-                      </th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Task
-                      </th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Model
-                      </th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Iterations
-                      </th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-white/40">
-                        Actions
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/[0.04]">
-                    {filteredTasks.map((task) => {
-                      const Icon = statusIcons[task.status];
-                      const config = statusConfig[task.status];
-                      return (
-                        <tr
-                          key={task.id}
-                          className="group hover:bg-white/[0.02] transition-colors"
-                        >
-                          <td className="px-4 py-3">
-                            <span
-                              className={cn(
-                                "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium",
-                                config.bg,
-                                config.color
-                              )}
-                            >
-                              <Icon
-                                className={cn(
-                                  "h-3 w-3",
-                                  task.status === "running" && "animate-spin"
-                                )}
-                              />
-                              {task.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <p className="max-w-md truncate text-sm text-white/80">
-                                {task.task}
-                              </p>
-                              <CopyButton text={task.task} showOnHover label="Copied task" />
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className="text-xs text-white/40 font-mono">
-                              {task.model.split("/").pop()}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className="text-sm text-white tabular-nums">
-                              {task.iterations}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <Link
-                                href={`/control?task=${task.id}`}
-                                className="inline-flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-                              >
-                                View <ArrowRight className="h-3 w-3" />
-                              </Link>
-                              <CopyButton 
-                                text={task.id} 
-                                showOnHover 
-                                label="Copied task ID"
-                                className="opacity-0 group-hover:opacity-100"
-                              />
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
             </div>
           )}
-
         </div>
-      )}
+
+        {/* Tree Preview Panel */}
+        {previewMissionId && (
+          <div className="w-80 shrink-0 rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
+              <div className="flex items-center gap-2">
+                <Network className="h-4 w-4 text-emerald-400" />
+                <span className="text-sm font-medium text-white">Agent Tree</span>
+              </div>
+              <button
+                onClick={() => {
+                  setPreviewMissionId(null);
+                  setPreviewTree(null);
+                }}
+                className="p-1 rounded hover:bg-white/[0.04] text-white/40 hover:text-white/70 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-[400px]">
+              {loadingTree ? (
+                <div className="flex items-center justify-center h-full">
+                  <Loader className="h-6 w-6 animate-spin text-white/40" />
+                </div>
+              ) : previewTree ? (
+                <AgentTreeCanvas tree={previewTree} compact className="w-full h-full" />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-center p-4">
+                  <Network className="h-8 w-8 text-white/20 mb-2" />
+                  <p className="text-sm text-white/40">No tree data available</p>
+                  <p className="text-xs text-white/30 mt-1">
+                    Tree data is captured during execution
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

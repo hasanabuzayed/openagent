@@ -9,7 +9,6 @@ import { BrainLogo } from '@/components/icons';
 import {
   LayoutDashboard,
   MessageSquare,
-  Network,
   History,
   Terminal,
   Settings,
@@ -22,7 +21,6 @@ import {
 const navigation = [
   { name: 'Overview', href: '/', icon: LayoutDashboard },
   { name: 'Control', href: '/control', icon: MessageSquare },
-  { name: 'Agents', href: '/agents', icon: Network },
   { name: 'Modules', href: '/modules', icon: Plug },
   { name: 'Console', href: '/console', icon: Terminal },
   { name: 'History', href: '/history', icon: History },
