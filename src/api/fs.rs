@@ -733,9 +733,32 @@ pub async fn download_from_url(
             .get("content-disposition")
             .and_then(|h| h.to_str().ok())
             .and_then(|s| {
-                s.split("filename=")
-                    .nth(1)
-                    .map(|f| f.trim_matches('"').trim_matches('\'').to_string())
+                // Parse Content-Disposition header properly
+                // Format: attachment; filename="report.pdf"; size=1234
+                // or: attachment; filename=report.pdf
+                s.split("filename=").nth(1).and_then(|after_filename| {
+                    let trimmed = after_filename.trim();
+                    if trimmed.starts_with('"') {
+                        // Quoted filename: find the closing quote
+                        trimmed
+                            .get(1..)
+                            .and_then(|s| s.split('"').next())
+                            .map(|s| s.to_string())
+                    } else if trimmed.starts_with('\'') {
+                        // Single-quoted filename: find the closing quote
+                        trimmed
+                            .get(1..)
+                            .and_then(|s| s.split('\'').next())
+                            .map(|s| s.to_string())
+                    } else {
+                        // Unquoted filename: split on semicolon or whitespace
+                        trimmed
+                            .split(|c: char| c == ';' || c.is_whitespace())
+                            .next()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    }
+                })
             })
             .unwrap_or_else(|| {
                 req.url

@@ -59,6 +59,13 @@ import {
   PlayCircle,
   Link2,
   X,
+  Wrench,
+  Terminal,
+  FileText,
+  Search,
+  Globe,
+  Code,
+  FolderOpen,
 } from "lucide-react";
 import {
   OptionList,
@@ -102,6 +109,8 @@ type ChatItem =
       name: string;
       args: unknown;
       result?: unknown;
+      isUiTool: boolean;
+      startTime: number;
     }
   | {
       kind: "system";
@@ -326,6 +335,190 @@ function ThinkingItem({
           <div className="text-xs text-white/50 whitespace-pre-wrap overflow-y-auto max-h-64 leading-relaxed">
             {item.content}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Get icon for tool based on its name
+function getToolIcon(toolName: string) {
+  const name = toolName.toLowerCase();
+  if (name.includes("bash") || name.includes("shell") || name.includes("terminal") || name.includes("exec")) {
+    return Terminal;
+  }
+  if (name.includes("read") || name.includes("file") || name.includes("write")) {
+    return FileText;
+  }
+  if (name.includes("search") || name.includes("grep") || name.includes("find")) {
+    return Search;
+  }
+  if (name.includes("browser") || name.includes("web") || name.includes("http") || name.includes("url")) {
+    return Globe;
+  }
+  if (name.includes("code") || name.includes("edit") || name.includes("patch")) {
+    return Code;
+  }
+  if (name.includes("list") || name.includes("dir") || name.includes("ls")) {
+    return FolderOpen;
+  }
+  return Wrench;
+}
+
+// Format tool arguments for display
+function formatToolArgs(args: unknown): string {
+  if (args === null || args === undefined) return "";
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return String(args);
+  }
+}
+
+// Truncate text for preview
+function truncateText(text: string, maxLength: number = 100): string {
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength) + "...";
+}
+
+// Tool call item component with collapsible UI
+function ToolCallItem({
+  item,
+}: {
+  item: Extract<ChatItem, { kind: "tool" }>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const isDone = item.result !== undefined;
+  const ToolIcon = getToolIcon(item.name);
+
+  // Update elapsed time while tool is running
+  useEffect(() => {
+    if (isDone) return;
+    const interval = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - item.startTime) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isDone, item.startTime]);
+
+  const formatDuration = (seconds: number) => {
+    if (seconds < 60) return `${seconds}s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}m${secs > 0 ? ` ${secs}s` : ""}`;
+  };
+
+  const duration = isDone
+    ? formatDuration(Math.floor((Date.now() - item.startTime) / 1000))
+    : formatDuration(elapsedSeconds);
+
+  const argsStr = formatToolArgs(item.args);
+  const resultStr = item.result !== undefined ? formatToolArgs(item.result) : null;
+  
+  // Determine result status
+  const isError = resultStr !== null && (
+    resultStr.toLowerCase().includes("error") ||
+    resultStr.toLowerCase().includes("failed") ||
+    resultStr.toLowerCase().includes("exception")
+  );
+
+  // Get a preview of the args for the collapsed state
+  const argsPreview = truncateText(
+    typeof item.args === "object" && item.args !== null
+      ? Object.keys(item.args as Record<string, unknown>).slice(0, 2).join(", ")
+      : argsStr,
+    50
+  );
+
+  return (
+    <div className="my-2">
+      {/* Compact header */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className={cn(
+          "flex items-center gap-1.5 px-2.5 py-1 rounded-full",
+          "bg-white/[0.04] border border-white/[0.06]",
+          "text-white/40 hover:text-white/60 hover:bg-white/[0.06]",
+          "transition-all duration-200",
+          !isDone && "border-amber-500/20",
+          isDone && !isError && "border-emerald-500/20",
+          isDone && isError && "border-red-500/20"
+        )}
+      >
+        <ToolIcon
+          className={cn(
+            "h-3 w-3",
+            !isDone && "animate-pulse text-amber-400",
+            isDone && !isError && "text-emerald-400",
+            isDone && isError && "text-red-400"
+          )}
+        />
+        <span className="text-xs font-mono text-indigo-400">{item.name}</span>
+        {argsPreview && (
+          <span className="text-xs text-white/30 truncate max-w-[150px]">
+            ({argsPreview})
+          </span>
+        )}
+        <span className="text-xs text-white/30 ml-1">
+          {isDone ? `${duration}` : `${duration}...`}
+        </span>
+        {isDone && !isError && <CheckCircle className="h-3 w-3 text-emerald-400" />}
+        {isDone && isError && <XCircle className="h-3 w-3 text-red-400" />}
+        {!isDone && <Loader className="h-3 w-3 animate-spin text-amber-400" />}
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 transition-transform duration-200 ml-1",
+            expanded ? "rotate-0" : "-rotate-90"
+          )}
+        />
+      </button>
+
+      {/* Expandable content with animation */}
+      <div
+        className={cn(
+          "overflow-hidden transition-all duration-200 ease-out",
+          expanded ? "max-h-[500px] opacity-100 mt-2" : "max-h-0 opacity-0"
+        )}
+      >
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 space-y-3">
+          {/* Arguments */}
+          {argsStr && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-white/30 mb-1">
+                Arguments
+              </div>
+              <pre className="text-xs text-white/50 whitespace-pre-wrap overflow-x-auto max-h-40 overflow-y-auto bg-black/20 rounded p-2 font-mono">
+                {argsStr}
+              </pre>
+            </div>
+          )}
+
+          {/* Result */}
+          {resultStr !== null && (
+            <div>
+              <div className={cn(
+                "text-[10px] uppercase tracking-wider mb-1",
+                isError ? "text-red-400/70" : "text-emerald-400/70"
+              )}>
+                {isError ? "Error" : "Result"}
+              </div>
+              <pre className={cn(
+                "text-xs whitespace-pre-wrap overflow-x-auto max-h-40 overflow-y-auto rounded p-2 font-mono",
+                isError ? "text-red-400/80 bg-red-500/10" : "text-white/50 bg-black/20"
+              )}>
+                {resultStr}
+              </pre>
+            </div>
+          )}
+
+          {/* Still running indicator */}
+          {!isDone && (
+            <div className="flex items-center gap-2 text-xs text-amber-400/70">
+              <Loader className="h-3 w-3 animate-spin" />
+              <span>Running for {duration}...</span>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -998,7 +1191,7 @@ export default function ControlClient() {
 
       if (event.type === "tool_call" && isRecord(data)) {
         const name = String(data["name"] ?? "");
-        if (!name.startsWith("ui_")) return;
+        const isUiTool = name.startsWith("ui_");
 
         setItems((prev) => [
           ...prev,
@@ -1008,15 +1201,14 @@ export default function ControlClient() {
             toolCallId: String(data["tool_call_id"] ?? ""),
             name,
             args: data["args"],
+            isUiTool,
+            startTime: Date.now(),
           },
         ]);
         return;
       }
 
       if (event.type === "tool_result" && isRecord(data)) {
-        const name = String(data["name"] ?? "");
-        if (!name.startsWith("ui_")) return;
-
         const toolCallId = String(data["tool_call_id"] ?? "");
         setItems((prev) =>
           prev.map((it) =>
@@ -1684,146 +1876,139 @@ export default function ControlClient() {
                 }
 
                 if (item.kind === "tool") {
-                  if (item.name === "ui_optionList") {
-                    const toolCallId = item.toolCallId;
-                    const rawArgs: Record<string, unknown> = isRecord(item.args)
-                      ? item.args
-                      : {};
+                  // UI tools get special interactive rendering
+                  if (item.isUiTool) {
+                    if (item.name === "ui_optionList") {
+                      const toolCallId = item.toolCallId;
+                      const rawArgs: Record<string, unknown> = isRecord(item.args)
+                        ? item.args
+                        : {};
 
-                    let optionList: ReturnType<
-                      typeof parseSerializableOptionList
-                    > | null = null;
-                    let parseErr: string | null = null;
-                    try {
-                      optionList = parseSerializableOptionList({
-                        ...rawArgs,
-                        id:
-                          typeof rawArgs["id"] === "string" && rawArgs["id"]
-                            ? (rawArgs["id"] as string)
-                            : `option-list-${toolCallId}`,
-                      });
-                    } catch (e) {
-                      parseErr =
-                        e instanceof Error
-                          ? e.message
-                          : "Invalid option list payload";
+                      let optionList: ReturnType<
+                        typeof parseSerializableOptionList
+                      > | null = null;
+                      let parseErr: string | null = null;
+                      try {
+                        optionList = parseSerializableOptionList({
+                          ...rawArgs,
+                          id:
+                            typeof rawArgs["id"] === "string" && rawArgs["id"]
+                              ? (rawArgs["id"] as string)
+                              : `option-list-${toolCallId}`,
+                        });
+                      } catch (e) {
+                        parseErr =
+                          e instanceof Error
+                            ? e.message
+                            : "Invalid option list payload";
+                      }
+
+                      const confirmed = item.result as
+                        | OptionListSelection
+                        | undefined;
+
+                      return (
+                        <div key={item.id} className="flex justify-start gap-3">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
+                            <Bot className="h-4 w-4 text-indigo-400" />
+                          </div>
+                          <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                            <div className="mb-2 text-xs text-white/40">
+                              Tool:{" "}
+                              <span className="font-mono text-indigo-400">
+                                {item.name}
+                              </span>
+                            </div>
+
+                            {parseErr || !optionList ? (
+                              <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-sm text-red-400">
+                                {parseErr ?? "Failed to render OptionList"}
+                              </div>
+                            ) : (
+                              <OptionListErrorBoundary>
+                                <OptionList
+                                  {...optionList}
+                                  value={undefined}
+                                  confirmed={confirmed}
+                                  onConfirm={async (selection) => {
+                                    setItems((prev) =>
+                                      prev.map((it) =>
+                                        it.kind === "tool" &&
+                                        it.toolCallId === toolCallId
+                                          ? { ...it, result: selection }
+                                          : it
+                                      )
+                                    );
+                                    await postControlToolResult({
+                                      tool_call_id: toolCallId,
+                                      name: item.name,
+                                      result: selection,
+                                    });
+                                  }}
+                                  onCancel={async () => {
+                                    setItems((prev) =>
+                                      prev.map((it) =>
+                                        it.kind === "tool" &&
+                                        it.toolCallId === toolCallId
+                                          ? { ...it, result: null }
+                                          : it
+                                      )
+                                    );
+                                    await postControlToolResult({
+                                      tool_call_id: toolCallId,
+                                      name: item.name,
+                                      result: null,
+                                    });
+                                  }}
+                                />
+                              </OptionListErrorBoundary>
+                            )}
+                          </div>
+                        </div>
+                      );
                     }
 
-                    const confirmed = item.result as
-                      | OptionListSelection
-                      | undefined;
+                    if (item.name === "ui_dataTable") {
+                      const rawArgs: Record<string, unknown> = isRecord(item.args)
+                        ? item.args
+                        : {};
+                      const dataTable = parseSerializableDataTable(rawArgs);
 
-                    return (
-                      <div key={item.id} className="flex justify-start gap-3">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
-                          <Bot className="h-4 w-4 text-indigo-400" />
-                        </div>
-                        <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
-                          <div className="mb-2 text-xs text-white/40">
-                            Tool:{" "}
-                            <span className="font-mono text-indigo-400">
-                              {item.name}
-                            </span>
+                      return (
+                        <div key={item.id} className="flex justify-start gap-3">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
+                            <Bot className="h-4 w-4 text-indigo-400" />
                           </div>
-
-                          {parseErr || !optionList ? (
-                            <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-sm text-red-400">
-                              {parseErr ?? "Failed to render OptionList"}
+                          <div className="max-w-[90%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                            <div className="mb-2 text-xs text-white/40">
+                              Tool:{" "}
+                              <span className="font-mono text-indigo-400">
+                                {item.name}
+                              </span>
                             </div>
-                          ) : (
-                            <OptionListErrorBoundary>
-                              <OptionList
-                                {...optionList}
-                                value={undefined}
-                                confirmed={confirmed}
-                                onConfirm={async (selection) => {
-                                  setItems((prev) =>
-                                    prev.map((it) =>
-                                      it.kind === "tool" &&
-                                      it.toolCallId === toolCallId
-                                        ? { ...it, result: selection }
-                                        : it
-                                    )
-                                  );
-                                  await postControlToolResult({
-                                    tool_call_id: toolCallId,
-                                    name: item.name,
-                                    result: selection,
-                                  });
-                                }}
-                                onCancel={async () => {
-                                  setItems((prev) =>
-                                    prev.map((it) =>
-                                      it.kind === "tool" &&
-                                      it.toolCallId === toolCallId
-                                        ? { ...it, result: null }
-                                        : it
-                                    )
-                                  );
-                                  await postControlToolResult({
-                                    tool_call_id: toolCallId,
-                                    name: item.name,
-                                    result: null,
-                                  });
-                                }}
+                            {dataTable ? (
+                              <DataTable
+                                id={dataTable.id}
+                                title={dataTable.title}
+                                columns={dataTable.columns}
+                                rows={dataTable.rows}
                               />
-                            </OptionListErrorBoundary>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  if (item.name === "ui_dataTable") {
-                    const rawArgs: Record<string, unknown> = isRecord(item.args)
-                      ? item.args
-                      : {};
-                    const dataTable = parseSerializableDataTable(rawArgs);
-
-                    return (
-                      <div key={item.id} className="flex justify-start gap-3">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
-                          <Bot className="h-4 w-4 text-indigo-400" />
-                        </div>
-                        <div className="max-w-[90%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
-                          <div className="mb-2 text-xs text-white/40">
-                            Tool:{" "}
-                            <span className="font-mono text-indigo-400">
-                              {item.name}
-                            </span>
+                            ) : (
+                              <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-sm text-red-400">
+                                Failed to render DataTable
+                              </div>
+                            )}
                           </div>
-                          {dataTable ? (
-                            <DataTable
-                              id={dataTable.id}
-                              title={dataTable.title}
-                              columns={dataTable.columns}
-                              rows={dataTable.rows}
-                            />
-                          ) : (
-                            <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-sm text-red-400">
-                              Failed to render DataTable
-                            </div>
-                          )}
                         </div>
-                      </div>
-                    );
+                      );
+                    }
+
+                    // Unknown UI tool - still show with ToolCallItem
+                    return <ToolCallItem key={item.id} item={item} />;
                   }
 
-                  return (
-                    <div key={item.id} className="flex justify-start gap-3">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
-                        <Bot className="h-4 w-4 text-indigo-400" />
-                      </div>
-                      <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
-                        <p className="text-sm text-white/60">
-                          Unsupported Tool:{" "}
-                          <span className="font-mono text-indigo-400">
-                            {item.name}
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                  );
+                  // Non-UI tools use the collapsible ToolCallItem component
+                  return <ToolCallItem key={item.id} item={item} />;
                 }
 
                 // system
