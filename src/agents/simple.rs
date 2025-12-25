@@ -171,6 +171,7 @@ impl Agent for SimpleAgent {
                 "agent": "SimpleAgent",
                 "execution": result.data,
             })),
+            terminal_reason: result.terminal_reason,
         }
     }
 }

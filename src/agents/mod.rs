@@ -30,7 +30,7 @@ pub use simple::SimpleAgent;
 pub use context::AgentContext;
 pub use tree::{AgentRef, AgentTree};
 pub use tuning::TuningParams;
-pub use types::{AgentError, AgentId, AgentResult, AgentType, Complexity};
+pub use types::{AgentError, AgentId, AgentResult, AgentType, Complexity, TerminalReason};
 
 use crate::task::Task;
 use async_trait::async_trait;

@@ -81,6 +81,9 @@ pub struct AgentResult {
 
     /// Detailed result data (type-specific)
     pub data: Option<serde_json::Value>,
+
+    /// Reason why execution terminated (if not successful completion)
+    pub terminal_reason: Option<TerminalReason>,
 }
 
 impl AgentResult {
@@ -92,6 +95,7 @@ impl AgentResult {
             cost_cents,
             model_used: None,
             data: None,
+            terminal_reason: None,
         }
     }
 
@@ -103,6 +107,7 @@ impl AgentResult {
             cost_cents,
             model_used: None,
             data: None,
+            terminal_reason: None,
         }
     }
 
@@ -115,6 +120,12 @@ impl AgentResult {
     /// Add additional data to the result.
     pub fn with_data(mut self, data: serde_json::Value) -> Self {
         self.data = Some(data);
+        self
+    }
+
+    /// Add terminal reason to the result.
+    pub fn with_terminal_reason(mut self, reason: TerminalReason) -> Self {
+        self.terminal_reason = Some(reason);
         self
     }
 }
@@ -201,6 +212,23 @@ impl Complexity {
         self.should_split = should_split;
         self
     }
+}
+
+/// Reason why agent execution terminated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TerminalReason {
+    /// Task was cancelled by user
+    Cancelled,
+    /// Budget was exhausted
+    BudgetExhausted,
+    /// LLM API error
+    LlmError,
+    /// Agent stalled (no progress)
+    Stalled,
+    /// Detected infinite loop
+    InfiniteLoop,
+    /// Hit maximum iterations limit
+    MaxIterations,
 }
 
 /// Errors that can occur in agent operations.
