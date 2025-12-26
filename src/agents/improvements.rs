@@ -25,8 +25,6 @@ pub struct ExecutionThresholds {
     pub tool_failure_threshold: u32,
     /// Maximum characters for tool result before truncation (default: 15000)
     pub max_tool_result_chars: usize,
-    /// Whether to summarize large tool results instead of just truncating
-    pub summarize_large_results: bool,
 }
 
 impl Default for ExecutionThresholds {
@@ -38,7 +36,6 @@ impl Default for ExecutionThresholds {
             empty_response_force_complete_threshold: 4,
             tool_failure_threshold: 3,
             max_tool_result_chars: 15000,
-            summarize_large_results: true,
         }
     }
 }
@@ -85,9 +82,6 @@ impl ExecutionThresholds {
             if let Ok(n) = v.parse() {
                 thresholds.max_tool_result_chars = n;
             }
-        }
-        if let Ok(v) = std::env::var("SUMMARIZE_LARGE_RESULTS") {
-            thresholds.summarize_large_results = v.to_lowercase() == "true" || v == "1";
         }
 
         thresholds
