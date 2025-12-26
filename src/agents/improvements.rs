@@ -419,10 +419,14 @@ impl BlockerDetection {
 
     fn detect_type_mismatch(output: &str, task: &str) -> Option<BlockerType> {
         // Solidity task but found different project type
+        // Note: "audit" alone is too generic - require Solidity-specific context
         let is_solidity_task = task.contains("solidity")
             || task.contains("smart contract")
             || task.contains("ethereum")
-            || task.contains("audit");
+            || task.contains(".sol ")
+            || task.contains("evm")
+            || task.contains("foundry")
+            || task.contains("hardhat");
 
         if is_solidity_task {
             // Check if we found C++ project indicators
@@ -569,6 +573,20 @@ mod tests {
         let detection = BlockerDetection::check_output(output, task);
         assert!(detection.is_blocker);
         assert!(matches!(
+            detection.blocker_type,
+            Some(BlockerType::TypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn test_generic_audit_no_false_positive() {
+        // "audit" alone should NOT trigger Solidity detection
+        let output = "Found files: Cargo.toml, src/main.rs, README.md";
+        let task = "audit this Python codebase for security issues";
+        let detection = BlockerDetection::check_output(output, task);
+        // Should NOT be a blocker - this is a generic audit, not Solidity-specific
+        assert!(!detection.is_blocker);
+        assert!(!matches!(
             detection.blocker_type,
             Some(BlockerType::TypeMismatch { .. })
         ));

@@ -290,10 +290,11 @@ impl Tool for DeepSearch {
                     result.push_str("_No content matches found_\n");
                 } else {
                     result.push_str("```\n");
-                    // Limit output size
+                    // Limit output size by character count (not byte count)
+                    let char_count = matches.chars().count();
                     let truncated: String = matches.chars().take(10000).collect();
                     result.push_str(&truncated);
-                    if matches.len() > 10000 {
+                    if char_count > 10000 {
                         result.push_str("\n... [truncated, showing first 10000 chars]");
                     }
                     result.push_str("\n```\n");
