@@ -2123,31 +2123,51 @@ async fn control_actor_loop(
                     running_mission_id = None;
                     match res {
                         Ok((_mid, user_msg, agent_result)) => {
-                            // Append to conversation history.
-                            history.push(("user".to_string(), user_msg));
+                            // Append to conversation history (for current session tracking).
+                            history.push(("user".to_string(), user_msg.clone()));
                             history.push(("assistant".to_string(), agent_result.output.clone()));
 
                             // Persist to mission using the actual completed mission ID
                             // (not current_mission, which could have changed)
+                            //
+                            // IMPORTANT: We fetch existing history from DB and append, rather than
+                            // using the local `history` variable, because CreateMission may have
+                            // cleared `history` while this task was running. This prevents data loss.
                             if let (Some(mem), Some(mid)) = (&memory, completed_mission_id) {
-                                let messages: Vec<MissionMessage> = history
+                                // Fetch existing history from DB
+                                let existing_history: Vec<MissionHistoryEntry> = match mem.supabase.get_mission(mid).await {
+                                    Ok(Some(mission)) => {
+                                        serde_json::from_value(mission.history).unwrap_or_default()
+                                    }
+                                    _ => Vec::new(),
+                                };
+
+                                // Append new messages to existing history
+                                let mut messages: Vec<MissionMessage> = existing_history
                                     .iter()
-                                    .map(|(role, content)| MissionMessage {
-                                        role: role.clone(),
-                                        content: content.clone(),
+                                    .map(|e| MissionMessage {
+                                        role: e.role.clone(),
+                                        content: e.content.clone(),
                                     })
                                     .collect();
+                                messages.push(MissionMessage { role: "user".to_string(), content: user_msg.clone() });
+                                messages.push(MissionMessage { role: "assistant".to_string(), content: agent_result.output.clone() });
+
                                 if let Err(e) = mem.supabase.update_mission_history(mid, &messages).await {
                                     tracing::warn!("Failed to persist mission history: {}", e);
                                 }
 
-                                // Update title from first user message if not set
-                                if history.len() == 2 {
-                                    if let Some((role, content)) = history.first() {
-                                        if role == "user" {
-                                            let title: String = content.chars().take(100).collect();
-                                            let _ = mem.supabase.update_mission_title(mid, &title).await;
-                                        }
+                                // Update title from first user message if not set (only on first exchange)
+                                if existing_history.is_empty() {
+                                    // Use safe_truncate_index for UTF-8 safe truncation, matching persist_mission_history
+                                    let title = if user_msg.len() > 100 {
+                                        let safe_end = crate::memory::safe_truncate_index(&user_msg, 100);
+                                        format!("{}...", &user_msg[..safe_end])
+                                    } else {
+                                        user_msg.clone()
+                                    };
+                                    if let Err(e) = mem.supabase.update_mission_title(mid, &title).await {
+                                        tracing::warn!("Failed to update mission title: {}", e);
                                     }
                                 }
                             }

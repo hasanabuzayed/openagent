@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   listMissions,
   listRuns,
+  getStats,
   type Mission,
   type Run,
 } from "@/lib/api";
@@ -37,18 +38,21 @@ interface StatusBreakdown {
 export default function AnalyticsPage() {
   const [missions, setMissions] = useState<Mission[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [totalCostCents, setTotalCostCents] = useState(0);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState<"7d" | "30d" | "all">("7d");
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const [missionsData, runsData] = await Promise.all([
+        const [missionsData, runsData, statsData] = await Promise.all([
           listMissions(),
           listRuns(100, 0),
+          getStats(),
         ]);
         setMissions(missionsData);
         setRuns(runsData.runs);
+        setTotalCostCents(statsData.total_cost_cents);
       } catch (err) {
         console.error("Failed to fetch analytics:", err);
         toast.error("Failed to load analytics");
@@ -121,15 +125,15 @@ export default function AnalyticsPage() {
     return totalCost / runs.length;
   }, [runs]);
 
-  // Calculate mission stats from actual mission data (more accurate than backend stats)
+  // Calculate mission stats from actual mission data
   const missionStats = useMemo(() => {
     const completed = missions.filter(m => m.status === "completed").length;
     const failed = missions.filter(m => m.status === "failed" || m.status === "not_feasible").length;
     const finished = completed + failed;
     const successRate = finished > 0 ? completed / finished : 1;
-    const totalCost = runs.reduce((sum, run) => sum + run.total_cost_cents, 0);
-    return { completed, failed, successRate, totalCost };
-  }, [missions, runs]);
+    // Use totalCostCents from stats API (includes ALL runs, not just first 100)
+    return { completed, failed, successRate, totalCost: totalCostCents };
+  }, [missions, totalCostCents]);
 
   // Calculate max single day cost
   const maxDayCost = useMemo(() => {

@@ -276,8 +276,12 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         .filter(|t| t.status == TaskStatus::Failed)
         .count();
 
-    // Calculate total cost (would need to track this properly in production)
-    let total_cost_cents = 0u64; // TODO: Track actual costs
+    // Calculate total cost from runs in database
+    let total_cost_cents = if let Some(mem) = &state.memory {
+        mem.supabase.get_total_cost_cents().await.unwrap_or(0)
+    } else {
+        0
+    };
 
     let finished = completed_tasks + failed_tasks;
     let success_rate = if finished > 0 {

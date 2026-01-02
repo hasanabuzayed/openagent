@@ -185,22 +185,9 @@ fn tool_start_session(args: &Value) -> Result<String, String> {
     std::fs::create_dir_all(&screenshots_dir)
         .map_err(|e| format!("Failed to create screenshots dir: {}", e))?;
 
-    // Save session info
-    let session_file = working_dir.join(format!(".desktop_session_{}", display_num));
-    let session_info = json!({
-        "display": display_id,
-        "display_num": display_num,
-        "xvfb_pid": xvfb_pid,
-        "i3_pid": i3_pid,
-        "resolution": resolution,
-        "screenshots_dir": screenshots_dir.to_string_lossy()
-    });
-    std::fs::write(&session_file, serde_json::to_string_pretty(&session_info).unwrap())
-        .map_err(|e| format!("Failed to write session file: {}", e))?;
-
     // Optionally launch browser
     let launch_browser = args.get("launch_browser").and_then(|v| v.as_bool()).unwrap_or(false);
-    let browser_info = if launch_browser {
+    let (browser_pid, browser_info) = if launch_browser {
         let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
 
         let chromium = std::process::Command::new("chromium")
@@ -221,10 +208,26 @@ fn tool_start_session(args: &Value) -> Result<String, String> {
         let chromium_pid = chromium.id();
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        format!(", \"browser\": \"chromium\", \"browser_pid\": {}, \"url\": \"{}\"", chromium_pid, url)
+        (Some(chromium_pid), format!(", \"browser\": \"chromium\", \"browser_pid\": {}, \"url\": \"{}\"", chromium_pid, url))
     } else {
-        String::new()
+        (None, String::new())
     };
+
+    // Save session info (including browser_pid if launched)
+    let session_file = working_dir.join(format!(".desktop_session_{}", display_num));
+    let mut session_info = json!({
+        "display": display_id,
+        "display_num": display_num,
+        "xvfb_pid": xvfb_pid,
+        "i3_pid": i3_pid,
+        "resolution": resolution,
+        "screenshots_dir": screenshots_dir.to_string_lossy()
+    });
+    if let Some(pid) = browser_pid {
+        session_info["browser_pid"] = json!(pid);
+    }
+    std::fs::write(&session_file, serde_json::to_string_pretty(&session_info).unwrap())
+        .map_err(|e| format!("Failed to write session file: {}", e))?;
 
     Ok(format!(
         "{{\"success\": true, \"display\": \"{}\", \"resolution\": \"{}\", \"xvfb_pid\": {}, \"i3_pid\": {}, \"screenshots_dir\": \"{}\"{}}}",

@@ -105,8 +105,34 @@ impl SupabaseClient {
             .header("Authorization", format!("Bearer {}", self.service_role_key))
             .send()
             .await?;
-        
+
         Ok(resp.json().await?)
+    }
+
+    /// Get total cost across all runs (in cents).
+    pub async fn get_total_cost_cents(&self) -> anyhow::Result<u64> {
+        // Fetch only the total_cost_cents column for efficiency
+        #[derive(serde::Deserialize)]
+        struct CostOnly {
+            total_cost_cents: Option<i64>,
+        }
+
+        let resp = self.client
+            .get(format!(
+                "{}/runs?select=total_cost_cents",
+                self.rest_url()
+            ))
+            .header("apikey", &self.service_role_key)
+            .header("Authorization", format!("Bearer {}", self.service_role_key))
+            .send()
+            .await?;
+
+        let costs: Vec<CostOnly> = resp.json().await?;
+        let total: i64 = costs.iter()
+            .filter_map(|c| c.total_cost_cents)
+            .sum();
+
+        Ok(total.max(0) as u64)
     }
     
     // ==================== Tasks ====================
