@@ -1006,11 +1006,33 @@ pub async fn resume_mission(
 /// Get parallel execution configuration.
 pub async fn get_parallel_config(
     State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Query actual running count from the control actor
+    // (the running state is tracked in the actor loop, not in shared state)
+    let (tx, rx) = oneshot::channel();
+    state
+        .control
+        .cmd_tx
+        .send(ControlCommand::ListRunning { respond: tx })
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
+
+    let running = rx.await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to get running missions".to_string(),
+        )
+    })?;
+
+    Ok(Json(serde_json::json!({
         "max_parallel_missions": state.control.max_parallel,
-        "running_count": state.control.running_missions.read().await.len(),
-    }))
+        "running_count": running.len(),
+    })))
 }
 
 /// Delete a mission by ID.
@@ -1019,15 +1041,34 @@ pub async fn delete_mission(
     State(state): State<Arc<AppState>>,
     Path(mission_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    // Check if mission is currently running
-    let running = state.control.running_missions.read().await;
+    // Check if mission is currently running by querying the control actor
+    // (the actual running state is tracked in the actor loop, not in shared state)
+    let (tx, rx) = oneshot::channel();
+    state
+        .control
+        .cmd_tx
+        .send(ControlCommand::ListRunning { respond: tx })
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
+
+    let running = rx.await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to check running missions".to_string(),
+        )
+    })?;
+
     if running.iter().any(|m| m.mission_id == mission_id) {
         return Err((
             StatusCode::CONFLICT,
             "Cannot delete a running mission. Cancel it first.".to_string(),
         ));
     }
-    drop(running);
 
     // Get memory system
     let mem = state.memory.as_ref().ok_or_else(|| {
@@ -1056,9 +1097,34 @@ pub async fn delete_mission(
 
 /// Delete all empty "Untitled" missions.
 /// Returns the count of deleted missions.
+/// Note: This excludes any currently running missions to prevent data loss.
 pub async fn cleanup_empty_missions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Get currently running mission IDs to exclude from cleanup
+    // (a newly-started mission may have empty history in DB while actively running)
+    let (tx, rx) = oneshot::channel();
+    state
+        .control
+        .cmd_tx
+        .send(ControlCommand::ListRunning { respond: tx })
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "control session unavailable".to_string(),
+            )
+        })?;
+
+    let running = rx.await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to check running missions".to_string(),
+        )
+    })?;
+
+    let running_ids: Vec<Uuid> = running.iter().map(|m| m.mission_id).collect();
+
     // Get memory system
     let mem = state.memory.as_ref().ok_or_else(|| {
         (
@@ -1067,10 +1133,10 @@ pub async fn cleanup_empty_missions(
         )
     })?;
 
-    // Delete empty untitled missions
+    // Delete empty untitled missions, excluding running ones
     let count = mem
         .supabase
-        .delete_empty_untitled_missions()
+        .delete_empty_untitled_missions_excluding(&running_ids)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -2049,6 +2115,9 @@ async fn control_actor_loop(
                 }
             }, if running.is_some() => {
                 if let Some(res) = finished {
+                    // Save the running mission ID before clearing it - we need it for persist and auto-complete
+                    // (current_mission can change if user clicks "New Mission" while task was running)
+                    let completed_mission_id = running_mission_id;
                     running = None;
                     running_cancel = None;
                     running_mission_id = None;
@@ -2058,8 +2127,30 @@ async fn control_actor_loop(
                             history.push(("user".to_string(), user_msg));
                             history.push(("assistant".to_string(), agent_result.output.clone()));
 
-                            // Persist to mission
-                            persist_mission_history(&memory, &current_mission, &history).await;
+                            // Persist to mission using the actual completed mission ID
+                            // (not current_mission, which could have changed)
+                            if let (Some(mem), Some(mid)) = (&memory, completed_mission_id) {
+                                let messages: Vec<MissionMessage> = history
+                                    .iter()
+                                    .map(|(role, content)| MissionMessage {
+                                        role: role.clone(),
+                                        content: content.clone(),
+                                    })
+                                    .collect();
+                                if let Err(e) = mem.supabase.update_mission_history(mid, &messages).await {
+                                    tracing::warn!("Failed to persist mission history: {}", e);
+                                }
+
+                                // Update title from first user message if not set
+                                if history.len() == 2 {
+                                    if let Some((role, content)) = history.first() {
+                                        if role == "user" {
+                                            let title: String = content.chars().take(100).collect();
+                                            let _ = mem.supabase.update_mission_title(mid, &title).await;
+                                        }
+                                    }
+                                }
+                            }
 
                             // P1 FIX: Auto-complete mission if agent execution ended in a terminal state
                             // without an explicit complete_mission call.
@@ -2072,7 +2163,9 @@ async fn control_actor_loop(
                             // - Parallel missions (each has its own DB status)
                             if agent_result.terminal_reason.is_some() {
                                 if let Some(mem) = &memory {
-                                    if let Some(mission_id) = current_mission.read().await.clone() {
+                                    // Use completed_mission_id (the actual mission that just finished)
+                                    // instead of current_mission (which can change when user creates a new mission)
+                                    if let Some(mission_id) = completed_mission_id {
                                         // Check current mission status from DB - only auto-complete if still "active"
                                         let current_status = mem.supabase.get_mission(mission_id).await
                                             .ok()

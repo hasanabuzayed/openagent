@@ -711,6 +711,13 @@ impl SupabaseClient {
     /// Delete all empty "Untitled" missions (no history, no title set).
     /// Returns the count of deleted missions.
     pub async fn delete_empty_untitled_missions(&self) -> anyhow::Result<usize> {
+        self.delete_empty_untitled_missions_excluding(&[]).await
+    }
+
+    /// Delete all empty "Untitled" missions (no history, no title set),
+    /// excluding the specified mission IDs (e.g., currently running missions).
+    /// Returns the count of deleted missions.
+    pub async fn delete_empty_untitled_missions_excluding(&self, exclude_ids: &[Uuid]) -> anyhow::Result<usize> {
         // First get missions with null or "Untitled Mission" title and empty history
         let resp = self.client
             .get(format!(
@@ -730,11 +737,13 @@ impl SupabaseClient {
         let missions: Vec<DbMission> = resp.json().await?;
 
         // Filter to only those with empty history (history is a JSON array)
+        // and not in the exclude list (e.g., currently running missions)
         let empty_ids: Vec<Uuid> = missions
             .into_iter()
             .filter(|m| {
                 m.history.as_array().map_or(true, |arr| arr.is_empty())
             })
+            .filter(|m| !exclude_ids.contains(&m.id))
             .map(|m| m.id)
             .collect();
 
