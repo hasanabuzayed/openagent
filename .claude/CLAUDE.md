@@ -234,12 +234,15 @@ pub fn do_thing() -> Result<T, MyError> {
 | Property | Value |
 |----------|-------|
 | Host | `95.216.112.253` |
-| SSH | `ssh root@95.216.112.253` |
+| SSH | `ssh -i ~/.ssh/cursor root@95.216.112.253` |
 | Backend URL | `https://agent-backend.thomas.md` |
 | Dashboard URL | `https://agent.thomas.md` |
 | Binary | `/usr/local/bin/open_agent` |
+| Desktop MCP | `/usr/local/bin/desktop-mcp` |
 | Env file | `/etc/open_agent/open_agent.env` |
 | Service | `systemctl status open_agent` |
+
+**SSH Key:** Use `~/.ssh/cursor` key for production server access.
 
 ## Adding New Components
 
