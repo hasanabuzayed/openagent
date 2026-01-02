@@ -33,7 +33,11 @@ struct ControlView: View {
 
     // Track pending fetch to prevent race conditions
     @State private var fetchingMissionId: String?
-    
+
+    // Desktop stream state
+    @State private var showDesktopStream = false
+    @State private var desktopDisplayId = ":99"
+
     @FocusState private var isInputFocused: Bool
     
     private let api = APIService.shared
@@ -128,16 +132,35 @@ struct ControlView: View {
             }
             
             ToolbarItem(placement: .topBarTrailing) {
+                // Desktop stream button
+                Button {
+                    showDesktopStream = true
+                    HapticService.lightTap()
+                } label: {
+                    Image(systemName: "display")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            }
+
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
                         Task { await createNewMission() }
                     } label: {
                         Label("New Mission", systemImage: "plus")
                     }
-                    
+
+                    // Desktop stream option in menu too
+                    Button {
+                        showDesktopStream = true
+                    } label: {
+                        Label("View Desktop", systemImage: "display")
+                    }
+
                     if let mission = currentMission {
                         Divider()
-                        
+
                         // Resume button for interrupted/blocked missions
                         if mission.canResume {
                             Button {
@@ -146,19 +169,19 @@ struct ControlView: View {
                                 Label("Resume Mission", systemImage: "play.circle")
                             }
                         }
-                        
+
                         Button {
                             Task { await setMissionStatus(.completed) }
                         } label: {
                             Label("Mark Complete", systemImage: "checkmark.circle")
                         }
-                        
+
                         Button(role: .destructive) {
                             Task { await setMissionStatus(.failed) }
                         } label: {
                             Label("Mark Failed", systemImage: "xmark.circle")
                         }
-                        
+
                         if mission.status != .active && !mission.canResume {
                             Button {
                                 Task { await setMissionStatus(.active) }
@@ -215,6 +238,12 @@ struct ControlView: View {
             connectionState = .connected
             reconnectAttempt = 0
             pollingTask?.cancel()
+        }
+        .sheet(isPresented: $showDesktopStream) {
+            DesktopStreamView(displayId: desktopDisplayId)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
     }
     

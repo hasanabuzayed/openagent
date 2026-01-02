@@ -65,6 +65,9 @@ import {
   Code,
   FolderOpen,
   Trash2,
+  Monitor,
+  PanelRightClose,
+  PanelRight,
 } from "lucide-react";
 import {
   OptionList,
@@ -79,6 +82,7 @@ import {
 import { useScrollToBottom } from "@/hooks/use-scroll-to-bottom";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { DesktopStream } from "@/components/desktop-stream";
 
 type ChatItem =
   | {
@@ -628,6 +632,10 @@ export default function ControlClient() {
 
   // Server configuration (fetched from health endpoint)
   const [maxIterations, setMaxIterations] = useState<number>(50); // Default fallback
+
+  // Desktop stream state
+  const [showDesktopStream, setShowDesktopStream] = useState(false);
+  const [desktopDisplayId] = useState(":99");
 
   // Check if the mission we're viewing is actually running (not just any mission)
   const viewingMissionIsRunning = useMemo(() => {
@@ -1568,6 +1576,26 @@ export default function ControlClient() {
             </button>
           )}
 
+          {/* Desktop stream toggle */}
+          <button
+            onClick={() => setShowDesktopStream(!showDesktopStream)}
+            className={cn(
+              "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors",
+              showDesktopStream
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                : "border-white/[0.06] bg-white/[0.02] text-white/70 hover:bg-white/[0.04]"
+            )}
+            title={showDesktopStream ? "Hide desktop stream" : "Show desktop stream"}
+          >
+            <Monitor className="h-4 w-4" />
+            <span className="hidden sm:inline">Desktop</span>
+            {showDesktopStream ? (
+              <PanelRightClose className="h-4 w-4" />
+            ) : (
+              <PanelRight className="h-4 w-4" />
+            )}
+          </button>
+
           {/* Status panel */}
           <div className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2">
             {/* Run state indicator */}
@@ -1721,8 +1749,13 @@ export default function ControlClient() {
         </div>
       )}
 
-      {/* Chat container */}
-      <div className="flex-1 min-h-0 flex flex-col rounded-2xl glass-panel border border-white/[0.06] overflow-hidden relative">
+      {/* Main content area - Chat and Desktop stream side by side */}
+      <div className="flex-1 min-h-0 flex gap-4">
+        {/* Chat container */}
+        <div className={cn(
+          "flex-1 min-h-0 flex flex-col rounded-2xl glass-panel border border-white/[0.06] overflow-hidden relative transition-all duration-300",
+          showDesktopStream && "flex-[2]"
+        )}>
         {/* Messages */}
         <div ref={containerRef} className="flex-1 overflow-y-auto p-6">
           {items.length === 0 ? (
@@ -2311,6 +2344,18 @@ export default function ControlClient() {
             )}
           </form>
         </div>
+      </div>
+
+        {/* Desktop Stream Panel */}
+        {showDesktopStream && (
+          <div className="flex-1 min-h-0 transition-all duration-300 animate-fade-in">
+            <DesktopStream
+              displayId={desktopDisplayId}
+              className="h-full"
+              onClose={() => setShowDesktopStream(false)}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
