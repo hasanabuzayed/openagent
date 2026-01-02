@@ -688,6 +688,10 @@ If you cannot perform the requested analysis, use `complete_mission(blocked, rea
         // Track consecutive empty/reasoning-only responses (P0 fix for agent stalls)
         let mut empty_response_count: u32 = 0;
 
+        // Cumulative thinking content - we append each iteration's thinking so the frontend
+        // can replace (not append) and still see all thinking. This matches OpenCode behavior.
+        let mut cumulative_thinking = String::new();
+
         // Track failed tool attempts by category (P3 fix for approach looping)
         let mut failure_tracker = ToolFailureTracker::new();
         
@@ -929,11 +933,19 @@ If you cannot perform the requested analysis, use `complete_mission(blocked, rea
             };
 
             // Emit thinking event if there's content (agent reasoning)
+            // We accumulate thinking content across iterations and send cumulative content,
+            // so the frontend can replace (not append) and still see all thinking.
             if let Some(ref content) = response.content {
                 if !content.is_empty() {
+                    // Append to cumulative with separator if not first
+                    if !cumulative_thinking.is_empty() {
+                        cumulative_thinking.push_str("\n\n---\n\n");
+                    }
+                    cumulative_thinking.push_str(content);
+
                     if let Some(events) = &ctx.control_events {
                         let _ = events.send(AgentEvent::Thinking {
-                            content: content.clone(),
+                            content: cumulative_thinking.clone(),
                             done: response.tool_calls.is_none(),
                             mission_id: ctx.mission_id,
                         });

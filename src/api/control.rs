@@ -2123,9 +2123,14 @@ async fn control_actor_loop(
                     running_mission_id = None;
                     match res {
                         Ok((_mid, user_msg, agent_result)) => {
-                            // Append to conversation history (for current session tracking).
-                            history.push(("user".to_string(), user_msg.clone()));
-                            history.push(("assistant".to_string(), agent_result.output.clone()));
+                            // Only append to local history if this mission is still the current mission.
+                            // If the user created a new mission mid-execution, history was cleared for that new mission,
+                            // and we don't want to contaminate it with the old mission's exchange.
+                            let current_mid = current_mission.read().await.clone();
+                            if completed_mission_id == current_mid {
+                                history.push(("user".to_string(), user_msg.clone()));
+                                history.push(("assistant".to_string(), agent_result.output.clone()));
+                            }
 
                             // Persist to mission using the actual completed mission ID
                             // (not current_mission, which could have changed)
