@@ -5,18 +5,18 @@ A minimal autonomous coding agent with full machine access, implemented in Rust.
 ## Features
 
 - **HTTP API** for task submission and monitoring
-- **Tool-based agent loop** following the "tools in a loop" pattern
-- **Full toolset**: file operations, terminal, machine-wide search, web access, git
-- **OpenRouter integration** for LLM access (supports any model)
+- **OpenCode backend** for task execution via Claude Max subscription
+- **Full toolset**: Desktop automation, browser control, file operations
 - **SSE streaming** for real-time task progress
-- **AI-maintainable** Rust codebase with strong typing
+- **Provider system** for model selection
 
 ## Quick Start
 
 ### Prerequisites
 
 - Rust 1.70+ (install via [rustup](https://rustup.rs/))
-- An OpenRouter API key ([get one here](https://openrouter.ai/))
+- An [OpenCode](https://github.com/opencode-ai/opencode) server running locally
+- Claude Max subscription (for Claude model access)
 
 ### Installation
 
@@ -29,15 +29,10 @@ cargo build --release
 ### Running
 
 ```bash
-# Set your API key
-export OPENROUTER_API_KEY="sk-or-v1-..."
-
-# Optional: configure model (default: anthropic/claude-sonnet-4.5)
-export DEFAULT_MODEL="anthropic/claude-sonnet-4.5"
-
-# Optional: default working directory for relative paths (absolute paths work everywhere)
-# In production this is typically /root
-export WORKING_DIR="."
+# Optional: configure OpenCode server (defaults shown)
+export OPENCODE_BASE_URL="http://127.0.0.1:4096"
+export OPENCODE_AGENT="build"
+export OPENCODE_PERMISSIVE="true"
 
 # Start the server
 cargo run --release
@@ -45,20 +40,38 @@ cargo run --release
 
 The server starts on `http://127.0.0.1:3000` by default.
 
-### OpenCode Backend (External Agent)
+## Architecture
 
-Open Agent can delegate execution to an OpenCode server instead of using its built-in agent loop.
+Open Agent delegates all task execution to an OpenCode server, which handles LLM interactions via your Claude Max subscription.
 
-```bash
-# Point to a running OpenCode server
-export AGENT_BACKEND="opencode"
-export OPENCODE_BASE_URL="http://127.0.0.1:4096"
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Dashboard     │────▶│   Open Agent    │────▶│   OpenCode      │
+│   (Next.js)     │     │   API (Rust)    │     │   Server        │
+└─────────────────┘     └─────────────────┘     └────────┬────────┘
+                                                         │
+                                                         ▼
+                                                ┌─────────────────┐
+                                                │   Anthropic API │
+                                                │   (Claude Max)  │
+                                                └─────────────────┘
+```
 
-# Optional: choose OpenCode agent (build/plan/etc)
-export OPENCODE_AGENT="build"
+### Module Map
 
-# Optional: auto-allow all permissions for OpenCode sessions (default: true)
-export OPENCODE_PERMISSIVE="true"
+```
+src/
+├── agents/           # Agent system
+│   └── opencode.rs   # OpenCodeAgent (delegates to OpenCode server)
+├── api/              # HTTP routes (axum)
+│   ├── control.rs    # Mission control endpoints
+│   ├── providers.rs  # Provider/model listing
+│   └── routes.rs     # Route definitions
+├── budget/           # Cost tracking, pricing
+├── memory/           # Supabase + pgvector persistence
+├── opencode/         # OpenCode client
+├── tools/            # Desktop MCP tools
+└── task/             # Task types + verification
 ```
 
 ## API Reference
@@ -85,19 +98,6 @@ Response:
 curl http://localhost:3000/api/task/{id}
 ```
 
-Response:
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "completed",
-  "task": "Create a Python script that prints Hello World",
-  "model": "openai/gpt-4.1-mini",
-  "iterations": 3,
-  "result": "I've created hello.py with a simple Hello World script...",
-  "log": [...]
-}
-```
-
 ### Stream Task Progress (SSE)
 
 ```bash
@@ -108,63 +108,85 @@ Events:
 - `log` - Execution log entries (tool calls, results)
 - `done` - Task completion with final status
 
+### List Providers
+
+```bash
+curl http://localhost:3000/api/providers
+```
+
+Returns available providers and their models for the frontend model selector.
+
 ### Health Check
 
 ```bash
 curl http://localhost:3000/api/health
 ```
 
-## Available Tools
+## Available Models
 
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file contents (any path on the machine) with optional line range |
-| `write_file` | Write/create files anywhere on the machine |
-| `delete_file` | Delete files anywhere on the machine |
-| `list_directory` | List directory contents anywhere on the machine |
-| `search_files` | Search for files by name pattern (machine-wide; scope with `path`) |
-| `run_command` | Execute shell commands (optionally in a specified `cwd`) |
-| `grep_search` | Search file contents with regex (machine-wide; scope with `path`) |
-| `web_search` | Search the web (DuckDuckGo) |
-| `fetch_url` | Fetch URL contents |
-| `git_status` | Get git status for any repo path |
-| `git_diff` | Show git diff for any repo path |
-| `git_commit` | Create git commits for any repo path |
-| `git_log` | Show git log for any repo path |
+Models are accessed via your Claude Max subscription:
+
+| Model | Description |
+|-------|-------------|
+| `claude-opus-4-5-20251101` | Most capable, recommended for complex tasks |
+| `claude-sonnet-4-20250514` | Good balance of speed and capability (default) |
+| `claude-3-5-haiku-20241022` | Fastest, most economical |
 
 ## Configuration
 
+### Environment Variables
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENROUTER_API_KEY` | (required) | Your OpenRouter API key |
-| `DEFAULT_MODEL` | `anthropic/claude-sonnet-4.5` | Default LLM model |
-| `WORKING_DIR` | `.` (dev) / `/root` (prod) | Default working directory for relative paths (agent still has full machine access) |
+| `OPENCODE_BASE_URL` | `http://127.0.0.1:4096` | OpenCode server URL |
+| `OPENCODE_AGENT` | - | OpenCode agent name (build/plan/etc) |
+| `OPENCODE_PERMISSIVE` | `true` | Auto-allow OpenCode permissions |
+| `DEFAULT_MODEL` | `claude-sonnet-4-20250514` | Default LLM model |
+| `WORKING_DIR` | `.` (dev) / `/root` (prod) | Working directory |
 | `HOST` | `127.0.0.1` | Server bind address |
 | `PORT` | `3000` | Server port |
-| `MAX_ITERATIONS` | `50` | Max agent loop iterations |
 
-## Architecture
+### Production Auth
 
+| Variable | Description |
+|----------|-------------|
+| `DEV_MODE` | `true` bypasses auth |
+| `DASHBOARD_PASSWORD` | Password for dashboard login |
+| `JWT_SECRET` | HMAC secret for JWT signing |
+
+### Optional Services
+
+| Variable | Description |
+|----------|-------------|
+| `SUPABASE_URL` | Supabase project URL (for memory) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key |
+| `OPENROUTER_API_KEY` | Only needed for memory embeddings |
+
+## Desktop Automation (MCP)
+
+Open Agent provides desktop automation tools via MCP (Model Context Protocol):
+
+```json
+// opencode.json
+{
+  "mcp": {
+    "desktop": {
+      "type": "local",
+      "command": ["./target/release/desktop-mcp"],
+      "enabled": true
+    },
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "@playwright/mcp@latest"],
+      "enabled": true
+    }
+  }
+}
 ```
-┌─────────────────┐     ┌─────────────────┐
-│   HTTP Client   │────▶│   HTTP API      │
-└─────────────────┘     │   (axum)        │
-                        └────────┬────────┘
-                                 │
-                        ┌────────▼────────┐
-                        │   Agent Loop    │◀──────┐
-                        │                 │       │
-                        └────────┬────────┘       │
-                                 │                │
-                   ┌─────────────┼─────────────┐  │
-                   ▼             ▼             ▼  │
-            ┌──────────┐  ┌──────────┐  ┌──────────┐
-            │   LLM    │  │  Tools   │  │  Tools   │
-            │(OpenRouter)│ │(file,git)│ │(term,web)│
-            └──────────┘  └──────────┘  └──────────┘
-                   │
-                   └──────────────────────────────┘
-                            (results fed back)
+
+Build the desktop MCP server:
+```bash
+cargo build --release --bin desktop-mcp
 ```
 
 ## Development
@@ -192,19 +214,6 @@ cd dashboard
 bun install
 PORT=3001 bun dev
 ```
-
-## Calibration (Trial-and-Error Tuning)
-
-Open Agent supports empirical tuning of its **difficulty (complexity)** and **cost** estimation via a calibration harness.
-
-### Run calibrator
-
-```bash
-export OPENROUTER_API_KEY="sk-or-v1-..."
-cargo run --release --bin calibrate -- --workspace ./.open_agent_calibration --model openai/gpt-4.1-mini --write-tuning
-```
-
-This writes a tuning file at `./.open_agent_calibration/.open_agent/tuning.json`. Move/copy it to your real workspace as `./.open_agent/tuning.json` to enable it.
 
 ## License
 

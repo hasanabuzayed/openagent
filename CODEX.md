@@ -29,11 +29,6 @@ bun install                     # Install deps (NEVER use npm install)
 bun dev                         # Dev server (port 3001)
 bun run build                   # Production build
 
-# IMPORTANT: Always use bun for dashboard, never npm
-# - bun install (not npm install)
-# - bun add <pkg> (not npm install <pkg>)
-# - bun run <script> (not npm run <script>)
-
 # Deployment
 ssh root@95.216.112.253 'cd /root/open_agent && git pull && cargo build --release && cp target/release/open_agent /usr/local/bin/ && cp target/release/desktop-mcp /usr/local/bin/ && systemctl restart open_agent'
 ```
@@ -43,7 +38,7 @@ ssh root@95.216.112.253 'cd /root/open_agent && git pull && cargo build --releas
 Open Agent uses OpenCode as its execution backend, enabling Claude Max subscription usage.
 
 ```
-Dashboard → Open Agent API → OpenCode Server → Anthropic API (Claude Max)
+Dashboard -> Open Agent API -> OpenCode Server -> Anthropic API (Claude Max)
 ```
 
 ### Module Map
@@ -87,28 +82,6 @@ To enable desktop tools (i3, Xvfb, screenshots):
 2. Ensure `opencode.json` is in the project root with the desktop MCP config
 3. OpenCode will automatically load the tools from the MCP server
 
-The `opencode.json` configures MCP servers for desktop and browser automation:
-```json
-{
-  "mcp": {
-    "desktop": {
-      "type": "local",
-      "command": ["./target/release/desktop-mcp"],
-      "enabled": true
-    },
-    "playwright": {
-      "type": "local",
-      "command": ["npx", "@playwright/mcp@latest"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**Available MCP Tools:**
-- **Desktop tools** (i3/Xvfb): `desktop_start_session`, `desktop_screenshot`, `desktop_click`, `desktop_type`, `desktop_i3_command`, etc.
-- **Playwright tools**: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_screenshot`, etc.
-
 ## Model Preferences
 
 Use Claude models via your Claude Max subscription:
@@ -126,7 +99,6 @@ Use Claude models via your Claude Max subscription:
 | `GET` | `/api/health` | Health check |
 | `POST` | `/api/control/message` | Send message to agent |
 | `GET` | `/api/control/stream` | SSE event stream |
-| `GET` | `/api/models` | List available models |
 | `GET` | `/api/providers` | List available providers |
 
 ## Environment Variables
@@ -148,7 +120,6 @@ Use Claude models via your Claude Max subscription:
 | `WORKING_DIR` | `/root` (prod), `.` (dev) | Working directory |
 | `HOST` | `127.0.0.1` | Bind address |
 | `PORT` | `3000` | Server port |
-| `MAX_ITERATIONS` | `50` | Max agent loop iterations |
 | `SUPABASE_URL` | - | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | - | Service role key |
 | `OPENROUTER_API_KEY` | - | Only needed for memory embeddings |
@@ -156,11 +127,6 @@ Use Claude models via your Claude Max subscription:
 ## Secrets
 
 Use `secrets.json` (gitignored) for local development. Template: `secrets.json.example`
-
-```bash
-# Read secrets
-jq -r '.openrouter.api_key' secrets.json
-```
 
 **Rules:**
 - Never paste secret values into code, comments, or docs
@@ -170,13 +136,13 @@ jq -r '.openrouter.api_key' secrets.json
 
 ### Rust - Provability-First Design
 
-Code should be written as if we want to **formally prove it correct later**. This means:
+Code should be written as if we want to **formally prove it correct later**:
 
 1. **Never panic** - always return `Result<T, E>`
-2. **Exhaustive matches** - no `_` catch-all patterns in enums (forces handling new variants)
+2. **Exhaustive matches** - no `_` catch-all patterns in enums
 3. **Document invariants** as `/// Precondition:` and `/// Postcondition:` comments
 4. **Pure functions** - separate pure logic from IO where possible
-5. **Algebraic types** - prefer enums with exhaustive matching over stringly-typed data
+5. **Algebraic types** - prefer enums with exhaustive matching
 6. Costs are in **cents (u64)** - never use floats for money
 
 ```rust
@@ -193,14 +159,6 @@ pub fn do_thing() -> Result<T, MyError> {
     Ok(x)
 }
 ```
-
-### Adding a New Tool
-
-1. Add to `src/tools/` (new file or extend existing)
-2. Implement `Tool` trait: `name()`, `description()`, `parameters()`, `call()`
-3. Register in `src/tools/mod.rs` → `create_tools()`
-4. Tool parameters use serde_json schema format
-5. Document pre/postconditions for provability
 
 ### Dashboard (Next.js + Bun)
 - Package manager: **Bun** (not npm/yarn/pnpm)
@@ -230,14 +188,9 @@ pub fn do_thing() -> Result<T, MyError> {
 | Env file | `/etc/open_agent/open_agent.env` |
 | Service | `systemctl status open_agent` |
 
-**SSH Key:** Use `~/.ssh/cursor` key for production server access.
-
 ## Adding New Components
 
 ### New API Endpoint
 1. Add handler in `src/api/`
 2. Register route in `src/api/routes.rs`
 3. Update this doc
-
-### After Significant Changes
-- Update `CLAUDE.md` and `CODEX.md` for new env vars or commands
