@@ -105,6 +105,29 @@ final class APIService {
     func cancelMission(id: String) async throws {
         let _: EmptyResponse = try await post("/api/control/missions/\(id)/cancel", body: EmptyBody())
     }
+
+    func deleteMission(id: String) async throws -> Bool {
+        struct DeleteResponse: Decodable {
+            let ok: Bool
+            let deleted: String
+        }
+        let response: DeleteResponse = try await delete("/api/control/missions/\(id)")
+        return response.ok
+    }
+
+    func cleanupEmptyMissions() async throws -> Int {
+        struct CleanupResponse: Decodable {
+            let ok: Bool
+            let deletedCount: Int
+
+            enum CodingKeys: String, CodingKey {
+                case ok
+                case deletedCount = "deleted_count"
+            }
+        }
+        let response: CleanupResponse = try await post("/api/control/missions/cleanup", body: EmptyBody())
+        return response.deletedCount
+    }
     
     // MARK: - Parallel Missions
     
@@ -324,17 +347,32 @@ final class APIService {
         guard let url = URL(string: "\(baseURL)\(path)") else {
             throw APIError.invalidURL
         }
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
+
         if authenticated, let token = jwtToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        
+
         request.httpBody = try JSONEncoder().encode(body)
-        
+
+        return try await execute(request)
+    }
+
+    private func delete<T: Decodable>(_ path: String, authenticated: Bool = true) async throws -> T {
+        guard let url = URL(string: "\(baseURL)\(path)") else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+
+        if authenticated, let token = jwtToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
         return try await execute(request)
     }
     

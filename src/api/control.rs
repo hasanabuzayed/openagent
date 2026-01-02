@@ -1013,6 +1013,73 @@ pub async fn get_parallel_config(
     }))
 }
 
+/// Delete a mission by ID.
+/// Only allows deleting missions that are not currently running.
+pub async fn delete_mission(
+    State(state): State<Arc<AppState>>,
+    Path(mission_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Check if mission is currently running
+    let running = state.control.running_missions.read().await;
+    if running.iter().any(|m| m.mission_id == mission_id) {
+        return Err((
+            StatusCode::CONFLICT,
+            "Cannot delete a running mission. Cancel it first.".to_string(),
+        ));
+    }
+    drop(running);
+
+    // Get memory system
+    let mem = state.memory.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Memory system not available".to_string(),
+        )
+    })?;
+
+    // Delete the mission
+    let deleted = mem
+        .supabase
+        .delete_mission(mission_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if deleted {
+        Ok(Json(serde_json::json!({
+            "ok": true,
+            "deleted": mission_id
+        })))
+    } else {
+        Err((StatusCode::NOT_FOUND, "Mission not found".to_string()))
+    }
+}
+
+/// Delete all empty "Untitled" missions.
+/// Returns the count of deleted missions.
+pub async fn cleanup_empty_missions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Get memory system
+    let mem = state.memory.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Memory system not available".to_string(),
+        )
+    })?;
+
+    // Delete empty untitled missions
+    let count = mem
+        .supabase
+        .delete_empty_untitled_missions()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "deleted_count": count
+    })))
+}
+
 /// Stream control session events via SSE.
 pub async fn stream(
     State(state): State<Arc<AppState>>,

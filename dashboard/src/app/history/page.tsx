@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { listMissions, getMissionTree, Mission } from "@/lib/api";
+import { listMissions, getMissionTree, deleteMission, cleanupEmptyMissions, Mission } from "@/lib/api";
 import { ShimmerTableRow } from "@/components/ui/shimmer";
 import { CopyButton } from "@/components/ui/copy-button";
 import { RelativeTime } from "@/components/ui/relative-time";
@@ -24,6 +24,8 @@ import {
   ArrowDown,
   Network,
   X,
+  Trash2,
+  Sparkles,
 } from "lucide-react";
 
 const statusIcons: Record<string, typeof Clock> = {
@@ -117,9 +119,13 @@ export default function HistoryPage() {
   const [previewMissionId, setPreviewMissionId] = useState<string | null>(null);
   const [previewTree, setPreviewTree] = useState<AgentNode | null>(null);
   const [loadingTree, setLoadingTree] = useState(false);
-  
+
   // Track the mission ID being fetched to prevent race conditions
   const fetchingTreeMissionIdRef = useRef<string | null>(null);
+
+  // Delete state
+  const [deletingMissionId, setDeletingMissionId] = useState<string | null>(null);
+  const [cleaningUp, setCleaningUp] = useState(false);
 
   useEffect(() => {
     if (fetchedRef.current) return;
@@ -193,6 +199,49 @@ export default function HistoryPage() {
     }
   };
 
+  const handleDeleteMission = useCallback(async (missionId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const mission = missions.find(m => m.id === missionId);
+    if (mission?.status === "active") {
+      toast.error("Cannot delete an active mission");
+      return;
+    }
+
+    setDeletingMissionId(missionId);
+    try {
+      await deleteMission(missionId);
+      setMissions(prev => prev.filter(m => m.id !== missionId));
+      toast.success("Mission deleted");
+    } catch (error) {
+      console.error("Failed to delete mission:", error);
+      toast.error("Failed to delete mission");
+    } finally {
+      setDeletingMissionId(null);
+    }
+  }, [missions]);
+
+  const handleCleanupEmpty = useCallback(async () => {
+    setCleaningUp(true);
+    try {
+      const result = await cleanupEmptyMissions();
+      if (result.deleted_count > 0) {
+        // Refresh the missions list
+        const missionsData = await listMissions().catch(() => []);
+        setMissions(missionsData);
+        toast.success(`Cleaned up ${result.deleted_count} empty mission${result.deleted_count === 1 ? '' : 's'}`);
+      } else {
+        toast.info("No empty missions to clean up");
+      }
+    } catch (error) {
+      console.error("Failed to cleanup missions:", error);
+      toast.error("Failed to cleanup missions");
+    } finally {
+      setCleaningUp(false);
+    }
+  }, []);
+
   const filteredMissions = useMemo(() => {
     const filtered = missions.filter((mission) => {
       if (filter !== "all" && mission.status !== filter) return false;
@@ -262,6 +311,24 @@ export default function HistoryPage() {
             </button>
           ))}
         </div>
+
+        <button
+          onClick={handleCleanupEmpty}
+          disabled={cleaningUp}
+          className={cn(
+            "inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors",
+            "bg-white/[0.02] border border-white/[0.04] hover:bg-white/[0.04]",
+            "text-white/60 hover:text-white/80",
+            cleaningUp && "opacity-50 cursor-not-allowed"
+          )}
+        >
+          {cleaningUp ? (
+            <Loader className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="h-3.5 w-3.5" />
+          )}
+          Cleanup Empty
+        </button>
       </div>
 
       {/* Content */}
@@ -418,6 +485,25 @@ export default function HistoryPage() {
                                 title="View agent tree"
                               >
                                 <Network className="h-3 w-3" />
+                              </button>
+                              <button
+                                onClick={(e) => handleDeleteMission(mission.id, e)}
+                                disabled={deletingMissionId === mission.id || mission.status === "active"}
+                                className={cn(
+                                  "inline-flex items-center gap-1 text-xs transition-colors opacity-0 group-hover:opacity-100",
+                                  deletingMissionId === mission.id
+                                    ? "text-white/30 cursor-not-allowed"
+                                    : mission.status === "active"
+                                    ? "text-white/20 cursor-not-allowed"
+                                    : "text-white/40 hover:text-red-400"
+                                )}
+                                title={mission.status === "active" ? "Cannot delete active mission" : "Delete mission"}
+                              >
+                                {deletingMissionId === mission.id ? (
+                                  <Loader className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3 w-3" />
+                                )}
                               </button>
                               <CopyButton
                                 text={mission.id}

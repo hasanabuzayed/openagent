@@ -1192,7 +1192,8 @@ export default function ControlClient() {
             >;
             updated[existingIdx] = {
               ...existing,
-              content: existing.content + "\n\n---\n\n" + content,
+              // Replace content instead of appending - backend sends cumulative content
+              content,
               done,
             };
             return updated;

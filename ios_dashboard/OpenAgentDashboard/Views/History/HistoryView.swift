@@ -15,7 +15,9 @@ struct HistoryView: View {
     @State private var searchText = ""
     @State private var selectedFilter: StatusFilter = .all
     @State private var errorMessage: String?
-    
+    @State private var isCleaningUp = false
+    @State private var showCleanupResult: String?
+
     private let api = APIService.shared
     private let nav = NavigationState.shared
     
@@ -81,24 +83,79 @@ struct HistoryView: View {
                             .stroke(Theme.border, lineWidth: 1)
                     )
                     
-                    // Filter pills
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(StatusFilter.allCases, id: \.rawValue) { filter in
-                                FilterPill(
-                                    title: filter.rawValue,
-                                    isSelected: selectedFilter == filter
-                                ) {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        selectedFilter = filter
+                    // Filter pills and cleanup button
+                    HStack(spacing: 12) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(StatusFilter.allCases, id: \.rawValue) { filter in
+                                    FilterPill(
+                                        title: filter.rawValue,
+                                        isSelected: selectedFilter == filter
+                                    ) {
+                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                            selectedFilter = filter
+                                        }
+                                        HapticService.selectionChanged()
                                     }
-                                    HapticService.selectionChanged()
                                 }
                             }
                         }
+
+                        // Cleanup button
+                        Button {
+                            Task { await cleanupEmptyMissions() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isCleaningUp {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                        .tint(Theme.textSecondary)
+                                } else {
+                                    Image(systemName: "sparkles")
+                                        .font(.caption)
+                                }
+                                Text("Cleanup")
+                                    .font(.caption.weight(.medium))
+                            }
+                            .foregroundStyle(Theme.textSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(.ultraThinMaterial)
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(Theme.border, lineWidth: 0.5)
+                            )
+                        }
+                        .disabled(isCleaningUp)
+                        .opacity(isCleaningUp ? 0.6 : 1)
                     }
                 }
                 .padding()
+
+                // Cleanup result banner
+                if let result = showCleanupResult {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Theme.success)
+                        Text(result)
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.textPrimary)
+                        Spacer()
+                        Button {
+                            withAnimation { showCleanupResult = nil }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption)
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                    .padding()
+                    .background(Theme.success.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 
                 // Content
                 if isLoading {
@@ -145,6 +202,15 @@ struct HistoryView: View {
                                 MissionRow(mission: mission)
                             }
                             .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if mission.status != .active {
+                                    Button(role: .destructive) {
+                                        Task { await deleteMission(mission) }
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
                         }
                     } header: {
                         SectionHeader(
@@ -189,22 +255,69 @@ struct HistoryView: View {
     private func loadData() async {
         isLoading = true
         errorMessage = nil
-        
+
         do {
             async let missionsTask = api.listMissions()
             async let tasksTask = api.listTasks()
             async let runsTask = api.listRuns()
-            
+
             let (missionsResult, tasksResult, runsResult) = try await (missionsTask, tasksTask, runsTask)
-            
+
             missions = missionsResult
             tasks = tasksResult
             runs = runsResult
         } catch {
             errorMessage = error.localizedDescription
         }
-        
+
         isLoading = false
+    }
+
+    private func deleteMission(_ mission: Mission) async {
+        do {
+            _ = try await api.deleteMission(id: mission.id)
+            withAnimation {
+                missions.removeAll { $0.id == mission.id }
+            }
+            HapticService.success()
+        } catch {
+            HapticService.error()
+            errorMessage = "Failed to delete mission: \(error.localizedDescription)"
+        }
+    }
+
+    private func cleanupEmptyMissions() async {
+        isCleaningUp = true
+
+        do {
+            let count = try await api.cleanupEmptyMissions()
+            if count > 0 {
+                // Refresh the list
+                let newMissions = try await api.listMissions()
+                withAnimation {
+                    missions = newMissions
+                    showCleanupResult = "Cleaned up \(count) empty mission\(count == 1 ? "" : "s")"
+                }
+                HapticService.success()
+            } else {
+                withAnimation {
+                    showCleanupResult = "No empty missions to clean up"
+                }
+            }
+
+            // Auto-hide the result after 3 seconds
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                withAnimation {
+                    showCleanupResult = nil
+                }
+            }
+        } catch {
+            HapticService.error()
+            errorMessage = "Cleanup failed: \(error.localizedDescription)"
+        }
+
+        isCleaningUp = false
     }
 }
 

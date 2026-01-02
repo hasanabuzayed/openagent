@@ -396,6 +396,30 @@ export async function setMissionStatus(
   if (!res.ok) throw new Error("Failed to set mission status");
 }
 
+// Delete a mission
+export async function deleteMission(id: string): Promise<{ ok: boolean; deleted: string }> {
+  const res = await apiFetch(`/api/control/missions/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to delete mission: ${text}`);
+  }
+  return res.json();
+}
+
+// Cleanup empty untitled missions
+export async function cleanupEmptyMissions(): Promise<{ ok: boolean; deleted_count: number }> {
+  const res = await apiFetch("/api/control/missions/cleanup", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to cleanup missions: ${text}`);
+  }
+  return res.json();
+}
+
 // Resume an interrupted mission
 export async function resumeMission(id: string, cleanWorkspace: boolean = false): Promise<Mission> {
   const res = await apiFetch(`/api/control/missions/${id}/resume`, {
