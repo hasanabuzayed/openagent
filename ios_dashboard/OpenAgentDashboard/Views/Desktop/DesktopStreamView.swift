@@ -3,10 +3,11 @@
 //  OpenAgentDashboard
 //
 //  Real-time desktop stream viewer with controls
-//  Designed to be shown in a bottom sheet
+//  Designed to be shown in a bottom sheet, with Picture-in-Picture support
 //
 
 import SwiftUI
+import AVKit
 
 struct DesktopStreamView: View {
     @State private var streamService = DesktopStreamService.shared
@@ -28,9 +29,17 @@ struct DesktopStreamView: View {
                 // Header bar
                 headerView
 
-                // Stream content
-                streamContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Stream content with PiP layer
+                ZStack {
+                    // PiP-enabled layer (hidden, used for feeding frames to PiP)
+                    PipLayerView(streamService: streamService)
+                        .frame(width: 1, height: 1)
+                        .opacity(0)
+
+                    // Visible stream content
+                    streamContent
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 // Controls (when visible)
                 if showControls {
@@ -43,7 +52,15 @@ struct DesktopStreamView: View {
             streamService.connect(displayId: displayId)
         }
         .onDisappear {
-            streamService.disconnect()
+            // Only disconnect if PiP is not active
+            // This allows the stream to continue in PiP mode after the sheet is dismissed
+            if streamService.isPipActive {
+                // Mark for cleanup when PiP stops
+                streamService.shouldDisconnectAfterPip = true
+            } else {
+                streamService.cleanupPip()
+                streamService.disconnect()
+            }
         }
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -86,6 +103,23 @@ struct DesktopStreamView: View {
             Text("\(streamService.frameCount) frames")
                 .font(.caption2.monospaced())
                 .foregroundStyle(Theme.textMuted)
+
+            // PiP button (if supported)
+            if streamService.isPipSupported {
+                Button {
+                    streamService.togglePip()
+                    HapticService.lightTap()
+                } label: {
+                    Image(systemName: streamService.isPipActive ? "pip.exit" : "pip.enter")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(streamService.isPipActive ? Theme.accent : Theme.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(streamService.isPipActive ? Theme.accent.opacity(0.2) : Theme.backgroundSecondary)
+                        .clipShape(Circle())
+                }
+                .disabled(!streamService.isConnected || !streamService.isPipReady)
+                .opacity(streamService.isConnected && streamService.isPipReady ? 1 : 0.5)
+            }
 
             // Close button
             Button {
@@ -158,7 +192,7 @@ struct DesktopStreamView: View {
 
     private var controlsView: some View {
         VStack(spacing: 16) {
-            // Play/Pause and reconnect buttons
+            // Play/Pause, PiP, and reconnect buttons
             HStack(spacing: 16) {
                 // Play/Pause
                 Button {
@@ -190,6 +224,23 @@ struct DesktopStreamView: View {
                         .frame(width: 44, height: 44)
                         .background(Theme.backgroundSecondary)
                         .clipShape(Circle())
+                }
+
+                // PiP button in controls (larger, more visible)
+                if streamService.isPipSupported {
+                    Button {
+                        streamService.togglePip()
+                        HapticService.lightTap()
+                    } label: {
+                        Image(systemName: streamService.isPipActive ? "pip.exit" : "pip.enter")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(streamService.isPipActive ? .white : Theme.textPrimary)
+                            .frame(width: 44, height: 44)
+                            .background(streamService.isPipActive ? Theme.accent : Theme.backgroundSecondary)
+                            .clipShape(Circle())
+                    }
+                    .disabled(!streamService.isConnected || !streamService.isPipReady)
+                    .opacity(streamService.isConnected && streamService.isPipReady ? 1 : 0.5)
                 }
             }
 
@@ -237,6 +288,32 @@ struct DesktopStreamView: View {
         }
         .padding(16)
         .background(.ultraThinMaterial)
+    }
+}
+
+// MARK: - PiP Layer View (UIViewRepresentable)
+
+/// A UIView wrapper that sets up the AVSampleBufferDisplayLayer for PiP
+struct PipLayerView: UIViewRepresentable {
+    let streamService: DesktopStreamService
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+
+        // Set up PiP on the main actor
+        Task { @MainActor in
+            streamService.setupPip(in: view)
+        }
+
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        // Update layer frame if needed
+        if let layer = streamService.sampleBufferDisplayLayer {
+            layer.frame = uiView.bounds
+        }
     }
 }
 

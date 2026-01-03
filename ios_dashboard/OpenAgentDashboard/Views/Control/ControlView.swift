@@ -1059,9 +1059,11 @@ struct ControlView: View {
                 }
                 // If both viewingId and currentId are nil, accept the event
                 // This handles the case where a new mission was just created
-            } else if viewingId != nil && viewingId != currentId {
+            } else if let vId = viewingId, let cId = currentId, vId != cId {
                 // Event has NO mission_id (from main session)
                 // Skip if we're viewing a different (parallel) mission
+                // Note: We only skip if BOTH viewingId and currentId are set and different
+                // If currentId is nil (not loaded yet), we accept the event
                 return
             }
         }
@@ -1078,9 +1080,10 @@ struct ControlView: View {
                 // Status for a specific mission - only apply if we're viewing that mission
                 shouldApply = statusId == viewingId
             } else {
-                // Status for main session - only apply if viewing the current (main) mission
-                // or if we don't have a current mission yet
-                shouldApply = viewingId == nil || viewingId == currentId
+                // Status for main session - only apply if viewing the current (main) mission,
+                // no specific mission, or currentId hasn't loaded yet (to match event filter
+                // logic and avoid desktop stream staying open when status=idle comes during loading)
+                shouldApply = viewingId == nil || viewingId == currentId || currentId == nil
             }
 
             if shouldApply {
@@ -1088,9 +1091,11 @@ struct ControlView: View {
                     let newState = ControlRunState(rawValue: state) ?? .idle
                     runState = newState
 
-                    // Clear progress when idle
+                    // Clear progress and auto-close desktop stream when idle
                     if newState == .idle {
                         progress = nil
+                        // Auto-close desktop stream when agent finishes
+                        showDesktopStream = false
                     }
                 }
                 if let queue = data["queue_len"] as? Int {
@@ -1233,7 +1238,26 @@ struct ControlView: View {
                     messages.append(message)
                 }
             }
-            
+
+        case "tool_result":
+            if let name = data["name"] as? String {
+                // Extract display ID from desktop_start_session tool result
+                if name == "desktop_start_session" || name == "desktop_desktop_start_session" {
+                    // Handle result as either a dictionary or a JSON string
+                    var resultDict: [String: Any]? = data["result"] as? [String: Any]
+                    if resultDict == nil, let resultString = data["result"] as? String,
+                       let jsonData = resultString.data(using: .utf8),
+                       let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                        resultDict = parsed
+                    }
+                    if let display = resultDict?["display"] as? String {
+                        desktopDisplayId = display
+                        // Auto-open desktop stream when session starts
+                        showDesktopStream = true
+                    }
+                }
+            }
+
         default:
             break
         }

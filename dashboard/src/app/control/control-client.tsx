@@ -584,6 +584,7 @@ export default function ControlClient() {
   const router = useRouter();
 
   const [items, setItems] = useState<ChatItem[]>([]);
+  const itemsRef = useRef<ChatItem[]>([]);
   const [draftInput, setDraftInput] = useLocalStorage("control-draft", "");
   const [input, setInput] = useState(draftInput);
 
@@ -690,6 +691,10 @@ export default function ControlClient() {
   useEffect(() => {
     viewingMissionRef.current = viewingMission;
   }, [viewingMission]);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   // Smart auto-scroll
   const { containerRef, endRef, isAtBottom, scrollToBottom } =
@@ -1205,8 +1210,9 @@ export default function ControlClient() {
           }
         } else {
           // Event has NO mission_id (from main session)
-          // Only show if we're viewing the current/main mission
-          if (viewingId !== currentMissionId) {
+          // Only show if we're viewing the current/main mission OR if currentMission
+          // hasn't been loaded yet (to handle race condition during initial load)
+          if (currentMissionId && viewingId !== currentMissionId) {
             // We're viewing a parallel mission, skip main session events
             if (event.type !== "status") {
               return;
@@ -1248,16 +1254,20 @@ export default function ControlClient() {
           // Status for a specific mission - only apply if viewing that mission
           shouldApplyStatus = statusMissionId === viewingId;
         } else {
-          // Status for main session - only apply if viewing main mission or no specific mission
-          shouldApplyStatus = !viewingId || viewingId === currentMissionId;
+          // Status for main session - only apply if viewing main mission, no specific mission,
+          // or currentMissionId hasn't loaded yet (to match event filter logic and avoid
+          // desktop stream staying open when status=idle comes during loading)
+          shouldApplyStatus = !viewingId || viewingId === currentMissionId || !currentMissionId;
         }
 
         if (shouldApplyStatus) {
           setQueueLen(typeof q === "number" ? q : 0);
 
-          // Clear progress when idle
+          // Clear progress and auto-close desktop stream when idle
           if (newState === "idle") {
             setProgress(null);
+            // Auto-close desktop stream when agent finishes
+            setShowDesktopStream(false);
           }
 
           // If we reconnected and agent is already running, add a visual indicator
@@ -1395,6 +1405,59 @@ export default function ControlClient() {
       if (event.type === "tool_result" && isRecord(data)) {
         const toolCallId = String(data["tool_call_id"] ?? "");
         const endTime = Date.now();
+
+        // Extract display ID from desktop_start_session tool result
+        // Get tool name from the event data (preferred) or fall back to stored tool item
+        const eventToolName = typeof data["name"] === "string" ? data["name"] : null;
+
+        // Check for desktop_start_session right away using event data
+        // This handles the case where tool_call events might be filtered or missed
+        if (eventToolName === "desktop_start_session" || eventToolName === "desktop_desktop_start_session") {
+          let result = data["result"];
+          // Handle case where result is a JSON string that needs parsing
+          if (typeof result === "string") {
+            try {
+              result = JSON.parse(result);
+            } catch {
+              // Not valid JSON, leave as-is
+            }
+          }
+          if (isRecord(result) && typeof result["display"] === "string") {
+            const display = result["display"];
+            setDesktopDisplayId(display);
+            // Auto-open desktop stream when session starts
+            setShowDesktopStream(true);
+          }
+        }
+
+        // If eventToolName wasn't available, check stored items for desktop_start_session
+        // Use itemsRef for synchronous read to avoid side effects in state updaters
+        if (!eventToolName) {
+          const toolItem = itemsRef.current.find(
+            (it) => it.kind === "tool" && it.toolCallId === toolCallId
+          );
+          if (toolItem && toolItem.kind === "tool") {
+            const toolName = toolItem.name;
+            // Check for desktop_start_session (with or without desktop_ prefix from MCP)
+            if (toolName === "desktop_start_session" || toolName === "desktop_desktop_start_session") {
+              let result = data["result"];
+              // Handle case where result is a JSON string that needs parsing
+              if (typeof result === "string") {
+                try {
+                  result = JSON.parse(result);
+                } catch {
+                  // Not valid JSON, leave as-is
+                }
+              }
+              if (isRecord(result) && typeof result["display"] === "string") {
+                const display = result["display"];
+                setDesktopDisplayId(display);
+                setShowDesktopStream(true);
+              }
+            }
+          }
+        }
+
         setItems((prev) =>
           prev.map((it) =>
             it.kind === "tool" && it.toolCallId === toolCallId

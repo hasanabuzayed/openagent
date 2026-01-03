@@ -13,6 +13,7 @@ import {
   Settings,
   Maximize2,
   Minimize2,
+  PictureInPicture2,
 } from "lucide-react";
 
 interface DesktopStreamProps {
@@ -41,10 +42,14 @@ export function DesktopStream({
   const [fps, setFps] = useState(initialFps);
   const [quality, setQuality] = useState(initialQuality);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPipActive, setIsPipActive] = useState(false);
+  const [isPipSupported, setIsPipSupported] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipStreamRef = useRef<MediaStream | null>(null);
   const connectionIdRef = useRef(0); // Guard against stale callbacks from old connections
 
   // Refs to store current values without triggering reconnection on slider changes
@@ -215,6 +220,75 @@ export function DesktopStream({
     }
   }, [isFullscreen]);
 
+  // Picture-in-Picture handler
+  const handlePip = useCallback(async () => {
+    if (!canvasRef.current) return;
+
+    if (isPipActive && document.pictureInPictureElement) {
+      // Exit PiP
+      try {
+        await document.exitPictureInPicture();
+      } catch {
+        // Ignore errors
+      }
+      return;
+    }
+
+    try {
+      // Stop any existing stream tracks to prevent resource leaks
+      if (pipStreamRef.current) {
+        pipStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+
+      // Create a video element from canvas stream
+      const canvas = canvasRef.current;
+      const stream = canvas.captureStream(fps);
+      pipStreamRef.current = stream;
+
+      // Create or reuse video element
+      if (!pipVideoRef.current) {
+        const video = document.createElement("video");
+        video.muted = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        // Attach PiP event listeners directly to the video element
+        // These events fire on the video, not document, so we need to listen here
+        video.addEventListener("enterpictureinpicture", () => setIsPipActive(true));
+        video.addEventListener("leavepictureinpicture", () => setIsPipActive(false));
+        pipVideoRef.current = video;
+      }
+
+      pipVideoRef.current.srcObject = stream;
+      await pipVideoRef.current.play();
+
+      // Request PiP
+      await pipVideoRef.current.requestPictureInPicture();
+    } catch (err) {
+      console.error("Failed to enter Picture-in-Picture:", err);
+    }
+  }, [isPipActive, fps]);
+
+  // Check PiP support on mount
+  useEffect(() => {
+    setIsPipSupported(
+      "pictureInPictureEnabled" in document && document.pictureInPictureEnabled
+    );
+  }, []);
+
+  // Cleanup PiP resources on unmount
+  // Note: We don't forcibly exit PiP here to match iOS behavior where
+  // PiP continues when the sheet is dismissed. The PiP will naturally
+  // close when the WebSocket disconnects and the stream ends.
+  useEffect(() => {
+    return () => {
+      // Only stop stream tracks if PiP is not active
+      // This allows PiP to continue showing the last frame briefly
+      if (!document.pictureInPictureElement && pipStreamRef.current) {
+        pipStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
   // Connect on mount
   useEffect(() => {
     connect();
@@ -291,6 +365,23 @@ export function DesktopStream({
         </div>
 
         <div className="flex items-center gap-2">
+          {isPipSupported && (
+            <button
+              onClick={handlePip}
+              disabled={connectionState !== "connected"}
+              className={cn(
+                "p-1.5 rounded-lg transition-colors",
+                connectionState === "connected"
+                  ? isPipActive
+                    ? "bg-indigo-500/30 text-indigo-400 hover:bg-indigo-500/40"
+                    : "hover:bg-white/10 text-white/60 hover:text-white"
+                  : "text-white/30 cursor-not-allowed"
+              )}
+              title={isPipActive ? "Exit Picture-in-Picture" : "Picture-in-Picture"}
+            >
+              <PictureInPicture2 className="w-4 h-4" />
+            </button>
+          )}
           <button
             onClick={handleFullscreen}
             className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition-colors"
