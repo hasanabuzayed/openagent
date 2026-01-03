@@ -1090,9 +1090,11 @@ struct ControlView: View {
                     let newState = ControlRunState(rawValue: state) ?? .idle
                     runState = newState
 
-                    // Clear progress when idle
+                    // Clear progress and auto-close desktop stream when idle
                     if newState == .idle {
                         progress = nil
+                        // Auto-close desktop stream when agent finishes
+                        showDesktopStream = false
                     }
                 }
                 if let queue = data["queue_len"] as? Int {
@@ -1235,7 +1237,20 @@ struct ControlView: View {
                     messages.append(message)
                 }
             }
-            
+
+        case "tool_result":
+            if let name = data["name"] as? String,
+               let result = data["result"] as? [String: Any] {
+                // Extract display ID from desktop_start_session tool result
+                if name == "desktop_start_session" || name == "desktop_desktop_start_session" {
+                    if let display = result["display"] as? String {
+                        desktopDisplayId = display
+                        // Auto-open desktop stream when session starts
+                        showDesktopStream = true
+                    }
+                }
+            }
+
         default:
             break
         }

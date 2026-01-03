@@ -1256,9 +1256,11 @@ export default function ControlClient() {
         if (shouldApplyStatus) {
           setQueueLen(typeof q === "number" ? q : 0);
 
-          // Clear progress when idle
+          // Clear progress and auto-close desktop stream when idle
           if (newState === "idle") {
             setProgress(null);
+            // Auto-close desktop stream when agent finishes
+            setShowDesktopStream(false);
           }
 
           // If we reconnected and agent is already running, add a visual indicator
@@ -1396,13 +1398,32 @@ export default function ControlClient() {
       if (event.type === "tool_result" && isRecord(data)) {
         const toolCallId = String(data["tool_call_id"] ?? "");
         const endTime = Date.now();
-        setItems((prev) =>
-          prev.map((it) =>
+
+        // Extract display ID from desktop_start_session tool result
+        setItems((prev) => {
+          const toolItem = prev.find(
+            (it) => it.kind === "tool" && it.toolCallId === toolCallId
+          );
+          if (toolItem && toolItem.kind === "tool") {
+            const toolName = toolItem.name;
+            // Check for desktop_start_session (with or without desktop_ prefix from MCP)
+            if (toolName === "desktop_start_session" || toolName === "desktop_desktop_start_session") {
+              const result = data["result"];
+              if (isRecord(result) && typeof result["display"] === "string") {
+                const display = result["display"];
+                setDesktopDisplayId(display);
+                // Auto-open desktop stream when session starts
+                setShowDesktopStream(true);
+              }
+            }
+          }
+
+          return prev.map((it) =>
             it.kind === "tool" && it.toolCallId === toolCallId
               ? { ...it, result: data["result"], endTime }
               : it
-          )
-        );
+          );
+        });
         return;
       }
 
