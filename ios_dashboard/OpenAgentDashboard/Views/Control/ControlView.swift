@@ -1059,9 +1059,11 @@ struct ControlView: View {
                 }
                 // If both viewingId and currentId are nil, accept the event
                 // This handles the case where a new mission was just created
-            } else if viewingId != nil && viewingId != currentId {
+            } else if let vId = viewingId, let cId = currentId, vId != cId {
                 // Event has NO mission_id (from main session)
                 // Skip if we're viewing a different (parallel) mission
+                // Note: We only skip if BOTH viewingId and currentId are set and different
+                // If currentId is nil (not loaded yet), we accept the event
                 return
             }
         }

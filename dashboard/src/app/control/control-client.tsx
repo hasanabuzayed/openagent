@@ -1205,8 +1205,9 @@ export default function ControlClient() {
           }
         } else {
           // Event has NO mission_id (from main session)
-          // Only show if we're viewing the current/main mission
-          if (viewingId !== currentMissionId) {
+          // Only show if we're viewing the current/main mission OR if currentMission
+          // hasn't been loaded yet (to handle race condition during initial load)
+          if (currentMissionId && viewingId !== currentMissionId) {
             // We're viewing a parallel mission, skip main session events
             if (event.type !== "status") {
               return;
