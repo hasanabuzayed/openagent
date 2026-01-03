@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import os
 
 struct ControlView: View {
     @State private var messages: [ChatMessage] = []
@@ -807,15 +808,15 @@ struct ControlView: View {
                 }
 
                 // Start streaming - this will block until the stream ends
-                // Use nonisolated(unsafe) to allow mutation from closure (we accept the risk for this simple boolean)
+                // Use OSAllocatedUnfairLock for thread-safe boolean access across actor boundaries
                 // Track successful (non-error) events separately from all events
-                nonisolated(unsafe) var receivedSuccessfulEvent = false
+                let receivedSuccessfulEvent = OSAllocatedUnfairLock(initialState: false)
 
                 let streamCompleted = await withCheckedContinuation { continuation in
                     let innerTask = api.streamControl { eventType, data in
                         // Only count non-error events as successful for backoff reset
                         if eventType != "error" {
-                            receivedSuccessfulEvent = true
+                            receivedSuccessfulEvent.withLock { $0 = true }
                         }
                         Task { @MainActor in
                             // Successfully received an event - we're connected
@@ -836,7 +837,7 @@ struct ControlView: View {
 
                 // Reset backoff only after receiving successful (non-error) events
                 // This prevents error events from resetting backoff when server is unavailable
-                if receivedSuccessfulEvent {
+                if receivedSuccessfulEvent.withLock({ $0 }) {
                     currentBackoff = 1
                 }
 
