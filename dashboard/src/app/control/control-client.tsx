@@ -888,13 +888,18 @@ export default function ControlClient() {
       const previousViewingMission = viewingMissionRef.current;
       setMissionLoading(true);
       setViewingMissionId(missionId); // Set viewing ID immediately to prevent "Agent is working..." flash
+      fetchingMissionIdRef.current = missionId; // Track which mission we're loading
       loadMission(missionId)
         .then((mission) => {
+          // Race condition guard: only apply if this is still the mission we want
+          if (fetchingMissionIdRef.current !== missionId) return;
           setCurrentMission(mission);
           setViewingMission(mission);
           setItems(missionHistoryToItems(mission));
         })
         .catch((err) => {
+          // Race condition guard: only handle error if this is still the mission we want
+          if (fetchingMissionIdRef.current !== missionId) return;
           console.error("Failed to load mission:", err);
           // Show error toast for mission load failures (skip if likely a 401 during initial page load)
           const is401 = err?.message?.includes("401") || err?.status === 401;
