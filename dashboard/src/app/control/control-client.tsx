@@ -584,6 +584,7 @@ export default function ControlClient() {
   const router = useRouter();
 
   const [items, setItems] = useState<ChatItem[]>([]);
+  const itemsRef = useRef<ChatItem[]>([]);
   const [draftInput, setDraftInput] = useLocalStorage("control-draft", "");
   const [input, setInput] = useState(draftInput);
 
@@ -1425,9 +1426,13 @@ export default function ControlClient() {
           }
         }
 
-        setItems((prev) => {
-          // Also check using stored tool item name as fallback
-          if (!eventToolName) {
+        // If eventToolName wasn't available, check stored items for desktop_start_session
+        // Use a ref-style pattern: read items synchronously, then update state purely
+        if (!eventToolName) {
+          // We need to access current items to find tool name, but can't call setItems with side effects
+          // Use a separate state read via the functional form, capture display, then update outside
+          let foundDisplay: string | null = null;
+          setItems((prev) => {
             const toolItem = prev.find(
               (it) => it.kind === "tool" && it.toolCallId === toolCallId
             );
@@ -1445,21 +1450,27 @@ export default function ControlClient() {
                   }
                 }
                 if (isRecord(result) && typeof result["display"] === "string") {
-                  const display = result["display"];
-                  setDesktopDisplayId(display);
-                  // Auto-open desktop stream when session starts
-                  setShowDesktopStream(true);
+                  foundDisplay = result["display"];
                 }
               }
             }
+            // Return prev unchanged - this is just for reading
+            return prev;
+          });
+          // Apply side effects outside the updater
+          if (foundDisplay) {
+            setDesktopDisplayId(foundDisplay);
+            setShowDesktopStream(true);
           }
+        }
 
-          return prev.map((it) =>
+        setItems((prev) =>
+          prev.map((it) =>
             it.kind === "tool" && it.toolCallId === toolCallId
               ? { ...it, result: data["result"], endTime }
               : it
-          );
-        });
+          )
+        );
         return;
       }
 

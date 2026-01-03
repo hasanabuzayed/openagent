@@ -2,18 +2,21 @@
 //  DesktopStreamService.swift
 //  OpenAgentDashboard
 //
-//  WebSocket client for MJPEG desktop streaming
+//  WebSocket client for MJPEG desktop streaming with Picture-in-Picture support
 //
 
 import Foundation
 import Observation
 import UIKit
+import AVKit
+import CoreMedia
+import VideoToolbox
 
 @MainActor
 @Observable
-final class DesktopStreamService {
+final class DesktopStreamService: NSObject {
     static let shared = DesktopStreamService()
-    nonisolated init() {}
+    override nonisolated init() { super.init() }
 
     // Stream state
     var isConnected = false
@@ -23,6 +26,17 @@ final class DesktopStreamService {
     var frameCount: UInt64 = 0
     var fps: Int = 10
     var quality: Int = 70
+
+    // Picture-in-Picture state
+    var isPipSupported: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
+    var isPipActive = false
+    private(set) var pipController: AVPictureInPictureController?
+    private(set) var sampleBufferDisplayLayer: AVSampleBufferDisplayLayer?
+
+    // For PiP content source
+    private var pipContentSource: AVPictureInPictureController.ContentSource?
+    private var lastFrameTime: CMTime = .zero
+    private var frameTimeScale: CMTimeScale = 600
 
     private var webSocket: URLSessionWebSocketTask?
     private var displayId: String?
@@ -164,6 +178,11 @@ final class DesktopStreamService {
                 currentFrame = image
                 frameCount += 1
                 errorMessage = nil
+
+                // Feed frame to PiP layer if active
+                if isPipActive || pipController != nil {
+                    feedFrameToPipLayer(image)
+                }
             }
 
         case .string(let text):
@@ -178,5 +197,199 @@ final class DesktopStreamService {
         @unknown default:
             break
         }
+    }
+
+    // MARK: - Picture-in-Picture
+
+    /// Set up the PiP layer and controller
+    func setupPip(in view: UIView) {
+        guard isPipSupported else { return }
+
+        // Create the sample buffer display layer
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        layer.frame = view.bounds
+        view.layer.addSublayer(layer)
+        sampleBufferDisplayLayer = layer
+
+        // Create PiP content source using the sample buffer layer
+        let contentSource = AVPictureInPictureController.ContentSource(
+            sampleBufferDisplayLayer: layer,
+            playbackDelegate: self
+        )
+        pipContentSource = contentSource
+
+        // Create PiP controller
+        let controller = AVPictureInPictureController(contentSource: contentSource)
+        controller.delegate = self
+        pipController = controller
+    }
+
+    /// Clean up PiP resources
+    func cleanupPip() {
+        stopPip()
+        sampleBufferDisplayLayer?.removeFromSuperlayer()
+        sampleBufferDisplayLayer = nil
+        pipController = nil
+        pipContentSource = nil
+    }
+
+    /// Start Picture-in-Picture
+    func startPip() {
+        guard isPipSupported,
+              let controller = pipController,
+              controller.isPictureInPicturePossible else { return }
+
+        controller.startPictureInPicture()
+    }
+
+    /// Stop Picture-in-Picture
+    func stopPip() {
+        pipController?.stopPictureInPicture()
+    }
+
+    /// Toggle Picture-in-Picture
+    func togglePip() {
+        if isPipActive {
+            stopPip()
+        } else {
+            startPip()
+        }
+    }
+
+    /// Feed a UIImage frame to the sample buffer layer for PiP display
+    private func feedFrameToPipLayer(_ image: UIImage) {
+        guard let cgImage = image.cgImage,
+              let layer = sampleBufferDisplayLayer else { return }
+
+        // Create pixel buffer from CGImage
+        let width = cgImage.width
+        let height = cgImage.height
+
+        var pixelBuffer: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
+        ]
+
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width, height,
+            kCVPixelFormatType_32BGRA,
+            attrs as CFDictionary,
+            &pixelBuffer
+        )
+
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else { return }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+
+        guard let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Create format description
+        var formatDescription: CMFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: buffer,
+            formatDescriptionOut: &formatDescription
+        )
+
+        guard let format = formatDescription else { return }
+
+        // Calculate timing
+        let frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+        let presentationTime = CMTimeAdd(lastFrameTime, frameDuration)
+        lastFrameTime = presentationTime
+
+        var timingInfo = CMSampleTimingInfo(
+            duration: frameDuration,
+            presentationTimeStamp: presentationTime,
+            decodeTimeStamp: .invalid
+        )
+
+        // Create sample buffer
+        var sampleBuffer: CMSampleBuffer?
+        CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: buffer,
+            formatDescription: format,
+            sampleTiming: &timingInfo,
+            sampleBufferOut: &sampleBuffer
+        )
+
+        guard let sample = sampleBuffer else { return }
+
+        // Enqueue to layer
+        if layer.status == .failed {
+            layer.flush()
+        }
+        layer.enqueue(sample)
+    }
+}
+
+// MARK: - AVPictureInPictureControllerDelegate
+
+extension DesktopStreamService: AVPictureInPictureControllerDelegate {
+    nonisolated func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        Task { @MainActor in
+            isPipActive = true
+        }
+    }
+
+    nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        Task { @MainActor in
+            isPipActive = false
+        }
+    }
+
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
+        Task { @MainActor in
+            errorMessage = "PiP failed: \(error.localizedDescription)"
+            isPipActive = false
+        }
+    }
+}
+
+// MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
+
+extension DesktopStreamService: AVPictureInPictureSampleBufferPlaybackDelegate {
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
+        Task { @MainActor in
+            if playing {
+                resume()
+            } else {
+                pause()
+            }
+        }
+    }
+
+    nonisolated func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {
+        // Live stream - return a large range
+        return CMTimeRange(start: .zero, duration: CMTime(value: 3600, timescale: 1))
+    }
+
+    nonisolated func pictureInPictureControllerIsPlaybackPaused(_ pictureInPictureController: AVPictureInPictureController) -> Bool {
+        // Access from main actor
+        return false // We'll handle this via the service's isPaused state
+    }
+
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, didTransitionToRenderSize newRenderSize: CMVideoDimensions) {
+        // Handle render size change if needed
+    }
+
+    nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, skipByInterval skipInterval: CMTime) async {
+        // Not applicable for live stream
     }
 }
