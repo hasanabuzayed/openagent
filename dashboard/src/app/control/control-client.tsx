@@ -1402,28 +1402,54 @@ export default function ControlClient() {
         const endTime = Date.now();
 
         // Extract display ID from desktop_start_session tool result
+        // Get tool name from the event data (preferred) or fall back to stored tool item
+        const eventToolName = typeof data["name"] === "string" ? data["name"] : null;
+
+        // Check for desktop_start_session right away using event data
+        // This handles the case where tool_call events might be filtered or missed
+        if (eventToolName === "desktop_start_session" || eventToolName === "desktop_desktop_start_session") {
+          let result = data["result"];
+          // Handle case where result is a JSON string that needs parsing
+          if (typeof result === "string") {
+            try {
+              result = JSON.parse(result);
+            } catch {
+              // Not valid JSON, leave as-is
+            }
+          }
+          if (isRecord(result) && typeof result["display"] === "string") {
+            const display = result["display"];
+            setDesktopDisplayId(display);
+            // Auto-open desktop stream when session starts
+            setShowDesktopStream(true);
+          }
+        }
+
         setItems((prev) => {
-          const toolItem = prev.find(
-            (it) => it.kind === "tool" && it.toolCallId === toolCallId
-          );
-          if (toolItem && toolItem.kind === "tool") {
-            const toolName = toolItem.name;
-            // Check for desktop_start_session (with or without desktop_ prefix from MCP)
-            if (toolName === "desktop_start_session" || toolName === "desktop_desktop_start_session") {
-              let result = data["result"];
-              // Handle case where result is a JSON string that needs parsing
-              if (typeof result === "string") {
-                try {
-                  result = JSON.parse(result);
-                } catch {
-                  // Not valid JSON, leave as-is
+          // Also check using stored tool item name as fallback
+          if (!eventToolName) {
+            const toolItem = prev.find(
+              (it) => it.kind === "tool" && it.toolCallId === toolCallId
+            );
+            if (toolItem && toolItem.kind === "tool") {
+              const toolName = toolItem.name;
+              // Check for desktop_start_session (with or without desktop_ prefix from MCP)
+              if (toolName === "desktop_start_session" || toolName === "desktop_desktop_start_session") {
+                let result = data["result"];
+                // Handle case where result is a JSON string that needs parsing
+                if (typeof result === "string") {
+                  try {
+                    result = JSON.parse(result);
+                  } catch {
+                    // Not valid JSON, leave as-is
+                  }
                 }
-              }
-              if (isRecord(result) && typeof result["display"] === "string") {
-                const display = result["display"];
-                setDesktopDisplayId(display);
-                // Auto-open desktop stream when session starts
-                setShowDesktopStream(true);
+                if (isRecord(result) && typeof result["display"] === "string") {
+                  const display = result["display"];
+                  setDesktopDisplayId(display);
+                  // Auto-open desktop stream when session starts
+                  setShowDesktopStream(true);
+                }
               }
             }
           }

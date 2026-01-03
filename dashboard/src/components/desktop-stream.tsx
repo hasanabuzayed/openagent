@@ -13,6 +13,7 @@ import {
   Settings,
   Maximize2,
   Minimize2,
+  PictureInPicture2,
 } from "lucide-react";
 
 interface DesktopStreamProps {
@@ -41,10 +42,14 @@ export function DesktopStream({
   const [fps, setFps] = useState(initialFps);
   const [quality, setQuality] = useState(initialQuality);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPipActive, setIsPipActive] = useState(false);
+  const [isPipSupported, setIsPipSupported] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipStreamRef = useRef<MediaStream | null>(null);
   const connectionIdRef = useRef(0); // Guard against stale callbacks from old connections
 
   // Refs to store current values without triggering reconnection on slider changes
@@ -215,6 +220,77 @@ export function DesktopStream({
     }
   }, [isFullscreen]);
 
+  // Picture-in-Picture handler
+  const handlePip = useCallback(async () => {
+    if (!canvasRef.current) return;
+
+    if (isPipActive && document.pictureInPictureElement) {
+      // Exit PiP
+      try {
+        await document.exitPictureInPicture();
+      } catch {
+        // Ignore errors
+      }
+      return;
+    }
+
+    try {
+      // Create a video element from canvas stream
+      const canvas = canvasRef.current;
+      const stream = canvas.captureStream(fps);
+      pipStreamRef.current = stream;
+
+      // Create or reuse video element
+      if (!pipVideoRef.current) {
+        const video = document.createElement("video");
+        video.muted = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        pipVideoRef.current = video;
+      }
+
+      pipVideoRef.current.srcObject = stream;
+      await pipVideoRef.current.play();
+
+      // Request PiP
+      await pipVideoRef.current.requestPictureInPicture();
+    } catch (err) {
+      console.error("Failed to enter Picture-in-Picture:", err);
+    }
+  }, [isPipActive, fps]);
+
+  // Check PiP support on mount
+  useEffect(() => {
+    setIsPipSupported(
+      "pictureInPictureEnabled" in document && document.pictureInPictureEnabled
+    );
+  }, []);
+
+  // Listen for PiP changes
+  useEffect(() => {
+    const handlePipChange = () => {
+      setIsPipActive(!!document.pictureInPictureElement);
+    };
+    document.addEventListener("enterpictureinpicture", handlePipChange);
+    document.addEventListener("leavepictureinpicture", handlePipChange);
+    return () => {
+      document.removeEventListener("enterpictureinpicture", handlePipChange);
+      document.removeEventListener("leavepictureinpicture", handlePipChange);
+    };
+  }, []);
+
+  // Cleanup PiP resources on unmount
+  useEffect(() => {
+    return () => {
+      if (document.pictureInPictureElement) {
+        document.exitPictureInPicture().catch(() => {});
+      }
+      if (pipStreamRef.current) {
+        pipStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
   // Connect on mount
   useEffect(() => {
     connect();
@@ -291,6 +367,23 @@ export function DesktopStream({
         </div>
 
         <div className="flex items-center gap-2">
+          {isPipSupported && (
+            <button
+              onClick={handlePip}
+              disabled={connectionState !== "connected"}
+              className={cn(
+                "p-1.5 rounded-lg transition-colors",
+                connectionState === "connected"
+                  ? isPipActive
+                    ? "bg-indigo-500/30 text-indigo-400 hover:bg-indigo-500/40"
+                    : "hover:bg-white/10 text-white/60 hover:text-white"
+                  : "text-white/30 cursor-not-allowed"
+              )}
+              title={isPipActive ? "Exit Picture-in-Picture" : "Picture-in-Picture"}
+            >
+              <PictureInPicture2 className="w-4 h-4" />
+            </button>
+          )}
           <button
             onClick={handleFullscreen}
             className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white transition-colors"
