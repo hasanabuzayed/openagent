@@ -30,6 +30,8 @@ final class DesktopStreamService: NSObject {
     // Picture-in-Picture state
     var isPipSupported: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
     var isPipActive = false
+    /// When true, disconnect and cleanup when PiP stops (set when view is dismissed while PiP is active)
+    var shouldDisconnectAfterPip = false
     private(set) var pipController: AVPictureInPictureController?
     private(set) var sampleBufferDisplayLayer: AVSampleBufferDisplayLayer?
 
@@ -351,6 +353,12 @@ extension DesktopStreamService: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         Task { @MainActor in
             isPipActive = false
+            // If the view was dismissed while PiP was active, clean up now
+            if shouldDisconnectAfterPip {
+                shouldDisconnectAfterPip = false
+                cleanupPip()
+                disconnect()
+            }
         }
     }
 

@@ -54,7 +54,10 @@ struct DesktopStreamView: View {
         .onDisappear {
             // Only disconnect if PiP is not active
             // This allows the stream to continue in PiP mode after the sheet is dismissed
-            if !streamService.isPipActive {
+            if streamService.isPipActive {
+                // Mark for cleanup when PiP stops
+                streamService.shouldDisconnectAfterPip = true
+            } else {
                 streamService.cleanupPip()
                 streamService.disconnect()
             }
