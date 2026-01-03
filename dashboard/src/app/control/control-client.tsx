@@ -869,6 +869,7 @@ export default function ControlClient() {
     const missionId = searchParams.get("mission");
     if (missionId) {
       setMissionLoading(true);
+      setViewingMissionId(missionId); // Set viewing ID immediately to prevent "Agent is working..." flash
       loadMission(missionId)
         .then((mission) => {
           setCurrentMission(mission);
@@ -1124,30 +1125,45 @@ export default function ControlClient() {
         const newState =
           typeof st === "string" ? (st as ControlRunState) : "idle";
         const q = data["queue_len"];
-        setQueueLen(typeof q === "number" ? q : 0);
 
-        // Clear progress when idle
-        if (newState === "idle") {
-          setProgress(null);
+        // Status filtering: only apply status if it matches the mission we're viewing
+        const statusMissionId = typeof data["mission_id"] === "string" ? data["mission_id"] : null;
+        let shouldApplyStatus = true;
+
+        if (statusMissionId) {
+          // Status for a specific mission - only apply if viewing that mission
+          shouldApplyStatus = statusMissionId === viewingId;
+        } else {
+          // Status for main session - only apply if viewing main mission or no specific mission
+          shouldApplyStatus = !viewingId || viewingId === currentMissionId;
         }
 
-        // If we reconnected and agent is already running, add a visual indicator
-        setRunState((prevState) => {
-          // Only show reconnect notice if we weren't already tracking this as running
-          // and there's no active thinking/phase item (means we missed some events)
-          if (newState === "running" && prevState === "idle") {
-            setItems((prevItems) => {
-              const hasActiveThinking = prevItems.some(
-                (it) =>
-                  (it.kind === "thinking" && !it.done) || it.kind === "phase"
-              );
-              // If there's no active streaming item, the user is seeing stale state
-              // The "Agent is working..." indicator will show via the render logic
-              return prevItems;
-            });
+        if (shouldApplyStatus) {
+          setQueueLen(typeof q === "number" ? q : 0);
+
+          // Clear progress when idle
+          if (newState === "idle") {
+            setProgress(null);
           }
-          return newState;
-        });
+
+          // If we reconnected and agent is already running, add a visual indicator
+          setRunState((prevState) => {
+            // Only show reconnect notice if we weren't already tracking this as running
+            // and there's no active thinking/phase item (means we missed some events)
+            if (newState === "running" && prevState === "idle") {
+              setItems((prevItems) => {
+                const hasActiveThinking = prevItems.some(
+                  (it) =>
+                    (it.kind === "thinking" && !it.done) || it.kind === "phase"
+                );
+                // If there's no active streaming item, the user is seeing stale state
+                // The "Agent is working..." indicator will show via the render logic
+                return prevItems;
+              });
+            }
+            return newState;
+          });
+        }
         return;
       }
 
