@@ -725,7 +725,9 @@ function ToolsTab({ tools }: { tools: ToolInfo[] }) {
                       className="truncate text-[11px] text-white/30 max-w-[150px]"
                       title={tool.description}
                     >
-                      {tool.description.slice(0, 32)}...
+                      {tool.description.length > 32
+                        ? `${tool.description.slice(0, 32)}...`
+                        : tool.description}
                     </p>
                   </div>
                 </div>

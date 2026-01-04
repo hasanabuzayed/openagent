@@ -28,6 +28,7 @@ struct Claims {
     /// Subject (we only need a stable sentinel)
     sub: String,
     /// Username (for display/auditing)
+    #[serde(default)]
     usr: String,
     /// Issued-at unix seconds
     iat: i64,
