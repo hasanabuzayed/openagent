@@ -122,6 +122,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                     placeholder="Username"
                     autoCapitalize="none"
                     autoCorrect="off"
+                    autoFocus={authMode === 'multi_user'}
                     spellCheck={false}
                     className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-sm text-white placeholder-white/30 focus:border-indigo-500/50 focus:outline-none transition-colors"
                   />
