@@ -142,6 +142,20 @@ curl http://localhost:3000/api/health
 | `HOST` | `127.0.0.1` | Server bind address |
 | `PORT` | `3000` | Server port |
 | `MAX_ITERATIONS` | `50` | Max agent loop iterations |
+| `OPEN_AGENT_USERS` | (optional) | JSON array of multi-user accounts (enables multi-user auth) |
+| `DASHBOARD_PASSWORD` | (optional) | Single-tenant dashboard password (legacy auth) |
+| `JWT_SECRET` | (required for auth) | HMAC secret for JWT signing |
+
+### Multi-user Auth
+
+Provide `OPEN_AGENT_USERS` to enable multi-user login:
+
+```bash
+export JWT_SECRET="your-secret"
+export OPEN_AGENT_USERS='[{"id":"alice","username":"alice","password":"..."}]'
+```
+
+When multi-user auth is enabled, the memory system is disabled to avoid cross-user leakage.
 
 ## Architecture
 

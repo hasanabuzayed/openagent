@@ -38,6 +38,7 @@ export interface HealthResponse {
   version: string;
   dev_mode: boolean;
   auth_required: boolean;
+  auth_mode: "disabled" | "single_tenant" | "multi_user";
   max_iterations: number;
 }
 
@@ -84,11 +85,15 @@ export async function getHealth(): Promise<HealthResponse> {
   return res.json();
 }
 
-export async function login(password: string): Promise<LoginResponse> {
+export async function login(password: string, username?: string): Promise<LoginResponse> {
+  const payload: { password: string; username?: string } = { password };
+  if (username && username.trim().length > 0) {
+    payload.username = username.trim();
+  }
   const res = await fetch(apiUrl("/api/auth/login"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error("Failed to login");
   return res.json();

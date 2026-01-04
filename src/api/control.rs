@@ -12,11 +12,12 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::sse::{Event, Sse},
     Json,
 };
+use chrono::Utc;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
@@ -25,13 +26,14 @@ use uuid::Uuid;
 
 use crate::agents::{AgentContext, AgentRef, TerminalReason};
 use crate::budget::{Budget, ModelPricing};
-use crate::config::Config;
+use crate::config::{AuthMode, Config};
 use crate::llm::OpenRouterClient;
 use crate::mcp::McpRegistry;
 use crate::memory::{ContextBuilder, MemorySystem, MissionMessage};
 use crate::task::VerificationCriteria;
 use crate::tools::ToolRegistry;
 
+use super::auth::AuthUser;
 use super::routes::AppState;
 
 /// Message posted by a user to the control session.
@@ -427,6 +429,74 @@ pub struct ControlState {
     pub running_missions: Arc<RwLock<Vec<super::mission_runner::RunningMissionInfo>>>,
     /// Max parallel missions allowed
     pub max_parallel: usize,
+    /// In-memory mission store (used when memory is disabled or in multi-user mode)
+    pub missions: Arc<RwLock<HashMap<Uuid, Mission>>>,
+    /// Saved mission trees (for completed missions in in-memory mode)
+    pub mission_trees: Arc<RwLock<HashMap<Uuid, AgentTreeNode>>>,
+    /// Whether to use in-memory missions instead of Supabase
+    pub use_in_memory_missions: bool,
+}
+
+/// Control session manager for per-user sessions.
+#[derive(Clone)]
+pub struct ControlHub {
+    sessions: Arc<RwLock<HashMap<String, ControlState>>>,
+    config: Config,
+    root_agent: AgentRef,
+    memory: Option<MemorySystem>,
+    benchmarks: crate::budget::SharedBenchmarkRegistry,
+    resolver: crate::budget::SharedModelResolver,
+    mcp: Arc<McpRegistry>,
+    force_in_memory: bool,
+}
+
+impl ControlHub {
+    pub fn new(
+        config: Config,
+        root_agent: AgentRef,
+        memory: Option<MemorySystem>,
+        benchmarks: crate::budget::SharedBenchmarkRegistry,
+        resolver: crate::budget::SharedModelResolver,
+        mcp: Arc<McpRegistry>,
+    ) -> Self {
+        let force_in_memory = matches!(config.auth.auth_mode(config.dev_mode), AuthMode::MultiUser)
+            || memory.is_none();
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            config,
+            root_agent,
+            memory,
+            benchmarks,
+            resolver,
+            mcp,
+            force_in_memory,
+        }
+    }
+
+    pub async fn get_or_spawn(&self, user: &AuthUser) -> ControlState {
+        if let Some(existing) = self.sessions.read().await.get(&user.id).cloned() {
+            return existing;
+        }
+        let mut sessions = self.sessions.write().await;
+        if let Some(existing) = sessions.get(&user.id).cloned() {
+            return existing;
+        }
+        let state = spawn_control_session(
+            self.config.clone(),
+            Arc::clone(&self.root_agent),
+            self.memory.clone(),
+            Arc::clone(&self.benchmarks),
+            Arc::clone(&self.resolver),
+            Arc::clone(&self.mcp),
+            self.force_in_memory,
+        );
+        sessions.insert(user.id.clone(), state.clone());
+        state
+    }
+
+    pub async fn all_sessions(&self) -> Vec<ControlState> {
+        self.sessions.read().await.values().cloned().collect()
+    }
 }
 
 /// Execution progress for showing "Subtask X of Y"
@@ -466,9 +536,14 @@ async fn set_and_emit_status(
     });
 }
 
+async fn control_for_user(state: &Arc<AppState>, user: &AuthUser) -> ControlState {
+    state.control.get_or_spawn(user).await
+}
+
 /// Enqueue a user message for the global control session.
 pub async fn post_message(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Json(req): Json<ControlMessageRequest>,
 ) -> Result<Json<ControlMessageResponse>, (StatusCode, String)> {
     let content = req.content.trim().to_string();
@@ -478,8 +553,8 @@ pub async fn post_message(
 
     let id = Uuid::new_v4();
     let queued = true;
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::UserMessage {
             id,
@@ -500,6 +575,7 @@ pub async fn post_message(
 /// Submit a frontend tool result to resume the running agent.
 pub async fn post_tool_result(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Json(req): Json<ControlToolResultRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if req.tool_call_id.trim().is_empty() {
@@ -512,8 +588,8 @@ pub async fn post_tool_result(
         return Err((StatusCode::BAD_REQUEST, "name is required".to_string()));
     }
 
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::ToolResult {
             tool_call_id: req.tool_call_id,
@@ -534,9 +610,10 @@ pub async fn post_tool_result(
 /// Cancel the currently running control session task.
 pub async fn post_cancel(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::Cancel)
         .await
@@ -554,7 +631,15 @@ pub async fn post_cancel(
 /// List all missions.
 pub async fn list_missions(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Vec<Mission>>, (StatusCode, String)> {
+    let control = control_for_user(&state, &user).await;
+    if control.use_in_memory_missions {
+        let mut missions: Vec<Mission> = control.missions.read().await.values().cloned().collect();
+        missions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        return Ok(Json(missions));
+    }
+
     let mem = state.memory.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -608,8 +693,19 @@ pub async fn list_missions(
 /// Get a specific mission.
 pub async fn get_mission(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Mission>, (StatusCode, String)> {
+    let control = control_for_user(&state, &user).await;
+    if control.use_in_memory_missions {
+        let store = control.missions.read().await;
+        return store
+            .get(&id)
+            .cloned()
+            .map(Json)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Mission {} not found", id)));
+    }
+
     let mem = state.memory.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -662,6 +758,7 @@ pub struct CreateMissionRequest {
 
 pub async fn create_mission(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     body: Option<Json<CreateMissionRequest>>,
 ) -> Result<Json<Mission>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
@@ -670,8 +767,8 @@ pub async fn create_mission(
         .map(|b| (b.title.clone(), b.model_override.clone()))
         .unwrap_or((None, None));
 
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::CreateMission {
             title,
@@ -700,12 +797,13 @@ pub async fn create_mission(
 /// Load/switch to a mission.
 pub async fn load_mission(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Mission>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
 
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::LoadMission { id, respond: tx })
         .await
@@ -730,13 +828,14 @@ pub async fn load_mission(
 /// Set mission status (completed/failed).
 pub async fn set_mission_status(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
     Json(req): Json<SetMissionStatusRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
 
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::SetMissionStatus {
             id,
@@ -765,11 +864,18 @@ pub async fn set_mission_status(
 /// Get the current mission (if any).
 pub async fn get_current_mission(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Option<Mission>>, (StatusCode, String)> {
-    let current_id = state.control.current_mission.read().await.clone();
+    let control = control_for_user(&state, &user).await;
+    let current_id = control.current_mission.read().await.clone();
 
     match current_id {
         Some(id) => {
+            if control.use_in_memory_missions {
+                let store = control.missions.read().await;
+                return Ok(Json(store.get(&id).cloned()));
+            }
+
             let mem = state.memory.as_ref().ok_or_else(|| {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -821,8 +927,12 @@ pub async fn get_current_mission(
 
 /// Get current agent tree snapshot (for refresh resilience).
 /// Returns the last emitted tree state, or null if no tree is active.
-pub async fn get_tree(State(state): State<Arc<AppState>>) -> Json<Option<AgentTreeNode>> {
-    let tree = state.control.current_tree.read().await.clone();
+pub async fn get_tree(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
+) -> Json<Option<AgentTreeNode>> {
+    let control = control_for_user(&state, &user).await;
+    let tree = control.current_tree.read().await.clone();
     Json(tree)
 }
 
@@ -831,14 +941,28 @@ pub async fn get_tree(State(state): State<Arc<AppState>>) -> Json<Option<AgentTr
 /// For completed missions, returns the saved final_tree from the database.
 pub async fn get_mission_tree(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Path(mission_id): Path<Uuid>,
 ) -> Result<Json<Option<AgentTreeNode>>, (StatusCode, String)> {
+    let control = control_for_user(&state, &user).await;
     // Check if this is the current active mission
-    let current_id = state.control.current_mission.read().await.clone();
+    let current_id = control.current_mission.read().await.clone();
     if current_id == Some(mission_id) {
         // Return live tree from memory
-        let tree = state.control.current_tree.read().await.clone();
+        let tree = control.current_tree.read().await.clone();
         return Ok(Json(tree));
+    }
+
+    if control.use_in_memory_missions {
+        let trees = control.mission_trees.read().await;
+        if let Some(tree) = trees.get(&mission_id).cloned() {
+            return Ok(Json(Some(tree)));
+        }
+        let missions = control.missions.read().await;
+        if missions.contains_key(&mission_id) {
+            return Ok(Json(None));
+        }
+        return Err((StatusCode::NOT_FOUND, "Mission not found".to_string()));
     }
 
     // Otherwise, fetch from database
@@ -867,8 +991,12 @@ pub async fn get_mission_tree(
 }
 
 /// Get current execution progress (for progress indicator).
-pub async fn get_progress(State(state): State<Arc<AppState>>) -> Json<ExecutionProgress> {
-    let progress = state.control.progress.read().await.clone();
+pub async fn get_progress(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
+) -> Json<ExecutionProgress> {
+    let control = control_for_user(&state, &user).await;
+    let progress = control.progress.read().await.clone();
     Json(progress)
 }
 
@@ -877,11 +1005,12 @@ pub async fn get_progress(State(state): State<Arc<AppState>>) -> Json<ExecutionP
 /// List currently running missions.
 pub async fn list_running_missions(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Vec<super::mission_runner::RunningMissionInfo>>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
 
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::ListRunning { respond: tx })
         .await
@@ -914,13 +1043,14 @@ pub struct StartParallelRequest {
 /// Start a mission in parallel (if capacity allows).
 pub async fn start_mission_parallel(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Path(mission_id): Path<Uuid>,
     Json(req): Json<StartParallelRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
 
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::StartParallel {
             mission_id,
@@ -950,12 +1080,13 @@ pub async fn start_mission_parallel(
 /// Cancel a specific mission.
 pub async fn cancel_mission(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Path(mission_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
 
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::CancelMission {
             mission_id,
@@ -992,14 +1123,15 @@ pub struct ResumeMissionRequest {
 /// This reconstructs context from history and work directory, then restarts execution.
 pub async fn resume_mission(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Path(mission_id): Path<Uuid>,
     body: Option<Json<ResumeMissionRequest>>,
 ) -> Result<Json<Mission>, (StatusCode, String)> {
     let clean_workspace = body.map(|b| b.clean_workspace).unwrap_or(false);
     let (tx, rx) = oneshot::channel();
 
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::ResumeMission {
             mission_id,
@@ -1028,12 +1160,13 @@ pub async fn resume_mission(
 /// Get parallel execution configuration.
 pub async fn get_parallel_config(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // Query actual running count from the control actor
     // (the running state is tracked in the actor loop, not in shared state)
     let (tx, rx) = oneshot::channel();
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::ListRunning { respond: tx })
         .await
@@ -1052,7 +1185,7 @@ pub async fn get_parallel_config(
     })?;
 
     Ok(Json(serde_json::json!({
-        "max_parallel_missions": state.control.max_parallel,
+        "max_parallel_missions": control.max_parallel,
         "running_count": running.len(),
     })))
 }
@@ -1061,13 +1194,14 @@ pub async fn get_parallel_config(
 /// Only allows deleting missions that are not currently running.
 pub async fn delete_mission(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
     Path(mission_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // Check if mission is currently running by querying the control actor
     // (the actual running state is tracked in the actor loop, not in shared state)
     let (tx, rx) = oneshot::channel();
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::ListRunning { respond: tx })
         .await
@@ -1090,6 +1224,19 @@ pub async fn delete_mission(
             StatusCode::CONFLICT,
             "Cannot delete a running mission. Cancel it first.".to_string(),
         ));
+    }
+
+    if control.use_in_memory_missions {
+        let mut store = control.missions.write().await;
+        let removed = store.remove(&mission_id).is_some();
+        if removed {
+            control.mission_trees.write().await.remove(&mission_id);
+            return Ok(Json(serde_json::json!({
+                "ok": true,
+                "deleted": mission_id
+            })));
+        }
+        return Err((StatusCode::NOT_FOUND, "Mission not found".to_string()));
     }
 
     // Get memory system
@@ -1122,12 +1269,13 @@ pub async fn delete_mission(
 /// Note: This excludes any currently running missions to prevent data loss.
 pub async fn cleanup_empty_missions(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // Get currently running mission IDs to exclude from cleanup
     // (a newly-started mission may have empty history in DB while actively running)
     let (tx, rx) = oneshot::channel();
-    state
-        .control
+    let control = control_for_user(&state, &user).await;
+    control
         .cmd_tx
         .send(ControlCommand::ListRunning { respond: tx })
         .await
@@ -1146,6 +1294,26 @@ pub async fn cleanup_empty_missions(
     })?;
 
     let running_ids: Vec<Uuid> = running.iter().map(|m| m.mission_id).collect();
+
+    if control.use_in_memory_missions {
+        let mut store = control.missions.write().await;
+        let before = store.len();
+        store.retain(|id, mission| {
+            if running_ids.contains(id) {
+                return true;
+            }
+            let title = mission.title.clone().unwrap_or_default();
+            let title_empty = title.trim().is_empty() || title == "Untitled Mission";
+            let history_empty = mission.history.is_empty();
+            let active = mission.status == MissionStatus::Active;
+            !(active && history_empty && title_empty)
+        });
+        let deleted = before.saturating_sub(store.len());
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "deleted_count": deleted
+        })));
+    }
 
     // Get memory system
     let mem = state.memory.as_ref().ok_or_else(|| {
@@ -1171,11 +1339,13 @@ pub async fn cleanup_empty_missions(
 /// Stream control session events via SSE.
 pub async fn stream(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
-    let mut rx = state.control.events_tx.subscribe();
+    let control = control_for_user(&state, &user).await;
+    let mut rx = control.events_tx.subscribe();
 
     // Emit an initial status snapshot immediately.
-    let initial = state.control.status.read().await.clone();
+    let initial = control.status.read().await.clone();
 
     let stream = async_stream::stream! {
         let init_ev = Event::default()
@@ -1230,6 +1400,7 @@ pub fn spawn_control_session(
     benchmarks: crate::budget::SharedBenchmarkRegistry,
     resolver: crate::budget::SharedModelResolver,
     mcp: Arc<McpRegistry>,
+    use_in_memory_missions: bool,
 ) -> ControlState {
     let (cmd_tx, cmd_rx) = mpsc::channel::<ControlCommand>(256);
     let (events_tx, _events_rx) = broadcast::channel::<AgentEvent>(1024);
@@ -1248,6 +1419,8 @@ pub fn spawn_control_session(
     let progress = Arc::new(RwLock::new(ExecutionProgress::default()));
     let running_missions = Arc::new(RwLock::new(Vec::new()));
     let max_parallel = config.max_parallel_missions;
+    let missions = Arc::new(RwLock::new(HashMap::new()));
+    let mission_trees = Arc::new(RwLock::new(HashMap::new()));
 
     let state = ControlState {
         cmd_tx,
@@ -1259,6 +1432,9 @@ pub fn spawn_control_session(
         progress: Arc::clone(&progress),
         running_missions: Arc::clone(&running_missions),
         max_parallel,
+        missions: Arc::clone(&missions),
+        mission_trees: Arc::clone(&mission_trees),
+        use_in_memory_missions,
     };
 
     // Spawn the main control actor
@@ -1278,10 +1454,13 @@ pub fn spawn_control_session(
         current_mission,
         current_tree,
         progress,
+        missions,
+        mission_trees,
+        use_in_memory_missions,
     ));
 
     // Spawn background stale mission cleanup task (if enabled)
-    if config.stale_mission_hours > 0 {
+    if config.stale_mission_hours > 0 && !use_in_memory_missions {
         if let Some(mem) = memory {
             tokio::spawn(stale_mission_cleanup_loop(
                 mem,
@@ -1363,6 +1542,9 @@ async fn control_actor_loop(
     current_mission: Arc<RwLock<Option<Uuid>>>,
     current_tree: Arc<RwLock<Option<AgentTreeNode>>>,
     progress: Arc<RwLock<ExecutionProgress>>,
+    missions: Arc<RwLock<HashMap<Uuid, Mission>>>,
+    mission_trees: Arc<RwLock<HashMap<Uuid, AgentTreeNode>>>,
+    use_in_memory_missions: bool,
 ) {
     // Queue stores (id, content, model_override) for the current/primary mission
     let mut queue: VecDeque<(Uuid, String, Option<String>)> = VecDeque::new();
@@ -1404,34 +1586,72 @@ async fn control_actor_loop(
     // Helper to persist history to current mission
     async fn persist_mission_history(
         memory: &Option<MemorySystem>,
+        missions: &Arc<RwLock<HashMap<Uuid, Mission>>>,
+        use_in_memory_missions: bool,
         current_mission: &Arc<RwLock<Option<Uuid>>>,
         history: &[(String, String)],
     ) {
         let mission_id = current_mission.read().await.clone();
-        if let (Some(mem), Some(mid)) = (memory, mission_id) {
-            let messages: Vec<MissionMessage> = history
-                .iter()
-                .map(|(role, content)| MissionMessage {
-                    role: role.clone(),
-                    content: content.clone(),
-                })
-                .collect();
-            if let Err(e) = mem.supabase.update_mission_history(mid, &messages).await {
-                tracing::warn!("Failed to persist mission history: {}", e);
+        if let Some(mid) = mission_id {
+            if use_in_memory_missions {
+                let mut store = missions.write().await;
+                if let Some(mission) = store.get_mut(&mid) {
+                    mission.history = history
+                        .iter()
+                        .map(|(role, content)| MissionHistoryEntry {
+                            role: role.clone(),
+                            content: content.clone(),
+                        })
+                        .collect();
+                    mission.updated_at = now_string();
+
+                    if mission
+                        .title
+                        .as_ref()
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true)
+                        && history.len() == 2
+                    {
+                        if let Some((role, content)) = history.first() {
+                            if role == "user" {
+                                let title = if content.len() > 100 {
+                                    let safe_end = crate::memory::safe_truncate_index(content, 100);
+                                    format!("{}...", &content[..safe_end])
+                                } else {
+                                    content.clone()
+                                };
+                                mission.title = Some(title);
+                            }
+                        }
+                    }
+                }
             }
 
-            // Update title from first user message if not set
-            if history.len() == 2 {
-                if let Some((role, content)) = history.first() {
-                    if role == "user" {
-                        let title = if content.len() > 100 {
-                            let safe_end = crate::memory::safe_truncate_index(content, 100);
-                            format!("{}...", &content[..safe_end])
-                        } else {
-                            content.clone()
-                        };
-                        if let Err(e) = mem.supabase.update_mission_title(mid, &title).await {
-                            tracing::warn!("Failed to update mission title: {}", e);
+            if let Some(mem) = memory {
+                let messages: Vec<MissionMessage> = history
+                    .iter()
+                    .map(|(role, content)| MissionMessage {
+                        role: role.clone(),
+                        content: content.clone(),
+                    })
+                    .collect();
+                if let Err(e) = mem.supabase.update_mission_history(mid, &messages).await {
+                    tracing::warn!("Failed to persist mission history: {}", e);
+                }
+
+                // Update title from first user message if not set
+                if history.len() == 2 {
+                    if let Some((role, content)) = history.first() {
+                        if role == "user" {
+                            let title = if content.len() > 100 {
+                                let safe_end = crate::memory::safe_truncate_index(content, 100);
+                                format!("{}...", &content[..safe_end])
+                            } else {
+                                content.clone()
+                            };
+                            if let Err(e) = mem.supabase.update_mission_title(mid, &title).await {
+                                tracing::warn!("Failed to update mission title: {}", e);
+                            }
                         }
                     }
                 }
@@ -1439,11 +1659,25 @@ async fn control_actor_loop(
         }
     }
 
+    fn now_string() -> String {
+        Utc::now().to_rfc3339()
+    }
+
     // Helper to load a mission and return a Mission struct
     async fn load_mission_from_db(
         memory: &Option<MemorySystem>,
+        missions: &Arc<RwLock<HashMap<Uuid, Mission>>>,
+        use_in_memory_missions: bool,
         id: Uuid,
     ) -> Result<Mission, String> {
+        if use_in_memory_missions {
+            let store = missions.read().await;
+            return store
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| format!("Mission {} not found", id));
+        }
+
         let mem = memory.as_ref().ok_or("Memory not configured")?;
         let db_mission = mem
             .supabase
@@ -1484,17 +1718,45 @@ async fn control_actor_loop(
     // Helper to create a new mission
     async fn create_new_mission(
         memory: &Option<MemorySystem>,
+        missions: &Arc<RwLock<HashMap<Uuid, Mission>>>,
+        use_in_memory_missions: bool,
         model_override: Option<&str>,
     ) -> Result<Mission, String> {
-        create_new_mission_with_title(memory, None, model_override).await
+        create_new_mission_with_title(
+            memory,
+            missions,
+            use_in_memory_missions,
+            None,
+            model_override,
+        )
+        .await
     }
 
     // Helper to create a new mission with title
     async fn create_new_mission_with_title(
         memory: &Option<MemorySystem>,
+        missions: &Arc<RwLock<HashMap<Uuid, Mission>>>,
+        use_in_memory_missions: bool,
         title: Option<&str>,
         model_override: Option<&str>,
     ) -> Result<Mission, String> {
+        if use_in_memory_missions {
+            let now = now_string();
+            let mission = Mission {
+                id: Uuid::new_v4(),
+                status: MissionStatus::Active,
+                title: title.map(|s| s.to_string()),
+                model_override: model_override.map(|s| s.to_string()),
+                history: vec![],
+                created_at: now.clone(),
+                updated_at: now,
+                interrupted_at: None,
+                resumable: false,
+            };
+            missions.write().await.insert(mission.id, mission.clone());
+            return Ok(mission);
+        }
+
         let mem = memory.as_ref().ok_or("Memory not configured")?;
         let db_mission = mem
             .supabase
@@ -1518,11 +1780,14 @@ async fn control_actor_loop(
     // Helper to build resume context for an interrupted or blocked mission
     async fn resume_mission_impl(
         memory: &Option<MemorySystem>,
+        missions: &Arc<RwLock<HashMap<Uuid, Mission>>>,
+        use_in_memory_missions: bool,
         config: &Config,
         mission_id: Uuid,
         clean_workspace: bool,
     ) -> Result<(Mission, String), String> {
-        let mission = load_mission_from_db(memory, mission_id).await?;
+        let mission =
+            load_mission_from_db(memory, missions, use_in_memory_missions, mission_id).await?;
 
         // Check if mission can be resumed (interrupted or blocked)
         if !matches!(
@@ -1682,7 +1947,14 @@ async fn control_actor_loop(
                         {
                             let mission_id = current_mission.read().await.clone();
                             if mission_id.is_none() {
-                                if let Ok(new_mission) = create_new_mission(&memory, model.as_deref()).await {
+                                if let Ok(new_mission) = create_new_mission(
+                                    &memory,
+                                    &missions,
+                                    use_in_memory_missions,
+                                    model.as_deref(),
+                                )
+                                .await
+                                {
                                     *current_mission.write().await = Some(new_mission.id);
                                     tracing::info!("Auto-created mission: {} (model: {:?})", new_mission.id, model);
                                 }
@@ -1696,7 +1968,14 @@ async fn control_actor_loop(
                             // Get current mission's model_override
                             let mission_id = current_mission.read().await.clone();
                             if let Some(mid) = mission_id {
-                                if let Ok(mission) = load_mission_from_db(&memory, mid).await {
+                                if let Ok(mission) = load_mission_from_db(
+                                    &memory,
+                                    &missions,
+                                    use_in_memory_missions,
+                                    mid,
+                                )
+                                .await
+                                {
                                     mission.model_override
                                 } else {
                                     None
@@ -1721,7 +2000,21 @@ async fn control_actor_loop(
 
                                 // Immediately persist user message to database so it's visible when loading mission
                                 history.push(("user".to_string(), msg.clone()));
-                                if let (Some(mem), Some(mission_id)) = (&memory, current_mid) {
+                                if use_in_memory_missions {
+                                    if let Some(mission_id) = current_mid {
+                                        let mut store = missions.write().await;
+                                        if let Some(mission) = store.get_mut(&mission_id) {
+                                            mission.history = history
+                                                .iter()
+                                                .map(|(role, content)| MissionHistoryEntry {
+                                                    role: role.clone(),
+                                                    content: content.clone(),
+                                                })
+                                                .collect();
+                                            mission.updated_at = now_string();
+                                        }
+                                    }
+                                } else if let (Some(mem), Some(mission_id)) = (&memory, current_mid) {
                                     let messages: Vec<MissionMessage> = history
                                         .iter()
                                         .map(|(role, content)| MissionMessage {
@@ -1801,10 +2094,23 @@ async fn control_actor_loop(
                     }
                     ControlCommand::LoadMission { id, respond } => {
                         // First persist current mission history
-                        persist_mission_history(&memory, &current_mission, &history).await;
+                        persist_mission_history(
+                            &memory,
+                            &missions,
+                            use_in_memory_missions,
+                            &current_mission,
+                            &history,
+                        )
+                        .await;
 
                         // Load the new mission
-                        match load_mission_from_db(&memory, id).await {
+                        match load_mission_from_db(
+                            &memory,
+                            &missions,
+                            use_in_memory_missions,
+                            id,
+                        )
+                        .await {
                             Ok(mission) => {
                                 // Update history from loaded mission
                                 history = mission.history.iter()
@@ -1820,10 +2126,24 @@ async fn control_actor_loop(
                     }
                     ControlCommand::CreateMission { title, model_override, respond } => {
                         // First persist current mission history
-                        persist_mission_history(&memory, &current_mission, &history).await;
+                        persist_mission_history(
+                            &memory,
+                            &missions,
+                            use_in_memory_missions,
+                            &current_mission,
+                            &history,
+                        )
+                        .await;
 
                         // Create a new mission with optional title and model override
-                        match create_new_mission_with_title(&memory, title.as_deref(), model_override.as_deref()).await {
+                        match create_new_mission_with_title(
+                            &memory,
+                            &missions,
+                            use_in_memory_missions,
+                            title.as_deref(),
+                            model_override.as_deref(),
+                        )
+                        .await {
                             Ok(mission) => {
                                 history.clear();
                                 *current_mission.write().await = Some(mission.id);
@@ -1835,7 +2155,34 @@ async fn control_actor_loop(
                         }
                     }
                     ControlCommand::SetMissionStatus { id, status: new_status, respond } => {
-                        if let Some(mem) = &memory {
+                        if use_in_memory_missions {
+                            let current_id = current_mission.read().await.clone();
+                            if current_id == Some(id) {
+                                if let Some(tree) = current_tree.read().await.clone() {
+                                    mission_trees.write().await.insert(id, tree);
+                                }
+                            }
+                            {
+                                let mut store = missions.write().await;
+                                if let Some(m) = store.get_mut(&id) {
+                                    m.status = new_status;
+                                    m.updated_at = now_string();
+                                    if matches!(new_status, MissionStatus::Interrupted | MissionStatus::Blocked) {
+                                        m.interrupted_at = Some(now_string());
+                                        m.resumable = true;
+                                    } else {
+                                        m.interrupted_at = None;
+                                        m.resumable = false;
+                                    }
+                                }
+                            }
+                            let _ = events_tx.send(AgentEvent::MissionStatusChanged {
+                                mission_id: id,
+                                status: new_status,
+                                summary: None,
+                            });
+                            let _ = respond.send(Ok(()));
+                        } else if let Some(mem) = &memory {
                             // Save the final tree before updating status (if this is the current mission)
                             let current_id = current_mission.read().await.clone();
                             if current_id == Some(id) {
@@ -1883,7 +2230,13 @@ async fn control_actor_loop(
                             )));
                         } else {
                             // Load mission to get DB model_override as fallback
-                            let db_model = match load_mission_from_db(&memory, mission_id).await {
+                            let db_model = match load_mission_from_db(
+                                &memory,
+                                &missions,
+                                use_in_memory_missions,
+                                mission_id,
+                            )
+                            .await {
                                 Ok(m) => m.model_override,
                                 Err(e) => {
                                     let _ = respond.send(Err(format!("Failed to load mission: {}", e)));
@@ -1988,10 +2341,25 @@ async fn control_actor_loop(
                     }
                     ControlCommand::ResumeMission { mission_id, clean_workspace, respond } => {
                         // Resume an interrupted mission by building resume context
-                        match resume_mission_impl(&memory, &config, mission_id, clean_workspace).await {
+                        match resume_mission_impl(
+                            &memory,
+                            &missions,
+                            use_in_memory_missions,
+                            &config,
+                            mission_id,
+                            clean_workspace,
+                        )
+                        .await {
                             Ok((mission, resume_prompt)) => {
                                 // First persist current mission history (if any)
-                                persist_mission_history(&memory, &current_mission, &history).await;
+                                persist_mission_history(
+                                    &memory,
+                                    &missions,
+                                    use_in_memory_missions,
+                                    &current_mission,
+                                    &history,
+                                )
+                                .await;
 
                                 // Load the mission's history into current state
                                 history = mission.history.iter()
@@ -2000,7 +2368,15 @@ async fn control_actor_loop(
                                 *current_mission.write().await = Some(mission_id);
 
                                 // Update mission status back to active
-                                if let Some(mem) = &memory {
+                                if use_in_memory_missions {
+                                    let mut store = missions.write().await;
+                                    if let Some(m) = store.get_mut(&mission_id) {
+                                        m.status = MissionStatus::Active;
+                                        m.updated_at = now_string();
+                                        m.interrupted_at = None;
+                                        m.resumable = false;
+                                    }
+                                } else if let Some(mem) = &memory {
                                     let _ = mem.supabase.update_mission_status(mission_id, "active").await;
                                 }
 
@@ -2090,12 +2466,30 @@ async fn control_actor_loop(
                                 // (i.e., user didn't create a new mission while this one was running)
                                 let current_mid = current_mission.read().await.clone();
                                 if current_mid == Some(mission_id) {
-                                    persist_mission_history(&memory, &current_mission, &history).await;
+                                    persist_mission_history(
+                                        &memory,
+                                        &missions,
+                                        use_in_memory_missions,
+                                        &current_mission,
+                                        &history,
+                                    )
+                                    .await;
                                 }
                                 // Note: If missions differ, don't persist - the local history
                                 // belongs to current_mission, not running_mission_id
 
-                                if let Some(mem) = &memory {
+                                if use_in_memory_missions {
+                                    let mut store = missions.write().await;
+                                    if let Some(m) = store.get_mut(&mission_id) {
+                                        m.status = MissionStatus::Interrupted;
+                                        let now = now_string();
+                                        m.updated_at = now.clone();
+                                        m.interrupted_at = Some(now);
+                                        m.resumable = true;
+                                        interrupted_ids.push(mission_id);
+                                        tracing::info!("Marked mission {} as interrupted", mission_id);
+                                    }
+                                } else if let Some(mem) = &memory {
                                     if let Ok(()) = mem.supabase.update_mission_status(mission_id, "interrupted").await {
                                         interrupted_ids.push(mission_id);
                                         tracing::info!("Marked mission {} as interrupted", mission_id);
@@ -2112,7 +2506,26 @@ async fn control_actor_loop(
                         // Handle parallel missions
                         for (mission_id, runner) in parallel_runners.iter_mut() {
                             // Persist history for parallel mission
-                            if let Some(mem) = &memory {
+                            if use_in_memory_missions {
+                                let mut store = missions.write().await;
+                                if let Some(m) = store.get_mut(mission_id) {
+                                    m.history = runner
+                                        .history
+                                        .iter()
+                                        .map(|(role, content)| MissionHistoryEntry {
+                                            role: role.clone(),
+                                            content: content.clone(),
+                                        })
+                                        .collect();
+                                    m.status = MissionStatus::Interrupted;
+                                    let now = now_string();
+                                    m.updated_at = now.clone();
+                                    m.interrupted_at = Some(now);
+                                    m.resumable = true;
+                                    interrupted_ids.push(*mission_id);
+                                    tracing::info!("Marked parallel mission {} as interrupted", mission_id);
+                                }
+                            } else if let Some(mem) = &memory {
                                 let messages: Vec<MissionMessage> = runner.history.iter()
                                     .map(|(role, content)| MissionMessage {
                                         role: role.clone(),
@@ -2149,7 +2562,28 @@ async fn control_actor_loop(
                                 };
                                 let success = matches!(status, crate::tools::mission::MissionStatusValue::Completed);
 
-                                if let Some(mem) = &memory {
+                                if use_in_memory_missions {
+                                    if let Some(tree) = current_tree.read().await.clone() {
+                                        mission_trees.write().await.insert(id, tree);
+                                    }
+                                    if let Some(m) = missions.write().await.get_mut(&id) {
+                                        m.status = new_status;
+                                        m.updated_at = now_string();
+                                        if matches!(new_status, MissionStatus::Interrupted | MissionStatus::Blocked) {
+                                            m.interrupted_at = Some(now_string());
+                                            m.resumable = true;
+                                        } else {
+                                            m.interrupted_at = None;
+                                            m.resumable = false;
+                                        }
+                                    }
+                                    let _ = events_tx.send(AgentEvent::MissionStatusChanged {
+                                        mission_id: id,
+                                        status: new_status,
+                                        summary,
+                                    });
+                                    tracing::info!("Mission {} marked as {} by agent", id, new_status);
+                                } else if let Some(mem) = &memory {
                                     // Save the final tree before updating status
                                     if let Some(tree) = current_tree.read().await.clone() {
                                         if let Ok(tree_json) = serde_json::to_value(&tree) {
@@ -2233,40 +2667,61 @@ async fn control_actor_loop(
                             // using the local `history` variable, because CreateMission may have
                             // cleared `history` while this task was running. This prevents data loss.
                             // Note: User message was already persisted before execution started.
-                            if let (Some(mem), Some(mid)) = (&memory, completed_mission_id) {
-                                // Fetch existing history from DB (should already contain user message)
-                                let existing_history: Vec<MissionHistoryEntry> = match mem.supabase.get_mission(mid).await {
-                                    Ok(Some(mission)) => {
-                                        serde_json::from_value(mission.history).unwrap_or_default()
+                            if let Some(mid) = completed_mission_id {
+                                if use_in_memory_missions {
+                                    let mut store = missions.write().await;
+                                    if let Some(mission) = store.get_mut(&mid) {
+                                        mission.history.push(MissionHistoryEntry {
+                                            role: "assistant".to_string(),
+                                            content: agent_result.output.clone(),
+                                        });
+                                        mission.updated_at = now_string();
+
+                                        if mission.title.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                                            let title = if user_msg.len() > 100 {
+                                                let safe_end = crate::memory::safe_truncate_index(&user_msg, 100);
+                                                format!("{}...", &user_msg[..safe_end])
+                                            } else {
+                                                user_msg.clone()
+                                            };
+                                            mission.title = Some(title);
+                                        }
                                     }
-                                    _ => Vec::new(),
-                                };
-
-                                // Append assistant message to existing history (user was already persisted)
-                                let mut messages: Vec<MissionMessage> = existing_history
-                                    .iter()
-                                    .map(|e| MissionMessage {
-                                        role: e.role.clone(),
-                                        content: e.content.clone(),
-                                    })
-                                    .collect();
-                                messages.push(MissionMessage { role: "assistant".to_string(), content: agent_result.output.clone() });
-
-                                if let Err(e) = mem.supabase.update_mission_history(mid, &messages).await {
-                                    tracing::warn!("Failed to persist mission history: {}", e);
-                                }
-
-                                // Update title from first user message if not set (check for user-only history)
-                                if existing_history.len() == 1 && existing_history[0].role == "user" {
-                                    // Use safe_truncate_index for UTF-8 safe truncation, matching persist_mission_history
-                                    let title = if user_msg.len() > 100 {
-                                        let safe_end = crate::memory::safe_truncate_index(&user_msg, 100);
-                                        format!("{}...", &user_msg[..safe_end])
-                                    } else {
-                                        user_msg.clone()
+                                } else if let Some(mem) = &memory {
+                                    // Fetch existing history from DB (should already contain user message)
+                                    let existing_history: Vec<MissionHistoryEntry> = match mem.supabase.get_mission(mid).await {
+                                        Ok(Some(mission)) => {
+                                            serde_json::from_value(mission.history).unwrap_or_default()
+                                        }
+                                        _ => Vec::new(),
                                     };
-                                    if let Err(e) = mem.supabase.update_mission_title(mid, &title).await {
-                                        tracing::warn!("Failed to update mission title: {}", e);
+
+                                    // Append assistant message to existing history (user was already persisted)
+                                    let mut messages: Vec<MissionMessage> = existing_history
+                                        .iter()
+                                        .map(|e| MissionMessage {
+                                            role: e.role.clone(),
+                                            content: e.content.clone(),
+                                        })
+                                        .collect();
+                                    messages.push(MissionMessage { role: "assistant".to_string(), content: agent_result.output.clone() });
+
+                                    if let Err(e) = mem.supabase.update_mission_history(mid, &messages).await {
+                                        tracing::warn!("Failed to persist mission history: {}", e);
+                                    }
+
+                                    // Update title from first user message if not set (check for user-only history)
+                                    if existing_history.len() == 1 && existing_history[0].role == "user" {
+                                        // Use safe_truncate_index for UTF-8 safe truncation, matching persist_mission_history
+                                        let title = if user_msg.len() > 100 {
+                                            let safe_end = crate::memory::safe_truncate_index(&user_msg, 100);
+                                            format!("{}...", &user_msg[..safe_end])
+                                        } else {
+                                            user_msg.clone()
+                                        };
+                                        if let Err(e) = mem.supabase.update_mission_title(mid, &title).await {
+                                            tracing::warn!("Failed to update mission title: {}", e);
+                                        }
                                     }
                                 }
                             }
@@ -2281,12 +2736,49 @@ async fn control_actor_loop(
                             // - Explicit complete_mission calls (which update DB status)
                             // - Parallel missions (each has its own DB status)
                             if agent_result.terminal_reason.is_some() {
-                                if let Some(mem) = &memory {
-                                    // Use completed_mission_id (the actual mission that just finished)
-                                    // instead of current_mission (which can change when user creates a new mission)
-                                    if let Some(mission_id) = completed_mission_id {
+                                // Use completed_mission_id (the actual mission that just finished)
+                                // instead of current_mission (which can change when user creates a new mission)
+                                if let Some(mission_id) = completed_mission_id {
+                                    if use_in_memory_missions {
+                                        let mut store = missions.write().await;
+                                        if let Some(mission) = store.get_mut(&mission_id) {
+                                            if mission.status == MissionStatus::Active {
+                                                let new_status = match agent_result.terminal_reason {
+                                                    Some(TerminalReason::Completed) => MissionStatus::Completed,
+                                                    Some(TerminalReason::MaxIterations) => MissionStatus::Blocked,
+                                                    _ if agent_result.success => MissionStatus::Completed,
+                                                    _ => MissionStatus::Failed,
+                                                };
+                                                tracing::info!(
+                                                    "Auto-completing mission {} with status '{:?}' (terminal_reason: {:?})",
+                                                    mission_id, new_status, agent_result.terminal_reason
+                                                );
+                                                mission.status = new_status;
+                                                let now = now_string();
+                                                mission.updated_at = now.clone();
+                                                if matches!(new_status, MissionStatus::Interrupted | MissionStatus::Blocked) {
+                                                    mission.interrupted_at = Some(now);
+                                                    mission.resumable = true;
+                                                } else {
+                                                    mission.interrupted_at = None;
+                                                    mission.resumable = false;
+                                                }
+                                                let _ = events_tx.send(AgentEvent::MissionStatusChanged {
+                                                    mission_id,
+                                                    status: new_status,
+                                                    summary: Some(format!(
+                                                        "Auto-completed: {}",
+                                                        agent_result.output.chars().take(100).collect::<String>()
+                                                    )),
+                                                });
+                                            }
+                                        }
+                                    } else if let Some(mem) = &memory {
                                         // Check current mission status from DB - only auto-complete if still "active"
-                                        let current_status = mem.supabase.get_mission(mission_id).await
+                                        let current_status = mem
+                                            .supabase
+                                            .get_mission(mission_id)
+                                            .await
                                             .ok()
                                             .flatten()
                                             .map(|m| m.status);
@@ -2413,7 +2905,7 @@ async fn control_actor_loop(
 
                 for (mission_id, runner) in parallel_runners.iter_mut() {
                     if runner.check_finished() {
-                        if let Some((msg_id, user_msg, result)) = runner.poll_completion().await {
+                        if let Some((msg_id, _user_msg, result)) = runner.poll_completion().await {
                             tracing::info!(
                                 "Parallel mission {} completed (success: {}, cost: {} cents)",
                                 mission_id, result.success, result.cost_cents
@@ -2430,7 +2922,20 @@ async fn control_actor_loop(
                             });
 
                             // Persist history for this mission
-                            if let Some(mem) = &memory {
+                            if use_in_memory_missions {
+                                let mut store = missions.write().await;
+                                if let Some(mission) = store.get_mut(mission_id) {
+                                    mission.history = runner
+                                        .history
+                                        .iter()
+                                        .map(|(role, content)| MissionHistoryEntry {
+                                            role: role.clone(),
+                                            content: content.clone(),
+                                        })
+                                        .collect();
+                                    mission.updated_at = now_string();
+                                }
+                            } else if let Some(mem) = &memory {
                                 let messages: Vec<MissionMessage> = runner.history.iter()
                                     .map(|(role, content)| MissionMessage {
                                         role: role.clone(),
