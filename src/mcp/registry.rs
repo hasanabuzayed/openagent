@@ -131,7 +131,10 @@ impl McpRegistry {
         let playwright = McpServerConfig::new_stdio(
             "playwright".to_string(),
             "npx".to_string(),
-            vec!["@playwright/mcp@latest".to_string()],
+            vec![
+                "@playwright/mcp@latest".to_string(),
+                "--isolated".to_string(),
+            ],
             HashMap::new(),
         );
         vec![host, desktop, playwright]
@@ -152,6 +155,37 @@ impl McpRegistry {
                 Err(e) => tracing::warn!("Failed to add default MCP {}: {}", config.name, e),
             }
         }
+        // Ensure Playwright MCP runs in isolated mode to avoid profile contention.
+        for config in configs.iter_mut() {
+            if config.name != "playwright" {
+                continue;
+            }
+
+            let needs_isolated = match &config.transport {
+                McpTransport::Stdio { args, .. } => !args.iter().any(|arg| arg == "--isolated"),
+                McpTransport::Http { .. } => false,
+            };
+
+            if !needs_isolated {
+                continue;
+            }
+
+            if let McpTransport::Stdio { args, .. } = &mut config.transport {
+                args.push("--isolated".to_string());
+            }
+
+            let id = config.id;
+            let _ = config_store
+                .update(id, |c| {
+                    if let McpTransport::Stdio { args, .. } = &mut c.transport {
+                        if !args.iter().any(|arg| arg == "--isolated") {
+                            args.push("--isolated".to_string());
+                        }
+                    }
+                })
+                .await;
+        }
+
         configs
     }
 

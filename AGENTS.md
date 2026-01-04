@@ -165,12 +165,14 @@ The `opencode.json` configures MCP servers for desktop and browser automation:
     },
     "playwright": {
       "type": "local",
-      "command": ["npx", "@playwright/mcp@latest"],
+      "command": ["npx", "@playwright/mcp@latest", "--isolated"],
       "enabled": true
     }
   }
 }
 ```
+
+Use `--isolated` for Playwright so multiple sessions can run in parallel without profile conflicts.
 
 **Available MCP Tools:**
 - **Desktop tools** (i3/Xvfb): `desktop_start_session`, `desktop_screenshot`, `desktop_click`, `desktop_type`, `desktop_i3_command`, etc.
