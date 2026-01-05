@@ -15,13 +15,17 @@ Minimal autonomous coding agent in Rust with **full machine access** (not sandbo
 ## Commands
 
 ```bash
-# Backend
-cargo build --release           # Build
-cargo run --release             # Run server (port 3000)
-RUST_LOG=debug cargo run        # Debug mode
+# Backend - ALWAYS use debug builds by default (faster compilation)
+cargo build                     # Build (debug mode - use this by default)
+cargo run                       # Run server (port 3000)
+RUST_LOG=debug cargo run        # Run with debug logging
 cargo test                      # Run tests
 cargo fmt                       # Format code
 cargo clippy                    # Lint
+
+# Release builds - ONLY use when explicitly requested or for production deployment
+cargo build --release           # Release build (slower compilation, faster binary)
+cargo run --release             # Run in release mode
 
 # Dashboard (uses Bun, NOT npm/yarn/pnpm)
 cd dashboard
@@ -34,9 +38,17 @@ bun run build                   # Production build
 # - bun add <pkg> (not npm install <pkg>)
 # - bun run <script> (not npm run <script>)
 
-# Deployment
+# Deployment (release build required for production)
 ssh root@95.216.112.253 'cd /root/open_agent && git pull && cargo build --release && cp target/release/open_agent /usr/local/bin/ && cp target/release/desktop-mcp /usr/local/bin/ && cp target/release/host-mcp /usr/local/bin/ && systemctl restart open_agent'
 ```
+
+## Build Mode Policy
+
+**Always prefer debug builds** unless explicitly requested otherwise:
+- Debug builds compile much faster (~5-10x)
+- Use `cargo build` and `cargo run` (no `--release` flag)
+- Only use `--release` for production deployment or when user explicitly requests it
+- Performance difference is negligible for development/testing
 
 ## Architecture
 
@@ -144,7 +156,7 @@ OPENCODE_PERMISSIVE=true
 **Desktop Tools with OpenCode:**
 To enable desktop tools (i3, Xvfb, screenshots):
 
-1. Build the MCP servers: `cargo build --release --bin desktop-mcp --bin host-mcp`
+1. Build the MCP servers: `cargo build --bin desktop-mcp --bin host-mcp` (use `--release` only for production)
 2. Workspace `opencode.json` files are generated automatically under `workspaces/`
    from `.openagent/mcp/config.json` (override by editing MCP configs via the UI).
 3. OpenCode will automatically load the tools from the MCP server

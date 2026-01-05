@@ -1624,7 +1624,7 @@ fn spawn_control_session(
     mission_store: Arc<dyn MissionStore>,
 ) -> ControlState {
     let (cmd_tx, cmd_rx) = mpsc::channel::<ControlCommand>(256);
-    let (events_tx, _events_rx) = broadcast::channel::<AgentEvent>(1024);
+    let (events_tx, events_rx) = broadcast::channel::<AgentEvent>(1024);
     let tool_hub = Arc::new(FrontendToolHub::new());
     let status = Arc::new(RwLock::new(ControlStatus {
         state: ControlRunState::Idle,
@@ -1666,6 +1666,7 @@ fn spawn_control_session(
         mission_cmd_rx,
         mission_cmd_tx,
         events_tx.clone(),
+        events_rx,
         tool_hub,
         status,
         current_mission,
@@ -1749,6 +1750,7 @@ async fn control_actor_loop(
     mut mission_cmd_rx: mpsc::Receiver<crate::tools::mission::MissionControlCommand>,
     mission_cmd_tx: mpsc::Sender<crate::tools::mission::MissionControlCommand>,
     events_tx: broadcast::Sender<AgentEvent>,
+    mut events_rx: broadcast::Receiver<AgentEvent>,
     tool_hub: Arc<FrontendToolHub>,
     status: Arc<RwLock<ControlStatus>>,
     current_mission: Arc<RwLock<Option<Uuid>>>,
@@ -1767,6 +1769,8 @@ async fn control_actor_loop(
     // Track which mission the main `running` task is actually working on.
     // This is different from `current_mission` which can change when user creates a new mission.
     let mut running_mission_id: Option<Uuid> = None;
+    // Track last activity for the main runner (for stall detection)
+    let mut main_runner_last_activity: std::time::Instant = std::time::Instant::now();
 
     // Parallel mission runners - each runs independently
     let mut parallel_runners: std::collections::HashMap<
@@ -2101,6 +2105,8 @@ async fn control_actor_loop(
                                 let mission_id = current_mission.read().await.clone();
                                 running_cancel = Some(cancel.clone());
                                 running_mission_id = mission_id;
+                                // Reset activity timer when new task starts to avoid false stall warnings
+                                main_runner_last_activity = std::time::Instant::now();
                                 running = Some(tokio::spawn(async move {
                                     let result = run_single_control_turn(
                                         cfg,
@@ -2341,7 +2347,7 @@ async fn control_actor_loop(
                                     state: "running".to_string(),
                                     queue_len: queue.len(),
                                     history_len: history.len(),
-                                    seconds_since_activity: 0, // Main runner doesn't track this yet
+                                    seconds_since_activity: main_runner_last_activity.elapsed().as_secs(),
                                     expected_deliverables: 0,
                                 });
                             }
@@ -2788,6 +2794,8 @@ async fn control_actor_loop(
                     // Capture which mission this task is working on
                     let mission_id = current_mission.read().await.clone();
                     running_mission_id = mission_id;
+                    // Reset activity timer when new task starts to avoid false stall warnings
+                    main_runner_last_activity = std::time::Instant::now();
                     running = Some(tokio::spawn(async move {
                         let result = run_single_control_turn(
                             cfg,
@@ -2869,6 +2877,31 @@ async fn control_actor_loop(
                 for mid in completed_missions {
                     parallel_runners.remove(&mid);
                     tracing::info!("Parallel mission {} removed from runners", mid);
+                }
+            }
+            // Update last_activity for runners when we receive events for them
+            event = events_rx.recv() => {
+                if let Ok(event) = event {
+                    // Extract mission_id from event if present
+                    let mission_id = match &event {
+                        AgentEvent::ToolCall { mission_id, .. } => *mission_id,
+                        AgentEvent::ToolResult { mission_id, .. } => *mission_id,
+                        AgentEvent::Thinking { mission_id, .. } => *mission_id,
+                        AgentEvent::AgentPhase { mission_id, .. } => *mission_id,
+                        AgentEvent::AgentTree { mission_id, .. } => *mission_id,
+                        AgentEvent::Progress { mission_id, .. } => *mission_id,
+                        _ => None,
+                    };
+                    // Update last_activity for matching runner (main or parallel)
+                    if let Some(mid) = mission_id {
+                        if running_mission_id == Some(mid) {
+                            // Update main runner activity
+                            main_runner_last_activity = std::time::Instant::now();
+                        } else if let Some(runner) = parallel_runners.get_mut(&mid) {
+                            // Update parallel runner activity
+                            runner.touch();
+                        }
+                    }
                 }
             }
         }
