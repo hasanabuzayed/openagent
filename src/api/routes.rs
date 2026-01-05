@@ -60,6 +60,8 @@ pub struct AppState {
     pub library: library_api::SharedLibrary,
     /// Workspace store
     pub workspaces: workspace::SharedWorkspaceStore,
+    /// Agent configuration store
+    pub agents: Arc<crate::agent_config::AgentStore>,
 }
 
 /// Start the HTTP server.
@@ -94,6 +96,11 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 
     // Initialize workspace store
     let workspaces = Arc::new(workspace::WorkspaceStore::new(config.working_dir.clone()));
+
+    // Initialize agent configuration store
+    let agents = Arc::new(crate::agent_config::AgentStore::new(
+        config.working_dir.join(".openagent/agents.json"),
+    ));
 
     // Spawn the single global control session actor.
     let control_state = control::ControlHub::new(
@@ -137,6 +144,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         resolver,
         library,
         workspaces,
+        agents,
     });
 
     let public_routes = Router::new()
@@ -256,6 +264,8 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         .nest("/api/library", library_api::routes())
         // Workspace management endpoints
         .nest("/api/workspaces", workspaces_api::routes())
+        // Agent configuration endpoints
+        .nest("/api/agents", super::agents::routes())
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             auth::require_auth,

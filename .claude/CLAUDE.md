@@ -62,6 +62,7 @@ Dashboard → Open Agent API → OpenCode Server → Anthropic API (Claude Max)
 
 ```
 src/
+├── agent_config.rs      # Agent configuration types (AgentConfig, AgentStore)
 ├── agents/              # Agent system (delegates to OpenCode)
 │   ├── mod.rs           # Agent trait, AgentRef, LeafCapability enum
 │   ├── opencode.rs      # OpenCodeAgent (delegates to OpenCode server)
@@ -70,6 +71,7 @@ src/
 ├── api/                 # HTTP routes (axum)
 │   ├── mod.rs           # Endpoint registry
 │   ├── routes.rs        # Core handlers, AppState, serve()
+│   ├── agents.rs        # Agent configuration management endpoints
 │   ├── auth.rs          # JWT authentication
 │   ├── control.rs       # Global interactive control session (SSE streaming)
 │   ├── console.rs       # WebSocket console
@@ -268,6 +270,15 @@ Use Claude models via your Claude Max subscription:
 | `GET` | `/api/workspaces` | List workspaces |
 | `POST` | `/api/workspaces` | Create workspace |
 | `GET/DELETE` | `/api/workspaces/{id}` | Workspace CRUD |
+
+### Agent Configurations
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/agents` | List agent configs |
+| `POST` | `/api/agents` | Create agent config |
+| `GET` | `/api/agents/{id}` | Get agent config |
+| `PUT` | `/api/agents/{id}` | Update agent config |
+| `DELETE` | `/api/agents/{id}` | Delete agent config |
 
 ### MCP & Tools Management
 | Method | Path | Purpose |

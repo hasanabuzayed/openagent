@@ -1337,7 +1337,7 @@ export async function getWorkspace(id: string): Promise<Workspace> {
 export async function createWorkspace(data: {
   name: string;
   workspace_type: WorkspaceType;
-  path: string;
+  path?: string;
 }): Promise<Workspace> {
   const res = await apiFetch("/api/workspaces", {
     method: "POST",
@@ -1352,4 +1352,76 @@ export async function createWorkspace(data: {
 export async function deleteWorkspace(id: string): Promise<void> {
   const res = await apiFetch(`/api/workspaces/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed to delete workspace");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Agent Configuration API
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AgentConfig {
+  id: string;
+  name: string;
+  model_id: string;
+  mcp_servers: string[];
+  skills: string[];
+  commands: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// List all agents
+export async function listAgents(): Promise<AgentConfig[]> {
+  const res = await apiFetch("/api/agents");
+  if (!res.ok) throw new Error("Failed to list agents");
+  return res.json();
+}
+
+// Get agent by ID
+export async function getAgent(id: string): Promise<AgentConfig> {
+  const res = await apiFetch(`/api/agents/${id}`);
+  if (!res.ok) throw new Error("Failed to get agent");
+  return res.json();
+}
+
+// Create new agent
+export async function createAgent(data: {
+  name: string;
+  model_id: string;
+  mcp_servers?: string[];
+  skills?: string[];
+  commands?: string[];
+}): Promise<AgentConfig> {
+  const res = await apiFetch("/api/agents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to create agent");
+  return res.json();
+}
+
+// Update agent
+export async function updateAgent(
+  id: string,
+  data: {
+    name?: string;
+    model_id?: string;
+    mcp_servers?: string[];
+    skills?: string[];
+    commands?: string[];
+  }
+): Promise<AgentConfig> {
+  const res = await apiFetch(`/api/agents/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to update agent");
+  return res.json();
+}
+
+// Delete agent
+export async function deleteAgent(id: string): Promise<void> {
+  const res = await apiFetch(`/api/agents/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete agent");
 }

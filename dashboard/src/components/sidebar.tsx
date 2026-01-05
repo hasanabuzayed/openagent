@@ -18,6 +18,8 @@ import {
   ChevronDown,
   Plug,
   FileCode,
+  Bot,
+  Server,
 } from 'lucide-react';
 
 type NavItem = {
@@ -30,6 +32,8 @@ type NavItem = {
 const navigation: NavItem[] = [
   { name: 'Overview', href: '/', icon: LayoutDashboard },
   { name: 'Mission', href: '/control', icon: MessageSquare },
+  { name: 'Agents', href: '/agents', icon: Bot },
+  { name: 'Workspaces', href: '/workspaces', icon: Server },
   { name: 'Console', href: '/console', icon: Terminal },
   {
     name: 'Library',

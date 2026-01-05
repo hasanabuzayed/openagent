@@ -33,6 +33,7 @@
 //! - `task`: Task and verification types
 //! - `budget`: Cost tracking and model pricing
 
+pub mod agent_config;
 pub mod agents;
 pub mod api;
 pub mod budget;
@@ -46,5 +47,6 @@ pub mod task;
 pub mod tools;
 pub mod workspace;
 
+pub use agent_config::{AgentConfig, AgentStore};
 pub use config::Config;
 pub use config::MemoryConfig;
