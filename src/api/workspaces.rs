@@ -7,13 +7,13 @@
 //! - Delete workspace
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path as AxumPath, State},
     http::StatusCode,
     routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -101,6 +101,71 @@ fn validate_workspace_name(name: &str) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
+/// Resolve and validate a custom workspace path.
+fn resolve_custom_path(
+    working_dir: &Path,
+    custom_path: &Path,
+) -> Result<PathBuf, (StatusCode, String)> {
+    let resolved = if custom_path.is_absolute() {
+        custom_path.to_path_buf()
+    } else {
+        working_dir.join(custom_path)
+    };
+
+    if !path_within(working_dir, &resolved) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Custom path must be within the working directory".to_string(),
+        ));
+    }
+
+    Ok(resolved)
+}
+
+/// Check whether a target path is within a base directory, even if it doesn't exist yet.
+/// Returns false if the path contains traversal sequences or escapes the base directory.
+fn path_within(base: &Path, target: &Path) -> bool {
+    use std::path::Component;
+
+    // Reject any path containing parent directory components (..)
+    // This prevents traversal attacks like "/base/../../etc/passwd"
+    for component in target.components() {
+        if matches!(component, Component::ParentDir) {
+            return false;
+        }
+    }
+
+    let base_canonical = match base.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false, // Base must exist and be resolvable
+    };
+
+    if target.exists() {
+        // For existing paths, canonicalize resolves symlinks
+        match target.canonicalize() {
+            Ok(target_canonical) => target_canonical.starts_with(&base_canonical),
+            Err(_) => false,
+        }
+    } else {
+        // For non-existent paths, find the nearest existing parent and verify it's within base
+        let mut current = target.to_path_buf();
+        loop {
+            if let Some(parent) = current.parent() {
+                if parent.exists() {
+                    return match parent.canonicalize() {
+                        Ok(parent_canonical) => parent_canonical.starts_with(&base_canonical),
+                        Err(_) => false,
+                    };
+                }
+                current = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+        false
+    }
+}
+
 /// POST /api/workspaces - Create a new workspace.
 async fn create_workspace(
     State(state): State<Arc<super::routes::AppState>>,
@@ -111,20 +176,7 @@ async fn create_workspace(
 
     // Determine path
     let path = match &req.path {
-        Some(custom_path) => {
-            // For custom paths, validate they're within the working directory
-            let working_dir = &state.config.working_dir;
-            let canonical_working = working_dir.canonicalize().unwrap_or_else(|_| working_dir.clone());
-            let canonical_custom = custom_path.canonicalize().unwrap_or_else(|_| custom_path.clone());
-
-            if !canonical_custom.starts_with(&canonical_working) {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "Custom path must be within the working directory".to_string(),
-                ));
-            }
-            custom_path.clone()
-        }
+        Some(custom_path) => resolve_custom_path(&state.config.working_dir, custom_path)?,
         None => match req.workspace_type {
             WorkspaceType::Host => state.config.working_dir.clone(),
             WorkspaceType::Chroot => {
@@ -163,7 +215,7 @@ async fn create_workspace(
 /// GET /api/workspaces/:id - Get workspace details.
 async fn get_workspace(
     State(state): State<Arc<super::routes::AppState>>,
-    Path(id): Path<Uuid>,
+    AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<WorkspaceResponse>, (StatusCode, String)> {
     state
         .workspaces
@@ -176,7 +228,7 @@ async fn get_workspace(
 /// DELETE /api/workspaces/:id - Delete a workspace.
 async fn delete_workspace(
     State(state): State<Arc<super::routes::AppState>>,
-    Path(id): Path<Uuid>,
+    AxumPath(id): AxumPath<Uuid>,
 ) -> Result<(StatusCode, String), (StatusCode, String)> {
     if id == crate::workspace::DEFAULT_WORKSPACE_ID {
         return Err((
@@ -192,5 +244,91 @@ async fn delete_workspace(
         ))
     } else {
         Err((StatusCode::NOT_FOUND, format!("Workspace {} not found", id)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_path_within_rejects_parent_traversal() {
+        let base = Path::new("/tmp/working_dir");
+        // Even if the literal path doesn't exist, the .. components should be rejected
+        assert!(!path_within(base, Path::new("/tmp/working_dir/../etc")));
+        assert!(!path_within(base, Path::new("/tmp/working_dir/../../etc/passwd")));
+        assert!(!path_within(base, Path::new("/tmp/working_dir/subdir/../../../etc")));
+    }
+
+    #[test]
+    fn test_path_within_rejects_relative_traversal() {
+        let base = Path::new("/tmp/working_dir");
+        // Relative paths with .. should be rejected
+        assert!(!path_within(base, Path::new("../etc")));
+        assert!(!path_within(base, Path::new("subdir/../../etc")));
+    }
+
+    #[test]
+    fn test_path_within_allows_valid_subpaths() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        // Create a subdirectory
+        let sub = base.join("subdir");
+        std::fs::create_dir(&sub).unwrap();
+
+        // Valid paths within base
+        assert!(path_within(base, &sub));
+        assert!(path_within(base, &base.join("subdir/file.txt")));
+        assert!(path_within(base, &base.join("newdir/newfile.txt")));
+    }
+
+    #[test]
+    fn test_path_within_rejects_symlink_escape() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        // Create a subdirectory and symlink pointing outside
+        let sub = base.join("subdir");
+        std::fs::create_dir(&sub).unwrap();
+
+        let outside = TempDir::new().unwrap();
+        let symlink_path = base.join("escape");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), &symlink_path).unwrap();
+            // A path through the symlink should be rejected
+            assert!(!path_within(base, &symlink_path.join("file.txt")));
+        }
+    }
+
+    #[test]
+    fn test_validate_workspace_name_valid() {
+        assert!(validate_workspace_name("my-workspace").is_ok());
+        assert!(validate_workspace_name("workspace_1").is_ok());
+        assert!(validate_workspace_name("test123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_workspace_name_rejects_traversal() {
+        assert!(validate_workspace_name("..").is_err());
+        assert!(validate_workspace_name("../etc").is_err());
+        assert!(validate_workspace_name("name/../etc").is_err());
+        assert!(validate_workspace_name("name/subdir").is_err());
+        assert!(validate_workspace_name("name\\subdir").is_err());
+    }
+
+    #[test]
+    fn test_validate_workspace_name_rejects_hidden() {
+        assert!(validate_workspace_name(".hidden").is_err());
+        assert!(validate_workspace_name(".").is_err());
+    }
+
+    #[test]
+    fn test_validate_workspace_name_rejects_empty() {
+        assert!(validate_workspace_name("").is_err());
     }
 }
