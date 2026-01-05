@@ -59,12 +59,12 @@ function formatEndpoint(def: McpServerDef): string {
 
 function serializeArgs(args?: string[]): string {
   if (!args || args.length === 0) return '';
-  return args.join(', ');
+  return args.join('\n');
 }
 
 function parseArgs(value: string): string[] {
   return value
-    .split(',')
+    .split('\n')
     .map((arg) => arg.trim())
     .filter((arg) => arg.length > 0);
 }
@@ -434,13 +434,13 @@ function McpFormModal({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-white/60 mb-1.5">Args (comma-separated)</label>
-                  <input
-                    type="text"
+                  <label className="block text-xs font-medium text-white/60 mb-1.5">Args (one per line)</label>
+                  <textarea
                     value={form.args}
                     onChange={(e) => updateForm({ args: e.target.value })}
                     placeholder="@playwright/mcp@latest"
-                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-sm text-white placeholder-white/30 focus:border-indigo-500/50 focus:outline-none transition-colors"
+                    rows={3}
+                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-sm text-white placeholder-white/30 focus:border-indigo-500/50 focus:outline-none transition-colors resize-none"
                   />
                 </div>
                 <div>
@@ -666,7 +666,7 @@ export default function McpsPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-4">
       {libraryUnavailable ? (
-        <LibraryUnavailable message={libraryUnavailableMessage} />
+        <LibraryUnavailable message={libraryUnavailableMessage} onConfigured={loadData} />
       ) : (
         <>
           {error && (

@@ -197,7 +197,7 @@ Describe what this command does.
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-4">
       {libraryUnavailable ? (
-        <LibraryUnavailable message={libraryUnavailableMessage} />
+        <LibraryUnavailable message={libraryUnavailableMessage} onConfigured={loadData} />
       ) : (
         <>
           {error && (

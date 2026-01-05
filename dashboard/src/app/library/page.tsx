@@ -354,7 +354,7 @@ Describe what this command does.
       </div>
 
       {libraryUnavailable ? (
-        <LibraryUnavailable message={libraryUnavailableMessage} />
+        <LibraryUnavailable message={libraryUnavailableMessage} onConfigured={loadData} />
       ) : (
         <>
           {error && (
