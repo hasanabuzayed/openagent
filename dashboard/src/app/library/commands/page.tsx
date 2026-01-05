@@ -165,7 +165,7 @@ Describe what this command does.
       await loadData();
       setShowNewCommandDialog(false);
       setNewCommandName('');
-      loadCommand(newCommandName);
+      await loadCommand(newCommandName);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create command');
     } finally {

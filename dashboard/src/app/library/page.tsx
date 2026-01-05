@@ -22,7 +22,9 @@ import {
   type Skill,
   type Command,
   type McpServerDef,
+  LibraryUnavailableError,
 } from '@/lib/api';
+import { LibraryUnavailable } from '@/components/library-unavailable';
 import {
   GitBranch,
   RefreshCw,
@@ -53,6 +55,8 @@ export default function LibraryPage() {
   const [commitMessage, setCommitMessage] = useState('');
   const [showCommitDialog, setShowCommitDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [libraryUnavailable, setLibraryUnavailable] = useState(false);
+  const [libraryUnavailableMessage, setLibraryUnavailableMessage] = useState<string | null>(null);
 
   // Section expansion state
   const [expandedSection, setExpandedSection] = useState<Section | null>(null);
@@ -88,6 +92,8 @@ export default function LibraryPage() {
     try {
       setLoading(true);
       setError(null);
+      setLibraryUnavailable(false);
+      setLibraryUnavailableMessage(null);
       const [statusData, skillsData, commandsData, mcpsData] = await Promise.all([
         getLibraryStatus(),
         listLibrarySkills(),
@@ -100,6 +106,22 @@ export default function LibraryPage() {
       setMcps(mcpsData);
       setMcpJsonContent(JSON.stringify(mcpsData, null, 2));
     } catch (err) {
+      if (err instanceof LibraryUnavailableError) {
+        setLibraryUnavailable(true);
+        setLibraryUnavailableMessage(err.message);
+        setStatus(null);
+        setSkills([]);
+        setCommands([]);
+        setMcps({});
+        setMcpJsonContent('{}');
+        setSelectedSkill(null);
+        setSkillContent('');
+        setSkillDirty(false);
+        setSelectedCommand(null);
+        setCommandContent('');
+        setCommandDirty(false);
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Failed to load library');
     } finally {
       setLoading(false);
@@ -225,7 +247,7 @@ Describe what this skill does.
       await loadData();
       setShowNewSkillDialog(false);
       setNewSkillName('');
-      loadSkill(newSkillName);
+      await loadSkill(newSkillName);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create skill');
     } finally {
@@ -289,7 +311,7 @@ Describe what this command does.
       await loadData();
       setShowNewCommandDialog(false);
       setNewCommandName('');
-      loadCommand(newCommandName);
+      await loadCommand(newCommandName);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create command');
     } finally {
@@ -331,18 +353,22 @@ Describe what this command does.
         </p>
       </div>
 
-      {error && (
-        <div className="mb-6 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 flex items-center gap-2">
-          <AlertCircle className="h-4 w-4 flex-shrink-0" />
-          {error}
-          <button onClick={() => setError(null)} className="ml-auto">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
+      {libraryUnavailable ? (
+        <LibraryUnavailable message={libraryUnavailableMessage} />
+      ) : (
+        <>
+          {error && (
+            <div className="mb-6 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 flex-shrink-0" />
+              {error}
+              <button onClick={() => setError(null)} className="ml-auto">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
 
-      {/* Git Status Bar */}
-      {status && (
+          {/* Git Status Bar */}
+          {status && (
         <div className="mb-6 p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -716,6 +742,8 @@ Describe what this command does.
           )}
         </div>
       </div>
+        </>
+      )}
 
       {/* Commit Dialog */}
       {showCommitDialog && (

@@ -167,7 +167,7 @@ Describe what this skill does.
       await loadData();
       setShowNewSkillDialog(false);
       setNewSkillName('');
-      loadSkill(newSkillName);
+      await loadSkill(newSkillName);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create skill');
     } finally {
