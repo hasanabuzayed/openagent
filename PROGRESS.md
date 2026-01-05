@@ -16,11 +16,26 @@
   - `tests/navigation.spec.ts`: Navigation and sidebar tests (3 tests)
 
 - **Test Commands**:
-  - `bun test`: Run all tests headless
-  - `bun test:ui`: Run tests with UI
+  - `bunx playwright test`: Run all tests headless (fixed from `bun test`)
+  - `bunx playwright test --ui`: Run tests with UI
+
+- **Test Setup**:
+  - Installed Playwright browsers (Firefox, Webkit)
+  - Fixed test runner command (bunx instead of bun)
 
 #### Documentation ✅
 - **MISSION_TESTS.md**: Mission testing framework with 10 test cases defined
+  - Created mission tracking template
+  - Documented Mission 1 failure (OpenCode auth)
+  - Added architectural issues section
+
+#### Mission Testing (Attempted) ⚠️
+- **OpenCode Server**: Successfully started on port 4096
+- **Mission 1 Execution**: Attempted but failed due to authentication
+  - Created mission via control API
+  - Discovered critical blocker: OAuth token expired
+  - Error: "Token refresh failed: 400"
+  - Impact: Cannot execute any missions through OpenCode
 
 ## Iteration 1 Summary
 
