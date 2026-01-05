@@ -10,13 +10,14 @@ Open Agent has a complete web and iOS dashboard for managing agents, workspaces,
 ## What Works ✅
 
 ### Web Dashboard (Next.js + Bun)
-- ✅ Agents page: Create/edit agents with model selection
-- ✅ Workspaces page: Create/manage workspaces
-- ✅ Library page: Skills, Commands, MCP configurations
+- ✅ Agents page: UI implemented (API endpoint status unclear)
+- ✅ Workspaces page: Create/manage workspaces (API verified working)
+- ✅ Library page: UI implemented (needs git repo config)
 - ✅ Mission page: Mission creation UI
 - ✅ Overview page: Dashboard structure (needs real metrics)
 - ✅ Settings page: Configuration management
 - ✅ Navigation: All routes functional
+- ✅ Dev server: Running on port 3001
 
 ### iOS Dashboard (SwiftUI)
 - ✅ Agents view: List and create agents
@@ -25,13 +26,14 @@ Open Agent has a complete web and iOS dashboard for managing agents, workspaces,
 - ⏳ Not tested in simulator yet
 
 ### Backend API (Rust + Axum)
-- ✅ Agent CRUD endpoints (`/api/agents`)
-- ✅ Workspace CRUD endpoints (`/api/workspaces`)
-- ✅ Library endpoints (skills, commands, MCPs)
-- ✅ Mission management endpoints
-- ✅ Control session (SSE streaming)
-- ✅ Health check and auth
-- ⚠️ Execution blocked (see below)
+- ✅ Health check (`/api/health`) - verified working
+- ✅ Workspace endpoints (`/api/workspaces`) - verified working
+- ✅ Providers/Models endpoints (`/api/providers`) - verified working
+- ⚠️ Agent CRUD endpoints (`/api/agents`) - implementation exists, needs testing
+- ⚠️ Library endpoints (`/api/library/*`) - requires git repo configuration
+- ✅ Mission management endpoints (`/api/control/missions`) - verified working
+- ✅ Control session (SSE streaming) - verified working
+- ⚠️ Mission execution - blocked by OpenCode auth
 
 ### Testing Infrastructure
 - ✅ Playwright configured
