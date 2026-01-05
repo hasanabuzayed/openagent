@@ -35,8 +35,10 @@ use super::console;
 use super::control;
 use super::desktop_stream;
 use super::fs;
+use super::library as library_api;
 use super::mcp as mcp_api;
 use super::types::*;
+use super::workspaces as workspaces_api;
 
 /// Shared application state.
 pub struct AppState {
@@ -54,6 +56,10 @@ pub struct AppState {
     pub benchmarks: crate::budget::SharedBenchmarkRegistry,
     /// Model resolver for auto-upgrading outdated model names
     pub resolver: crate::budget::SharedModelResolver,
+    /// Configuration library (git-based)
+    pub library: library_api::SharedLibrary,
+    /// Workspace store
+    pub workspaces: workspace::SharedWorkspaceStore,
 }
 
 /// Start the HTTP server.
@@ -96,6 +102,28 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         Arc::clone(&mcp),
     );
 
+    // Initialize configuration library (optional - clones from git if needed)
+    let library: library_api::SharedLibrary = Arc::new(RwLock::new(None));
+    {
+        let library_clone = Arc::clone(&library);
+        let library_path = config.library_path.clone();
+        let library_remote = config.library_remote.clone();
+        tokio::spawn(async move {
+            match crate::library::LibraryStore::new(library_path, &library_remote).await {
+                Ok(store) => {
+                    tracing::info!("Configuration library initialized from {}", library_remote);
+                    *library_clone.write().await = Some(store);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to initialize configuration library: {}", e);
+                }
+            }
+        });
+    }
+
+    // Initialize workspace store
+    let workspaces = Arc::new(workspace::WorkspaceStore::new(config.working_dir.clone()));
+
     let state = Arc::new(AppState {
         config: config.clone(),
         tasks: RwLock::new(HashMap::new()),
@@ -105,6 +133,8 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         mcp,
         benchmarks,
         resolver,
+        library,
+        workspaces,
     });
 
     let public_routes = Router::new()
@@ -220,6 +250,10 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         .route("/api/models/refresh", post(refresh_models))
         .route("/api/models/families", get(list_model_families))
         .route("/api/models/performance", get(get_model_performance))
+        // Library management endpoints
+        .nest("/api/library", library_api::routes())
+        // Workspace management endpoints
+        .nest("/api/workspaces", workspaces_api::routes())
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             auth::require_auth,

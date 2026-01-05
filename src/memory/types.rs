@@ -323,6 +323,9 @@ pub struct DbMission {
     /// Model override requested for this mission
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
+    /// Workspace ID where this mission runs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<Uuid>,
     /// Conversation history as JSON array of {role, content} objects
     pub history: serde_json::Value,
     /// Final agent tree snapshot (saved when mission completes)

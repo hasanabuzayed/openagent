@@ -346,6 +346,7 @@ pub enum ControlCommand {
     CreateMission {
         title: Option<String>,
         model_override: Option<String>,
+        workspace_id: Option<Uuid>,
         respond: oneshot::Sender<Result<Mission, String>>,
     },
     /// Update mission status
@@ -423,6 +424,9 @@ pub struct Mission {
     /// Model override requested for this mission
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
+    /// Workspace ID where this mission runs (defaults to host workspace)
+    #[serde(default = "default_workspace_id")]
+    pub workspace_id: Uuid,
     pub history: Vec<MissionHistoryEntry>,
     pub created_at: String,
     pub updated_at: String,
@@ -432,6 +436,10 @@ pub struct Mission {
     /// Whether this mission can be resumed
     #[serde(default)]
     pub resumable: bool,
+}
+
+fn default_workspace_id() -> Uuid {
+    crate::workspace::DEFAULT_WORKSPACE_ID
 }
 
 /// A single entry in the mission history.
@@ -460,6 +468,7 @@ trait MissionStore: Send + Sync {
         &self,
         title: Option<&str>,
         model_override: Option<&str>,
+        workspace_id: Option<Uuid>,
     ) -> Result<Mission, String>;
     async fn update_mission_status(&self, id: Uuid, status: MissionStatus) -> Result<(), String>;
     async fn update_mission_history(
@@ -521,6 +530,7 @@ impl MissionStore for InMemoryMissionStore {
         &self,
         title: Option<&str>,
         model_override: Option<&str>,
+        workspace_id: Option<Uuid>,
     ) -> Result<Mission, String> {
         let now = now_string();
         let mission = Mission {
@@ -528,6 +538,7 @@ impl MissionStore for InMemoryMissionStore {
             status: MissionStatus::Active,
             title: title.map(|s| s.to_string()),
             model_override: model_override.map(|s| s.to_string()),
+            workspace_id: workspace_id.unwrap_or(crate::workspace::DEFAULT_WORKSPACE_ID),
             history: vec![],
             created_at: now.clone(),
             updated_at: now,
@@ -693,6 +704,7 @@ impl SupabaseMissionStore {
             status,
             title: db_mission.title,
             model_override: db_mission.model_override,
+            workspace_id: db_mission.workspace_id.unwrap_or(crate::workspace::DEFAULT_WORKSPACE_ID),
             history,
             created_at: db_mission.created_at.clone(),
             updated_at: db_mission.updated_at.clone(),
@@ -740,11 +752,12 @@ impl MissionStore for SupabaseMissionStore {
         &self,
         title: Option<&str>,
         model_override: Option<&str>,
+        workspace_id: Option<Uuid>,
     ) -> Result<Mission, String> {
         let mission = self
             .memory
             .supabase
-            .create_mission(title, model_override)
+            .create_mission(title, model_override, workspace_id)
             .await
             .map_err(|e| e.to_string())?;
         Ok(SupabaseMissionStore::mission_from_db(mission))
@@ -1151,6 +1164,8 @@ pub async fn get_mission(
 pub struct CreateMissionRequest {
     pub title: Option<String>,
     pub model_override: Option<String>,
+    /// Workspace ID to run the mission in (defaults to host workspace)
+    pub workspace_id: Option<Uuid>,
 }
 
 pub async fn create_mission(
@@ -1160,9 +1175,9 @@ pub async fn create_mission(
 ) -> Result<Json<Mission>, (StatusCode, String)> {
     let (tx, rx) = oneshot::channel();
 
-    let (title, model_override) = body
-        .map(|b| (b.title.clone(), b.model_override.clone()))
-        .unwrap_or((None, None));
+    let (title, model_override, workspace_id) = body
+        .map(|b| (b.title.clone(), b.model_override.clone(), b.workspace_id))
+        .unwrap_or((None, None, None));
 
     let control = control_for_user(&state, &user).await;
     control
@@ -1170,6 +1185,7 @@ pub async fn create_mission(
         .send(ControlCommand::CreateMission {
             title,
             model_override,
+            workspace_id,
             respond: tx,
         })
         .await
@@ -2023,7 +2039,7 @@ async fn control_actor_loop(
         mission_store: &Arc<dyn MissionStore>,
         model_override: Option<&str>,
     ) -> Result<Mission, String> {
-        create_new_mission_with_title(mission_store, None, model_override).await
+        create_new_mission_with_title(mission_store, None, model_override, None).await
     }
 
     // Helper to create a new mission with title
@@ -2031,8 +2047,9 @@ async fn control_actor_loop(
         mission_store: &Arc<dyn MissionStore>,
         title: Option<&str>,
         model_override: Option<&str>,
+        workspace_id: Option<Uuid>,
     ) -> Result<Mission, String> {
-        mission_store.create_mission(title, model_override).await
+        mission_store.create_mission(title, model_override, workspace_id).await
     }
 
     // Helper to build resume context for an interrupted or blocked mission
@@ -2340,7 +2357,7 @@ async fn control_actor_loop(
                             }
                         }
                     }
-                    ControlCommand::CreateMission { title, model_override, respond } => {
+                    ControlCommand::CreateMission { title, model_override, workspace_id, respond } => {
                         // First persist current mission history
                         persist_mission_history(
                             &mission_store,
@@ -2354,6 +2371,7 @@ async fn control_actor_loop(
                             &mission_store,
                             title.as_deref(),
                             model_override.as_deref(),
+                            workspace_id,
                         )
                         .await {
                             Ok(mission) => {

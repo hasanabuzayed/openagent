@@ -20,12 +20,14 @@ mod console;
 pub mod control;
 mod desktop_stream;
 mod fs;
+pub mod library;
 pub mod mcp;
 pub mod mission_runner;
 mod providers;
 mod routes;
 mod ssh_util;
 pub mod types;
+pub mod workspaces;
 
 pub use routes::serve;
 pub use types::*;

@@ -599,6 +599,7 @@ impl SupabaseClient {
         &self,
         title: Option<&str>,
         model_override: Option<&str>,
+        workspace_id: Option<Uuid>,
     ) -> anyhow::Result<DbMission> {
         let mut body = serde_json::json!({
             "title": title,
@@ -609,6 +610,11 @@ impl SupabaseClient {
         // Add model_override if provided (column may not exist in older schemas)
         if let Some(model) = model_override {
             body["model_override"] = serde_json::Value::String(model.to_string());
+        }
+
+        // Add workspace_id if provided
+        if let Some(ws_id) = workspace_id {
+            body["workspace_id"] = serde_json::Value::String(ws_id.to_string());
         }
 
         let resp = self

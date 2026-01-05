@@ -1117,3 +1117,218 @@ export async function listProviders(): Promise<ProvidersResponse> {
   if (!res.ok) throw new Error("Failed to fetch providers");
   return res.json();
 }
+
+// ==================== Library (Configuration) ====================
+
+export interface LibraryStatus {
+  path: string;
+  remote: string | null;
+  branch: string;
+  clean: boolean;
+  ahead: number;
+  behind: number;
+  modified_files: string[];
+}
+
+export interface McpServerDef {
+  type: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+}
+
+export interface SkillSummary {
+  name: string;
+  description: string | null;
+  path: string;
+}
+
+export interface Skill {
+  name: string;
+  description: string | null;
+  path: string;
+  content: string;
+  references: string[];
+}
+
+export interface CommandSummary {
+  name: string;
+  description: string | null;
+  path: string;
+}
+
+export interface Command {
+  name: string;
+  description: string | null;
+  path: string;
+  content: string;
+}
+
+// Git status
+export async function getLibraryStatus(): Promise<LibraryStatus> {
+  const res = await apiFetch("/api/library/status");
+  if (!res.ok) throw new Error("Failed to fetch library status");
+  return res.json();
+}
+
+// Sync (git pull)
+export async function syncLibrary(): Promise<void> {
+  const res = await apiFetch("/api/library/sync", { method: "POST" });
+  if (!res.ok) throw new Error("Failed to sync library");
+}
+
+// Commit changes
+export async function commitLibrary(message: string): Promise<void> {
+  const res = await apiFetch("/api/library/commit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok) throw new Error("Failed to commit library");
+}
+
+// Push changes
+export async function pushLibrary(): Promise<void> {
+  const res = await apiFetch("/api/library/push", { method: "POST" });
+  if (!res.ok) throw new Error("Failed to push library");
+}
+
+// Get MCP servers
+export async function getLibraryMcps(): Promise<Record<string, McpServerDef>> {
+  const res = await apiFetch("/api/library/mcps");
+  if (!res.ok) throw new Error("Failed to fetch MCPs");
+  return res.json();
+}
+
+// Save MCP servers
+export async function saveLibraryMcps(
+  servers: Record<string, McpServerDef>
+): Promise<void> {
+  const res = await apiFetch("/api/library/mcps", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(servers),
+  });
+  if (!res.ok) throw new Error("Failed to save MCPs");
+}
+
+// List skills
+export async function listLibrarySkills(): Promise<SkillSummary[]> {
+  const res = await apiFetch("/api/library/skills");
+  if (!res.ok) throw new Error("Failed to fetch skills");
+  return res.json();
+}
+
+// Get skill
+export async function getLibrarySkill(name: string): Promise<Skill> {
+  const res = await apiFetch(`/api/library/skills/${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error("Failed to fetch skill");
+  return res.json();
+}
+
+// Save skill
+export async function saveLibrarySkill(
+  name: string,
+  content: string
+): Promise<void> {
+  const res = await apiFetch(`/api/library/skills/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error("Failed to save skill");
+}
+
+// Delete skill
+export async function deleteLibrarySkill(name: string): Promise<void> {
+  const res = await apiFetch(`/api/library/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete skill");
+}
+
+// List commands
+export async function listLibraryCommands(): Promise<CommandSummary[]> {
+  const res = await apiFetch("/api/library/commands");
+  if (!res.ok) throw new Error("Failed to fetch commands");
+  return res.json();
+}
+
+// Get command
+export async function getLibraryCommand(name: string): Promise<Command> {
+  const res = await apiFetch(`/api/library/commands/${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error("Failed to fetch command");
+  return res.json();
+}
+
+// Save command
+export async function saveLibraryCommand(
+  name: string,
+  content: string
+): Promise<void> {
+  const res = await apiFetch(`/api/library/commands/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error("Failed to save command");
+}
+
+// Delete command
+export async function deleteLibraryCommand(name: string): Promise<void> {
+  const res = await apiFetch(`/api/library/commands/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete command");
+}
+
+// ==================== Workspaces ====================
+
+export type WorkspaceType = "host" | "chroot";
+export type WorkspaceStatus = "pending" | "building" | "ready" | "error";
+
+export interface Workspace {
+  id: string;
+  name: string;
+  workspace_type: WorkspaceType;
+  path: string;
+  status: WorkspaceStatus;
+  error_message: string | null;
+  created_at: string;
+}
+
+// List workspaces
+export async function listWorkspaces(): Promise<Workspace[]> {
+  const res = await apiFetch("/api/workspaces");
+  if (!res.ok) throw new Error("Failed to fetch workspaces");
+  return res.json();
+}
+
+// Get workspace
+export async function getWorkspace(id: string): Promise<Workspace> {
+  const res = await apiFetch(`/api/workspaces/${id}`);
+  if (!res.ok) throw new Error("Failed to fetch workspace");
+  return res.json();
+}
+
+// Create workspace
+export async function createWorkspace(data: {
+  name: string;
+  workspace_type: WorkspaceType;
+  path: string;
+}): Promise<Workspace> {
+  const res = await apiFetch("/api/workspaces", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to create workspace");
+  return res.json();
+}
+
+// Delete workspace
+export async function deleteWorkspace(id: string): Promise<void> {
+  const res = await apiFetch(`/api/workspaces/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete workspace");
+}

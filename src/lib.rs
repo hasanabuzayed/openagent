@@ -37,6 +37,7 @@ pub mod agents;
 pub mod api;
 pub mod budget;
 pub mod config;
+pub mod library;
 pub mod llm;
 pub mod mcp;
 pub mod memory;

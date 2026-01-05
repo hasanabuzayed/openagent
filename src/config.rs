@@ -277,6 +277,14 @@ pub struct Config {
     /// Timeout in seconds after which a stuck tool will be auto-aborted.
     /// Set to 0 to disable auto-abort (default: 0 = warn only, don't abort).
     pub tool_stuck_abort_timeout_secs: u64,
+
+    /// Path to the configuration library git repo.
+    /// Default: {working_dir}/.openagent/library
+    pub library_path: PathBuf,
+
+    /// Git remote URL for the configuration library.
+    /// Default: git@github.com:Th0rgal/skills.git
+    pub library_remote: String,
 }
 
 /// SSH configuration for the dashboard console + file explorer.
@@ -582,6 +590,14 @@ impl Config {
 
         let context = ContextConfig::from_env();
 
+        // Library configuration
+        let library_path = std::env::var("LIBRARY_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| working_dir.join(".openagent/library"));
+
+        let library_remote = std::env::var("LIBRARY_REMOTE")
+            .unwrap_or_else(|_| "git@github.com:Th0rgal/skills.git".to_string());
+
         Ok(Self {
             api_key,
             default_model,
@@ -600,11 +616,14 @@ impl Config {
             opencode_agent,
             opencode_permissive,
             tool_stuck_abort_timeout_secs,
+            library_path,
+            library_remote,
         })
     }
 
     /// Create a config with custom values (useful for testing).
     pub fn new(api_key: String, default_model: String, working_dir: PathBuf) -> Self {
+        let library_path = working_dir.join(".openagent/library");
         Self {
             api_key,
             default_model,
@@ -623,6 +642,8 @@ impl Config {
             opencode_agent: None,
             opencode_permissive: true,
             tool_stuck_abort_timeout_secs: 0,
+            library_path,
+            library_remote: "git@github.com:Th0rgal/skills.git".to_string(),
         }
     }
 }

@@ -3,14 +3,197 @@
 //! Open Agent acts as a workspace host for OpenCode. This module creates
 //! per-task/mission workspace directories and writes `opencode.json`
 //! with the currently configured MCP servers.
+//!
+//! ## Workspace Types
+//!
+//! - **Host**: Execute directly on the remote host environment
+//! - **Chroot**: Execute inside an isolated chroot environment (future)
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::mcp::{McpRegistry, McpServerConfig, McpTransport};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workspace Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The nil UUID represents the default "host" workspace.
+pub const DEFAULT_WORKSPACE_ID: Uuid = Uuid::nil();
+
+/// Type of workspace execution environment.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceType {
+    /// Execute directly on remote host
+    Host,
+    /// Execute inside isolated chroot environment (future)
+    Chroot,
+}
+
+impl Default for WorkspaceType {
+    fn default() -> Self {
+        Self::Host
+    }
+}
+
+/// Status of a workspace.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceStatus {
+    /// Chroot not yet built
+    Pending,
+    /// Chroot build in progress
+    Building,
+    /// Ready for execution
+    Ready,
+    /// Build failed
+    Error,
+}
+
+impl Default for WorkspaceStatus {
+    fn default() -> Self {
+        Self::Ready
+    }
+}
+
+/// A workspace definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Workspace {
+    /// Unique identifier
+    pub id: Uuid,
+    /// Human-readable name
+    pub name: String,
+    /// Type of workspace (Host or Chroot)
+    pub workspace_type: WorkspaceType,
+    /// Working directory within the workspace
+    pub path: PathBuf,
+    /// Current status
+    pub status: WorkspaceStatus,
+    /// Error message if status is Error
+    pub error_message: Option<String>,
+    /// Additional configuration
+    #[serde(default)]
+    pub config: serde_json::Value,
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+}
+
+impl Workspace {
+    /// Create the default host workspace.
+    pub fn default_host(working_dir: PathBuf) -> Self {
+        Self {
+            id: DEFAULT_WORKSPACE_ID,
+            name: "host".to_string(),
+            workspace_type: WorkspaceType::Host,
+            path: working_dir,
+            status: WorkspaceStatus::Ready,
+            error_message: None,
+            config: serde_json::json!({}),
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Create a new chroot workspace (pending build).
+    pub fn new_chroot(name: String, path: PathBuf) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name,
+            workspace_type: WorkspaceType::Chroot,
+            path,
+            status: WorkspaceStatus::Pending,
+            error_message: None,
+            config: serde_json::json!({}),
+            created_at: Utc::now(),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workspace Store
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// In-memory store for workspaces.
+pub struct WorkspaceStore {
+    workspaces: RwLock<HashMap<Uuid, Workspace>>,
+}
+
+impl WorkspaceStore {
+    /// Create a new workspace store with the default host workspace.
+    pub fn new(working_dir: PathBuf) -> Self {
+        let mut workspaces = HashMap::new();
+        let host = Workspace::default_host(working_dir);
+        workspaces.insert(host.id, host);
+
+        Self {
+            workspaces: RwLock::new(workspaces),
+        }
+    }
+
+    /// List all workspaces.
+    pub async fn list(&self) -> Vec<Workspace> {
+        let guard = self.workspaces.read().await;
+        let mut list: Vec<_> = guard.values().cloned().collect();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        list
+    }
+
+    /// Get a workspace by ID.
+    pub async fn get(&self, id: Uuid) -> Option<Workspace> {
+        let guard = self.workspaces.read().await;
+        guard.get(&id).cloned()
+    }
+
+    /// Get the default host workspace.
+    pub async fn get_default(&self) -> Workspace {
+        self.get(DEFAULT_WORKSPACE_ID)
+            .await
+            .expect("Default workspace should always exist")
+    }
+
+    /// Add a new workspace.
+    pub async fn add(&self, workspace: Workspace) -> Uuid {
+        let id = workspace.id;
+        let mut guard = self.workspaces.write().await;
+        guard.insert(id, workspace);
+        id
+    }
+
+    /// Update a workspace.
+    pub async fn update(&self, workspace: Workspace) -> bool {
+        let mut guard = self.workspaces.write().await;
+        if guard.contains_key(&workspace.id) {
+            guard.insert(workspace.id, workspace);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Delete a workspace (cannot delete the default host workspace).
+    pub async fn delete(&self, id: Uuid) -> bool {
+        if id == DEFAULT_WORKSPACE_ID {
+            return false; // Cannot delete default workspace
+        }
+        let mut guard = self.workspaces.write().await;
+        guard.remove(&id).is_some()
+    }
+}
+
+/// Shared workspace store type.
+pub type SharedWorkspaceStore = Arc<WorkspaceStore>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Original Workspace Utilities
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn sanitize_key(name: &str) -> String {
     name.chars()

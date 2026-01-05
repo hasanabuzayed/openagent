@@ -98,8 +98,19 @@ final class APIService {
         try await get("/api/control/missions/current")
     }
     
-    func createMission() async throws -> Mission {
-        try await post("/api/control/missions", body: EmptyBody())
+    func createMission(workspaceId: String? = nil, title: String? = nil, modelOverride: String? = nil) async throws -> Mission {
+        struct CreateMissionRequest: Encodable {
+            let workspaceId: String?
+            let title: String?
+            let modelOverride: String?
+
+            enum CodingKeys: String, CodingKey {
+                case workspaceId = "workspace_id"
+                case title
+                case modelOverride = "model_override"
+            }
+        }
+        return try await post("/api/control/missions", body: CreateMissionRequest(workspaceId: workspaceId, title: title, modelOverride: modelOverride))
     }
     
     func loadMission(id: String) async throws -> Mission {
@@ -273,8 +284,18 @@ final class APIService {
         return uploadResponse.path
     }
     
+    // MARK: - Workspaces
+
+    func listWorkspaces() async throws -> [Workspace] {
+        try await get("/api/workspaces")
+    }
+
+    func getWorkspace(id: String) async throws -> Workspace {
+        try await get("/api/workspaces/\(id)")
+    }
+
     // MARK: - SSE Streaming
-    
+
     func streamControl(onEvent: @escaping (String, [String: Any]) -> Void) -> Task<Void, Never> {
         Task {
             guard let url = URL(string: "\(baseURL)/api/control/stream") else { return }

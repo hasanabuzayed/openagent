@@ -9,23 +9,19 @@ import { BrainLogo } from '@/components/icons';
 import {
   LayoutDashboard,
   MessageSquare,
-  Network,
   Terminal,
   Settings,
-  Plug,
   Loader,
   CheckCircle,
   XCircle,
-  BarChart3,
+  Library,
 } from 'lucide-react';
 
 const navigation = [
   { name: 'Overview', href: '/', icon: LayoutDashboard },
   { name: 'Mission', href: '/control', icon: MessageSquare },
-  { name: 'Agents', href: '/history', icon: Network },
-  { name: 'Analytics', href: '/analytics', icon: BarChart3 },
   { name: 'Console', href: '/console', icon: Terminal },
-  { name: 'Modules', href: '/modules', icon: Plug },
+  { name: 'Library', href: '/library', icon: Library },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
