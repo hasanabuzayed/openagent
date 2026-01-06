@@ -36,6 +36,8 @@ pub fn routes() -> Router<Arc<super::routes::AppState>> {
         .route("/", get(list_providers))
         .route("/", post(create_provider))
         .route("/types", get(list_provider_types))
+        .route("/opencode-auth", get(get_opencode_auth))
+        .route("/opencode-auth", post(set_opencode_auth))
         .route("/:id", get(get_provider))
         .route("/:id", put(update_provider))
         .route("/:id", delete(delete_provider))
@@ -176,6 +178,28 @@ pub struct OAuthCallbackRequest {
     pub code: String,
 }
 
+/// Request to set OpenCode auth credentials directly.
+#[derive(Debug, Deserialize)]
+pub struct SetOpenCodeAuthRequest {
+    /// Provider type (e.g., "anthropic")
+    pub provider: String,
+    /// Refresh token
+    pub refresh_token: String,
+    /// Access token
+    pub access_token: String,
+    /// Token expiry timestamp in milliseconds
+    pub expires_at: i64,
+}
+
+/// Response for OpenCode auth operations.
+#[derive(Debug, Serialize)]
+pub struct OpenCodeAuthResponse {
+    pub success: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<serde_json::Value>,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // OpenCode Auth Sync
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,9 +274,112 @@ fn sync_to_opencode_auth(
     Ok(())
 }
 
+/// Get the path to OpenCode's auth.json file.
+fn get_opencode_auth_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    PathBuf::from(&home).join(".local/share/opencode/auth.json")
+}
+
+/// Read OpenCode's current auth.json contents.
+fn read_opencode_auth() -> Result<serde_json::Value, String> {
+    let auth_path = get_opencode_auth_path();
+    if !auth_path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+
+    let contents = std::fs::read_to_string(&auth_path)
+        .map_err(|e| format!("Failed to read OpenCode auth: {}", e))?;
+    serde_json::from_str(&contents).map_err(|e| format!("Failed to parse OpenCode auth: {}", e))
+}
+
+/// Write to OpenCode's auth.json file.
+fn write_opencode_auth(auth: &serde_json::Value) -> Result<(), String> {
+    let auth_path = get_opencode_auth_path();
+
+    // Ensure parent directory exists
+    if let Some(parent) = auth_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create OpenCode auth directory: {}", e))?;
+    }
+
+    let contents = serde_json::to_string_pretty(auth)
+        .map_err(|e| format!("Failed to serialize OpenCode auth: {}", e))?;
+    std::fs::write(&auth_path, contents)
+        .map_err(|e| format!("Failed to write OpenCode auth: {}", e))?;
+
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// GET /api/ai/providers/opencode-auth - Get current OpenCode auth credentials.
+async fn get_opencode_auth() -> Result<Json<OpenCodeAuthResponse>, (StatusCode, String)> {
+    match read_opencode_auth() {
+        Ok(auth) => Ok(Json(OpenCodeAuthResponse {
+            success: true,
+            message: "OpenCode auth retrieved".to_string(),
+            auth: Some(auth),
+        })),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+    }
+}
+
+/// POST /api/ai/providers/opencode-auth - Set OpenCode auth credentials directly.
+async fn set_opencode_auth(
+    Json(req): Json<SetOpenCodeAuthRequest>,
+) -> Result<Json<OpenCodeAuthResponse>, (StatusCode, String)> {
+    // Validate provider
+    let valid_providers = ["anthropic", "github-copilot"];
+    if !valid_providers.contains(&req.provider.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Invalid provider: {}. Must be one of: {}",
+                req.provider,
+                valid_providers.join(", ")
+            ),
+        ));
+    }
+
+    // Read existing auth
+    let mut auth = read_opencode_auth().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    // Create the auth entry in OpenCode format
+    let entry = serde_json::json!({
+        "type": "oauth",
+        "refresh": req.refresh_token,
+        "access": req.access_token,
+        "expires": req.expires_at
+    });
+
+    // Update the auth object
+    if let Some(obj) = auth.as_object_mut() {
+        obj.insert(req.provider.clone(), entry);
+    } else {
+        auth = serde_json::json!({
+            req.provider.clone(): entry
+        });
+    }
+
+    // Write back to file
+    write_opencode_auth(&auth).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    tracing::info!(
+        "Set OpenCode auth credentials for provider: {}",
+        req.provider
+    );
+
+    Ok(Json(OpenCodeAuthResponse {
+        success: true,
+        message: format!(
+            "OpenCode auth credentials set for provider: {}",
+            req.provider
+        ),
+        auth: Some(auth),
+    }))
+}
 
 /// GET /api/ai/providers/types - List available provider types.
 async fn list_provider_types() -> Json<Vec<ProviderTypeInfo>> {
