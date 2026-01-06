@@ -26,7 +26,6 @@ use crate::budget::ModelPricing;
 use crate::config::{AuthMode, Config};
 use crate::llm::OpenRouterClient;
 use crate::mcp::McpRegistry;
-use crate::memory::{self, MemorySystem};
 use crate::tools::ToolRegistry;
 use crate::workspace;
 
@@ -46,8 +45,6 @@ pub struct AppState {
     pub tasks: RwLock<HashMap<String, HashMap<Uuid, TaskState>>>,
     /// The agent used for task execution
     pub root_agent: AgentRef,
-    /// Memory system (optional)
-    pub memory: Option<MemorySystem>,
     /// Global interactive control session
     pub control: control::ControlHub,
     /// MCP server registry
@@ -68,15 +65,6 @@ pub struct AppState {
 pub async fn serve(config: Config) -> anyhow::Result<()> {
     // Always use OpenCode backend
     let root_agent: AgentRef = Arc::new(OpenCodeAgent::new(config.clone()));
-
-    // Initialize memory system (optional - needs Supabase config).
-    // Disable memory in multi-user mode to avoid cross-user leakage.
-    let memory = if matches!(config.auth.auth_mode(config.dev_mode), AuthMode::MultiUser) {
-        tracing::warn!("Multi-user auth enabled: disabling memory system");
-        None
-    } else {
-        memory::init_memory(&config.memory, &config.api_key).await
-    };
 
     // Initialize MCP registry
     let mcp = Arc::new(McpRegistry::new(&config.working_dir).await);
@@ -106,7 +94,6 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let control_state = control::ControlHub::new(
         config.clone(),
         Arc::clone(&root_agent),
-        memory.clone(),
         Arc::clone(&benchmarks),
         Arc::clone(&resolver),
         Arc::clone(&mcp),
@@ -137,7 +124,6 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         config: config.clone(),
         tasks: RwLock::new(HashMap::new()),
         root_agent,
-        memory,
         control: control_state,
         mcp,
         benchmarks,
@@ -410,12 +396,8 @@ async fn get_stats(
         })
         .unwrap_or(0);
 
-    // Calculate total cost from runs in database
-    let total_cost_cents = if let Some(mem) = &state.memory {
-        mem.supabase.get_total_cost_cents().await.unwrap_or(0)
-    } else {
-        0
-    };
+    // Total cost not tracked without memory system
+    let total_cost_cents = 0;
 
     let finished = completed_tasks + failed_tasks;
     let success_rate = if finished > 0 {
@@ -593,139 +575,24 @@ async fn run_agent_task(
         }
     };
 
-    // Create context with the specified working directory and memory
+    // Create context with the specified working directory
     let llm = Arc::new(OpenRouterClient::new(state.config.api_key.clone()));
     let tools = ToolRegistry::empty();
     let pricing = Arc::new(ModelPricing::new());
 
-    let mut ctx = AgentContext::with_memory(
+    let mut ctx = AgentContext::new(
         state.config.clone(),
         llm,
         tools,
         pricing,
         working_dir,
-        state.memory.clone(),
     );
     ctx.benchmarks = Some(Arc::clone(&state.benchmarks));
     ctx.resolver = Some(Arc::clone(&state.resolver));
     ctx.mcp = Some(Arc::clone(&state.mcp));
 
-    // Create a run in memory if available
-    let memory_run_id = if let Some(ref mem) = state.memory {
-        match mem.writer.create_run(&task_description).await {
-            Ok(run_id) => {
-                let _ = mem
-                    .writer
-                    .update_run_status(run_id, crate::memory::MemoryStatus::Running)
-                    .await;
-                Some(run_id)
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create memory run: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // Run the hierarchical agent
     let result = state.root_agent.execute(&mut task, &ctx).await;
-
-    // Complete the memory run and record events
-    if let (Some(ref mem), Some(run_id)) = (&state.memory, memory_run_id) {
-        // Record tool call events from result data
-        if let Some(data) = &result.data {
-            let recorder = crate::memory::EventRecorder::new(run_id);
-
-            // RootAgent wraps executor data under "execution" field
-            let exec_data = data.get("execution").unwrap_or(data);
-
-            tracing::debug!(
-                "Recording events for run {}, exec_data keys: {:?}",
-                run_id,
-                exec_data.as_object().map(|o| o.keys().collect::<Vec<_>>())
-            );
-
-            // Record each tool call as an event
-            if let Some(tools_used) = exec_data.get("tools_used") {
-                if let Some(arr) = tools_used.as_array() {
-                    tracing::debug!("Recording {} tool call events", arr.len());
-                    for tool_entry in arr {
-                        let tool_str = tool_entry.as_str().unwrap_or("");
-                        let event = crate::memory::RecordedEvent::new(
-                            "TaskExecutor",
-                            crate::memory::EventKind::ToolCall,
-                        )
-                        .with_preview(tool_str);
-                        if let Err(e) = mem.writer.record_event(&recorder, event).await {
-                            tracing::warn!("Failed to record tool call event: {}", e);
-                        }
-                    }
-                }
-            } else {
-                tracing::debug!("No tools_used found in exec_data");
-            }
-
-            // Record final response as an event
-            let prompt_tokens = exec_data
-                .get("usage")
-                .and_then(|u| u.get("prompt_tokens"))
-                .and_then(|v| v.as_i64())
-                .map(|v| v as i32)
-                .unwrap_or(0);
-            let completion_tokens = exec_data
-                .get("usage")
-                .and_then(|u| u.get("completion_tokens"))
-                .and_then(|v| v.as_i64())
-                .map(|v| v as i32)
-                .unwrap_or(0);
-
-            let response_event = crate::memory::RecordedEvent::new(
-                "TaskExecutor",
-                crate::memory::EventKind::LlmResponse,
-            )
-            .with_preview(&if result.output.len() > 1000 {
-                let safe_end = crate::memory::safe_truncate_index(&result.output, 1000);
-                result.output[..safe_end].to_string()
-            } else {
-                result.output.clone()
-            })
-            .with_tokens(prompt_tokens, completion_tokens, result.cost_cents as i32);
-            if let Err(e) = mem.writer.record_event(&recorder, response_event).await {
-                tracing::warn!("Failed to record response event: {}", e);
-            }
-        } else {
-            tracing::debug!("No result.data available for event recording");
-        }
-
-        let _ = mem
-            .writer
-            .complete_run(
-                run_id,
-                &result.output,
-                result.cost_cents as i32,
-                result.success,
-            )
-            .await;
-
-        // Generate and store summary
-        let summary = format!(
-            "Task: {}\nResult: {}\nSuccess: {}",
-            task_description,
-            if result.output.len() > 500 {
-                let safe_end = crate::memory::safe_truncate_index(&result.output, 500);
-                &result.output[..safe_end]
-            } else {
-                &result.output
-            },
-            result.success
-        );
-        let _ = mem.writer.store_run_summary(run_id, &summary).await;
-
-        // Archive the run
-        let _ = mem.writer.archive_run(run_id).await;
-    }
 
     // Update task with result
     {
@@ -858,7 +725,7 @@ async fn stream_task(
     Ok(Sse::new(stream))
 }
 
-// ==================== Memory Endpoints ====================
+// ==================== Memory Endpoints (Stub - Memory Removed) ====================
 
 /// Query parameters for listing runs.
 #[derive(Debug, Deserialize)]
@@ -867,164 +734,64 @@ pub struct ListRunsQuery {
     offset: Option<usize>,
 }
 
-/// List archived runs.
+/// List archived runs (stub - memory system removed).
 async fn list_runs(
-    State(state): State<Arc<AppState>>,
     Query(params): Query<ListRunsQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Json<serde_json::Value> {
     let limit = params.limit.unwrap_or(20);
     let offset = params.offset.unwrap_or(0);
-
-    if state.memory.is_none() {
-        return Ok(Json(serde_json::json!({
-            "runs": [],
-            "limit": limit,
-            "offset": offset
-        })));
-    }
-
-    let mem = state.memory.as_ref().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Memory not configured".to_string(),
-        )
-    })?;
-
-    let runs = mem
-        .retriever
-        .list_runs(limit, offset)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(Json(serde_json::json!({
-        "runs": runs,
+    Json(serde_json::json!({
+        "runs": [],
         "limit": limit,
         "offset": offset
-    })))
+    }))
 }
 
-/// Get a specific run.
+/// Get a specific run (stub - memory system removed).
 async fn get_run(
-    State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if state.memory.is_none() {
-        return Err((StatusCode::NOT_FOUND, "Run not found".to_string()));
-    }
-    let mem = state.memory.as_ref().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Memory not configured".to_string(),
-        )
-    })?;
-
-    let run = mem
-        .retriever
-        .get_run(id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Run {} not found", id)))?;
-
-    Ok(Json(serde_json::json!(run)))
+    Err((StatusCode::NOT_FOUND, format!("Run {} not found (memory system disabled)", id)))
 }
 
-/// Get events for a run.
+/// Get events for a run (stub - memory system removed).
 async fn get_run_events(
-    State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-    Query(params): Query<ListRunsQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if state.memory.is_none() {
-        return Ok(Json(serde_json::json!({
-            "run_id": id,
-            "events": []
-        })));
-    }
-    let mem = state.memory.as_ref().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Memory not configured".to_string(),
-        )
-    })?;
-
-    let events = mem
-        .retriever
-        .get_run_events(id, params.limit)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(Json(serde_json::json!({
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
         "run_id": id,
-        "events": events
-    })))
+        "events": []
+    }))
 }
 
-/// Get tasks for a run.
+/// Get tasks for a run (stub - memory system removed).
 async fn get_run_tasks(
-    State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if state.memory.is_none() {
-        return Ok(Json(serde_json::json!({
-            "run_id": id,
-            "tasks": []
-        })));
-    }
-    let mem = state.memory.as_ref().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Memory not configured".to_string(),
-        )
-    })?;
-
-    let tasks = mem
-        .retriever
-        .get_run_tasks(id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(Json(serde_json::json!({
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
         "run_id": id,
-        "tasks": tasks
-    })))
+        "tasks": []
+    }))
 }
 
 /// Query parameters for memory search.
 #[derive(Debug, Deserialize)]
 pub struct SearchMemoryQuery {
     q: String,
+    #[allow(dead_code)]
     k: Option<usize>,
+    #[allow(dead_code)]
     run_id: Option<Uuid>,
 }
 
-/// Search memory.
+/// Search memory (stub - memory system removed).
 async fn search_memory(
-    State(state): State<Arc<AppState>>,
     Query(params): Query<SearchMemoryQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if state.memory.is_none() {
-        return Ok(Json(serde_json::json!({
-            "query": params.q,
-            "results": []
-        })));
-    }
-    let mem = state.memory.as_ref().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Memory not configured".to_string(),
-        )
-    })?;
-
-    let results = mem
-        .retriever
-        .search(&params.q, params.k, None, params.run_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(Json(serde_json::json!({
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
         "query": params.q,
-        "results": results
-    })))
+        "results": []
+    }))
 }
 
 // ============================================================================
@@ -1156,57 +923,13 @@ struct ModelPerformanceResponse {
     best_models_by_task: std::collections::HashMap<String, String>,
 }
 
-/// Get learned model performance statistics.
+/// Get learned model performance statistics (stub - memory system removed).
 ///
-/// Returns aggregated performance data from historical task outcomes,
-/// used for self-improving model selection.
-async fn get_model_performance(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<ModelPerformanceResponse>, (StatusCode, String)> {
-    let memory = match &state.memory {
-        Some(m) => m,
-        None => {
-            return Ok(Json(ModelPerformanceResponse {
-                learned_stats: vec![],
-                budget_estimates: vec![],
-                best_models_by_task: std::collections::HashMap::new(),
-            }));
-        }
-    };
-
-    // Fetch learned stats from database
-    let learned_stats = memory
-        .supabase
-        .get_learned_model_stats()
-        .await
-        .map_err(|e| {
-            tracing::warn!("Failed to get learned model stats: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get learned stats: {}", e),
-            )
-        })?;
-
-    let budget_estimates = memory
-        .supabase
-        .get_learned_budget_estimates()
-        .await
-        .map_err(|e| {
-            tracing::warn!("Failed to get learned budget estimates: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get budget estimates: {}", e),
-            )
-        })?;
-
-    // Compute best models per task type
-    let config = crate::budget::LearnedSelectionConfig::default();
-    let best_models_by_task =
-        crate::budget::learned::get_best_models_by_task_type(&learned_stats, &config);
-
-    Ok(Json(ModelPerformanceResponse {
-        learned_stats,
-        budget_estimates,
-        best_models_by_task,
-    }))
+/// Returns empty data since memory system is disabled.
+async fn get_model_performance() -> Json<ModelPerformanceResponse> {
+    Json(ModelPerformanceResponse {
+        learned_stats: vec![],
+        budget_estimates: vec![],
+        best_models_by_task: std::collections::HashMap::new(),
+    })
 }

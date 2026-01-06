@@ -23,7 +23,6 @@ use crate::budget::{Budget, ModelPricing, SharedBenchmarkRegistry, SharedModelRe
 use crate::config::Config;
 use crate::llm::OpenRouterClient;
 use crate::mcp::McpRegistry;
-use crate::memory::{ContextBuilder, MemorySystem};
 use crate::task::{extract_deliverables, DeliverableSet, VerificationCriteria};
 use crate::tools::ToolRegistry;
 use crate::workspace;
@@ -214,7 +213,6 @@ impl MissionRunner {
         &mut self,
         config: Config,
         root_agent: AgentRef,
-        memory: Option<MemorySystem>,
         benchmarks: SharedBenchmarkRegistry,
         resolver: SharedModelResolver,
         mcp: Arc<McpRegistry>,
@@ -268,7 +266,6 @@ impl MissionRunner {
             let result = run_mission_turn(
                 config,
                 root_agent,
-                memory,
                 benchmarks,
                 resolver,
                 mcp,
@@ -354,11 +351,25 @@ impl MissionRunner {
     }
 }
 
+/// Build a history context string from conversation history.
+fn build_history_context(history: &[(String, String)], max_chars: usize) -> String {
+    let mut result = String::new();
+    let mut total_chars = 0;
+    for (role, content) in history.iter().rev() {
+        let entry = format!("{}: {}\n\n", role.to_uppercase(), content);
+        if total_chars + entry.len() > max_chars && !result.is_empty() {
+            break;
+        }
+        result = format!("{}{}", entry, result);
+        total_chars += entry.len();
+    }
+    result
+}
+
 /// Execute a single turn for a mission.
 async fn run_mission_turn(
     config: Config,
     root_agent: AgentRef,
-    memory: Option<MemorySystem>,
     benchmarks: SharedBenchmarkRegistry,
     resolver: SharedModelResolver,
     mcp: Arc<McpRegistry>,
@@ -377,10 +388,9 @@ async fn run_mission_turn(
     mission_id: Uuid,
     workspace_id: Option<Uuid>,
 ) -> AgentResult {
-    // Build context with history (use base working dir for context lookup)
-    let base_working_dir = config.working_dir.to_string_lossy().to_string();
-    let context_builder = ContextBuilder::new(&config.context, &base_working_dir);
-    let history_context = context_builder.build_history_context(&history);
+    // Build context with history
+    let max_history_chars = config.context.max_history_total_chars;
+    let history_context = build_history_context(&history, max_history_chars);
 
     // Extract deliverables to include in instructions
     let deliverable_set = extract_deliverables(&user_message);
@@ -469,13 +479,12 @@ async fn run_mission_turn(
         };
 
     let tools = ToolRegistry::empty();
-    let mut ctx = AgentContext::with_memory(
+    let mut ctx = AgentContext::new(
         config.clone(),
         llm,
         tools,
         pricing,
         mission_work_dir,
-        memory,
     );
     ctx.mission_control = mission_control;
     ctx.control_events = Some(events_tx);

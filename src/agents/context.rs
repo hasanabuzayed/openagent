@@ -9,7 +9,6 @@ use crate::budget::{ModelPricing, SharedBenchmarkRegistry, SharedModelResolver};
 use crate::config::Config;
 use crate::llm::LlmClient;
 use crate::mcp::McpRegistry;
-use crate::memory::MemorySystem;
 use crate::tools::mission::MissionControl;
 use crate::tools::ToolRegistry;
 use tokio::sync::broadcast;
@@ -45,9 +44,6 @@ pub struct AgentContext {
 
     /// Maximum iterations per agent
     pub max_iterations: usize,
-
-    /// Memory system for persistent storage (optional)
-    pub memory: Option<MemorySystem>,
 
     /// Optional event sink for streaming agent events (e.g. control session SSE).
     pub control_events: Option<broadcast::Sender<crate::api::control::AgentEvent>>,
@@ -100,39 +96,6 @@ impl AgentContext {
             pricing,
             working_dir,
             max_split_depth: 3, // Default max recursion for splitting
-            memory: None,
-            control_events: None,
-            frontend_tool_hub: None,
-            control_status: None,
-            cancel_token: None,
-            benchmarks: None,
-            resolver: None,
-            mission_control: None,
-            tree_snapshot: None,
-            progress_snapshot: None,
-            mission_id: None,
-            mcp: None,
-        }
-    }
-
-    /// Create a new agent context with memory system.
-    pub fn with_memory(
-        config: Config,
-        llm: Arc<dyn LlmClient>,
-        tools: ToolRegistry,
-        pricing: Arc<ModelPricing>,
-        working_dir: PathBuf,
-        memory: Option<MemorySystem>,
-    ) -> Self {
-        Self {
-            max_iterations: config.max_iterations,
-            config,
-            llm,
-            tools,
-            pricing,
-            working_dir,
-            max_split_depth: 3,
-            memory,
             control_events: None,
             frontend_tool_hub: None,
             control_status: None,
@@ -160,7 +123,6 @@ impl AgentContext {
             working_dir: self.working_dir.clone(),
             max_split_depth: self.max_split_depth.saturating_sub(1),
             max_iterations: self.max_iterations,
-            memory: self.memory.clone(),
             control_events: self.control_events.clone(),
             frontend_tool_hub: self.frontend_tool_hub.clone(),
             control_status: self.control_status.clone(),
@@ -183,11 +145,6 @@ impl AgentContext {
     /// Get the working directory path as a string.
     pub fn working_dir_str(&self) -> String {
         self.working_dir.to_string_lossy().to_string()
-    }
-
-    /// Check if memory is available.
-    pub fn has_memory(&self) -> bool {
-        self.memory.is_some()
     }
 
     /// Check if cooperative cancellation was requested.

@@ -42,7 +42,6 @@ pub mod config;
 pub mod library;
 pub mod llm;
 pub mod mcp;
-pub mod memory;
 pub mod opencode;
 pub mod task;
 pub mod tools;
@@ -50,4 +49,3 @@ pub mod workspace;
 
 pub use agent_config::{AgentConfig, AgentStore};
 pub use config::Config;
-pub use config::MemoryConfig;
