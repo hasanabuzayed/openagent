@@ -101,13 +101,16 @@ This document tracks testing of Open Agent missions to validate the architecture
 
 ---
 
-## Summary Statistics
+## Summary Statistics (Updated Iteration 6)
 
-- **Total Missions**: 10
-- **Passed**: 1+ (Mission 1 verified, missions 2-5 queued)
-- **Failed**: 0 (infrastructure blocker resolved)
-- **Pending**: 5+ (missions 2-5 executing, missions 6-10 not yet submitted)
-- **Status**: ✅ **UNBLOCKED** - Deployed to production, authentication working
+- **Total Missions on Production**: 50+
+- **Completed**: 26+
+- **Failed**: 15
+- **Active**: 9
+- **Test Missions Documented**: 1/10 (Mission 1 verified)
+- **Status**: ✅ **UNBLOCKED** - System operational, missions executing
+
+**Note**: Production has executed 26+ missions successfully. However, only Mission 1 from the original test suite has been explicitly verified and documented. Missions 2-10 were queued but specific results not yet documented in this file.
 
 ## Architectural Issues Discovered
 
