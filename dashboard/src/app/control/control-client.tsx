@@ -2002,7 +2002,7 @@ export default function ControlClient() {
                         Host (default)
                       </option>
                       {workspaces
-                        .filter((ws) => ws.status === "ready")
+                        .filter((ws) => ws.status === "ready" && ws.id !== "00000000-0000-0000-0000-000000000000")
                         .map((workspace) => (
                           <option key={workspace.id} value={workspace.id} className="bg-[#1a1a1a]">
                             {workspace.name} ({workspace.workspace_type})
