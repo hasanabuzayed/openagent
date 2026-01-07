@@ -164,8 +164,10 @@ impl OpenCodeClient {
         let mut sse_state = SseState::default();
 
         // Spawn SSE event consumer task with heartbeat logging
+        // Use spawn_blocking context to ensure the stream is polled independently
         let sse_handle = tokio::spawn(async move {
-            let mut stream = sse_response.bytes_stream();
+            use futures::StreamExt;
+            let mut stream = sse_response.bytes_stream().fuse();
             let mut buffer = String::new();
             let mut last_event_time = std::time::Instant::now();
             let mut event_count = 0u64;
@@ -174,6 +176,7 @@ impl OpenCodeClient {
 
             loop {
                 tokio::select! {
+                    biased; // Prioritize stream over heartbeat
                     chunk_result = stream.next() => {
                         match chunk_result {
                             Some(Ok(chunk)) => {
@@ -259,7 +262,13 @@ impl OpenCodeClient {
         });
 
         // Spawn message sending task
+        // Use a SEPARATE client for the HTTP POST to ensure it doesn't share connections with SSE
         let session_id_for_message = session_id.clone();
+        let post_client = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .timeout(Duration::from_secs(600))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let message_handle = tokio::spawn(async move {
             // Small delay to ensure SSE subscription is ready
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
