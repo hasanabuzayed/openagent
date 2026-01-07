@@ -134,17 +134,21 @@ impl OpenCodeClient {
         let (event_tx, event_rx) = mpsc::channel::<OpenCodeEvent>(256);
 
         // Subscribe to SSE events
-        // Use a separate client without timeout for SSE since it's a long-lived connection
+        // Use a separate client without timeout and with TCP_NODELAY for SSE
         let event_url = format!("{}/event", self.base_url);
         tracing::debug!(url = %event_url, "Connecting to OpenCode SSE endpoint");
 
         let sse_client = reqwest::Client::builder()
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(0) // Disable connection pooling for SSE
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
         let sse_response = sse_client
             .get(&event_url)
             .header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .header("Connection", "keep-alive")
             .send()
             .await
             .context("Failed to connect to OpenCode /event SSE")?;
