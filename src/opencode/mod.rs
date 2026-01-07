@@ -133,99 +133,69 @@ impl OpenCodeClient {
 
         let (event_tx, event_rx) = mpsc::channel::<OpenCodeEvent>(256);
 
-        // Subscribe to SSE events
-        // Use a separate client without timeout and with TCP_NODELAY for SSE
+        // Subscribe to SSE events using reqwest-eventsource for proper SSE handling
         let event_url = format!("{}/event", self.base_url);
         tracing::debug!(url = %event_url, "Connecting to OpenCode SSE endpoint");
-
-        let sse_client = reqwest::Client::builder()
-            .tcp_nodelay(true)
-            .pool_max_idle_per_host(0) // Disable connection pooling for SSE
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
-        let sse_response = sse_client
-            .get(&event_url)
-            .header("Accept", "text/event-stream")
-            .header("Cache-Control", "no-cache")
-            .header("Connection", "keep-alive")
-            .send()
-            .await
-            .context("Failed to connect to OpenCode /event SSE")?;
-
-        if !sse_response.status().is_success() {
-            anyhow::bail!("OpenCode /event failed: {}", sse_response.status());
-        }
-
-        tracing::debug!(session_id = %session_id, "SSE connection established");
 
         let session_id_clone = session_id.clone();
         let session_id_for_heartbeat = session_id.clone();
         let mut sse_state = SseState::default();
 
-        // Spawn SSE event consumer task with heartbeat logging
-        // Use spawn_blocking context to ensure the stream is polled independently
+        // Spawn SSE event consumer task using reqwest-eventsource
         let sse_handle = tokio::spawn(async move {
             use futures::StreamExt;
-            let mut stream = sse_response.bytes_stream().fuse();
-            let mut buffer = String::new();
+            use reqwest_eventsource::{Event, EventSource};
+
+            let mut es = EventSource::get(&event_url);
             let mut last_event_time = std::time::Instant::now();
             let mut event_count = 0u64;
 
-            tracing::warn!(session_id = %session_id_clone, "SSE consumer task started, waiting for chunks");
+            tracing::warn!(session_id = %session_id_clone, "SSE consumer task started with eventsource");
 
             loop {
                 tokio::select! {
-                    biased; // Prioritize stream over heartbeat
-                    chunk_result = stream.next() => {
-                        match chunk_result {
-                            Some(Ok(chunk)) => {
+                    biased;
+                    maybe_event = es.next() => {
+                        match maybe_event {
+                            Some(Ok(Event::Open)) => {
+                                tracing::warn!(session_id = %session_id_clone, "SSE connection opened");
+                            }
+                            Some(Ok(Event::Message(msg))) => {
+                                last_event_time = std::time::Instant::now();
+                                let event_str = format!("data: {}", msg.data);
+
                                 tracing::warn!(
                                     session_id = %session_id_clone,
-                                    chunk_len = chunk.len(),
-                                    "Received SSE chunk"
+                                    data_len = msg.data.len(),
+                                    data_preview = %msg.data.chars().take(100).collect::<String>(),
+                                    "SSE message received"
                                 );
-                                if let Ok(text) = std::str::from_utf8(&chunk) {
-                                    tracing::warn!(
+
+                                if let Some(event) =
+                                    parse_sse_event(&event_str, &session_id_clone, &mut sse_state)
+                                {
+                                    event_count += 1;
+                                    let is_complete =
+                                        matches!(event, OpenCodeEvent::MessageComplete { .. });
+
+                                    tracing::trace!(
                                         session_id = %session_id_clone,
-                                        text_preview = %text.chars().take(100).collect::<String>(),
-                                        "SSE chunk text"
+                                        event_count = event_count,
+                                        event_type = ?std::mem::discriminant(&event),
+                                        "Received OpenCode event"
                                     );
-                                    buffer.push_str(text);
-                                    last_event_time = std::time::Instant::now();
 
-                                    // Process complete SSE events (ending with double newline)
-                                    while let Some(pos) = buffer.find("\n\n") {
-                                        let event_str = buffer[..pos].to_string();
-                                        buffer = buffer[pos + 2..].to_string();
-
-                                        if let Some(event) =
-                                            parse_sse_event(&event_str, &session_id_clone, &mut sse_state)
-                                        {
-                                            event_count += 1;
-                                            let is_complete =
-                                                matches!(event, OpenCodeEvent::MessageComplete { .. });
-
-                                            tracing::trace!(
-                                                session_id = %session_id_clone,
-                                                event_count = event_count,
-                                                event_type = ?std::mem::discriminant(&event),
-                                                "Received OpenCode event"
-                                            );
-
-                                            if event_tx.send(event).await.is_err() {
-                                                tracing::debug!(session_id = %session_id_clone, "SSE receiver dropped");
-                                                return;
-                                            }
-                                            if is_complete {
-                                                tracing::info!(
-                                                    session_id = %session_id_clone,
-                                                    event_count = event_count,
-                                                    "OpenCode message completed"
-                                                );
-                                                return;
-                                            }
-                                        }
+                                    if event_tx.send(event).await.is_err() {
+                                        tracing::debug!(session_id = %session_id_clone, "SSE receiver dropped");
+                                        return;
+                                    }
+                                    if is_complete {
+                                        tracing::info!(
+                                            session_id = %session_id_clone,
+                                            event_count = event_count,
+                                            "OpenCode message completed"
+                                        );
+                                        return;
                                     }
                                 }
                             }
