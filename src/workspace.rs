@@ -504,6 +504,39 @@ pub struct SkillContent {
     pub files: Vec<(String, String)>,
 }
 
+/// Ensure the skill content has a `name` field in the YAML frontmatter.
+/// OpenCode requires `name` field for skill discovery.
+fn ensure_skill_name_in_frontmatter(content: &str, skill_name: &str) -> String {
+    // Check if the content starts with YAML frontmatter
+    if !content.starts_with("---") {
+        // No frontmatter, add it with name field
+        return format!("---\nname: {}\n---\n{}", skill_name, content);
+    }
+
+    // Find the end of frontmatter
+    if let Some(end_idx) = content[3..].find("---") {
+        let frontmatter = &content[3..3 + end_idx];
+        let rest = &content[3 + end_idx..];
+
+        // Check if name field already exists
+        let has_name = frontmatter.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("name:") || trimmed.starts_with("name :")
+        });
+
+        if has_name {
+            // Name already present, return as-is
+            return content.to_string();
+        }
+
+        // Insert name field after the opening ---
+        return format!("---\nname: {}\n{}{}", skill_name, frontmatter.trim(), rest);
+    }
+
+    // Malformed frontmatter, return as-is
+    content.to_string()
+}
+
 /// Write skill files to the workspace's `.opencode/skill/` directory.
 /// This makes skills available to OpenCode when running in this workspace.
 /// OpenCode looks for skills in `.opencode/{skill,skills}/**/SKILL.md`
@@ -522,9 +555,12 @@ pub async fn write_skills_to_workspace(
         let skill_dir = skills_dir.join(&skill.name);
         tokio::fs::create_dir_all(&skill_dir).await?;
 
+        // Ensure skill content has required `name` field in frontmatter
+        let content_with_name = ensure_skill_name_in_frontmatter(&skill.content, &skill.name);
+
         // Write SKILL.md
         let skill_md_path = skill_dir.join("SKILL.md");
-        tokio::fs::write(&skill_md_path, &skill.content).await?;
+        tokio::fs::write(&skill_md_path, &content_with_name).await?;
 
         // Write additional files
         for (file_name, file_content) in &skill.files {
