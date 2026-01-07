@@ -31,6 +31,7 @@ use crate::mcp::McpRegistry;
 use crate::workspace;
 
 use super::auth::AuthUser;
+use super::library::SharedLibrary;
 use super::routes::AppState;
 
 /// Returns a safe index to truncate a string at, ensuring we don't cut UTF-8 characters.
@@ -757,6 +758,7 @@ pub struct ControlHub {
     root_agent: AgentRef,
     mcp: Arc<McpRegistry>,
     workspaces: workspace::SharedWorkspaceStore,
+    library: SharedLibrary,
 }
 
 impl ControlHub {
@@ -765,6 +767,7 @@ impl ControlHub {
         root_agent: AgentRef,
         mcp: Arc<McpRegistry>,
         workspaces: workspace::SharedWorkspaceStore,
+        library: SharedLibrary,
     ) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -772,6 +775,7 @@ impl ControlHub {
             root_agent,
             mcp,
             workspaces,
+            library,
         }
     }
 
@@ -789,6 +793,7 @@ impl ControlHub {
             Arc::clone(&self.root_agent),
             Arc::clone(&self.mcp),
             Arc::clone(&self.workspaces),
+            Arc::clone(&self.library),
             mission_store,
         );
         sessions.insert(user.id.clone(), state.clone());
@@ -1600,6 +1605,7 @@ fn spawn_control_session(
     root_agent: AgentRef,
     mcp: Arc<McpRegistry>,
     workspaces: workspace::SharedWorkspaceStore,
+    library: SharedLibrary,
     mission_store: Arc<dyn MissionStore>,
 ) -> ControlState {
     let (cmd_tx, cmd_rx) = mpsc::channel::<ControlCommand>(256);
@@ -1639,6 +1645,7 @@ fn spawn_control_session(
         root_agent,
         mcp,
         workspaces,
+        library,
         cmd_rx,
         mission_cmd_rx,
         mission_cmd_tx,
@@ -1721,6 +1728,7 @@ async fn control_actor_loop(
     root_agent: AgentRef,
     mcp: Arc<McpRegistry>,
     workspaces: workspace::SharedWorkspaceStore,
+    library: SharedLibrary,
     mut cmd_rx: mpsc::Receiver<ControlCommand>,
     mut mission_cmd_rx: mpsc::Receiver<crate::tools::mission::MissionControlCommand>,
     mission_cmd_tx: mpsc::Sender<crate::tools::mission::MissionControlCommand>,
@@ -2046,6 +2054,7 @@ async fn control_actor_loop(
                                 let agent = Arc::clone(&root_agent);
                                 let mcp_ref = Arc::clone(&mcp);
                                 let workspaces_ref = Arc::clone(&workspaces);
+                                let library_ref = Arc::clone(&library);
                                 let events = events_tx.clone();
                                 let tools_hub = Arc::clone(&tool_hub);
                                 let status_ref = Arc::clone(&status);
@@ -2091,6 +2100,7 @@ async fn control_actor_loop(
                                         agent,
                                         mcp_ref,
                                         workspaces_ref,
+                                        library_ref,
                                         events,
                                         tools_hub,
                                         status_ref,
@@ -2375,6 +2385,7 @@ async fn control_actor_loop(
                                         let agent = Arc::clone(&root_agent);
                                         let mcp_ref = Arc::clone(&mcp);
                                         let workspaces_ref = Arc::clone(&workspaces);
+                                        let library_ref = Arc::clone(&library);
                                         let events = events_tx.clone();
                                         let tools_hub = Arc::clone(&tool_hub);
                                         let status_ref = Arc::clone(&status);
@@ -2396,6 +2407,7 @@ async fn control_actor_loop(
                                                 agent,
                                                 mcp_ref,
                                                 workspaces_ref,
+                                                library_ref,
                                                 events,
                                                 tools_hub,
                                                 status_ref,
@@ -2742,6 +2754,7 @@ async fn control_actor_loop(
                     let agent = Arc::clone(&root_agent);
                     let mcp_ref = Arc::clone(&mcp);
                     let workspaces_ref = Arc::clone(&workspaces);
+                    let library_ref = Arc::clone(&library);
                     let events = events_tx.clone();
                     let tools_hub = Arc::clone(&tool_hub);
                     let status_ref = Arc::clone(&status);
@@ -2787,6 +2800,7 @@ async fn control_actor_loop(
                             agent,
                             mcp_ref,
                             workspaces_ref,
+                            library_ref,
                             events,
                             tools_hub,
                             status_ref,
@@ -2896,6 +2910,7 @@ async fn run_single_control_turn(
     root_agent: AgentRef,
     mcp: Arc<McpRegistry>,
     workspaces: workspace::SharedWorkspaceStore,
+    library: SharedLibrary,
     events_tx: broadcast::Sender<AgentEvent>,
     tool_hub: Arc<FrontendToolHub>,
     status: Arc<RwLock<ControlStatus>>,
@@ -2910,13 +2925,15 @@ async fn run_single_control_turn(
 ) -> crate::agents::AgentResult {
     // Ensure a workspace directory for this mission (if applicable).
     let working_dir_path = if let Some(mid) = mission_id {
-        let workspace_root =
-            workspace::resolve_workspace_root(&workspaces, &config, workspace_id).await;
-        match workspace::prepare_mission_workspace_in(&workspace_root, &mcp, mid).await {
+        let ws = workspace::resolve_workspace(&workspaces, &config, workspace_id).await;
+        // Get library for skill syncing
+        let lib_guard = library.read().await;
+        let lib_ref = lib_guard.as_ref().map(|l| l.as_ref());
+        match workspace::prepare_mission_workspace_with_skills(&ws, &mcp, lib_ref, mid).await {
             Ok(dir) => dir,
             Err(e) => {
                 tracing::warn!("Failed to prepare mission workspace: {}", e);
-                workspace_root
+                ws.path.clone()
             }
         }
     } else {

@@ -551,17 +551,28 @@ pub async fn write_skills_to_workspace(
 /// Sync skills from library to workspace's `.opencode/skill/` directory.
 /// Called when workspace is created, updated, or before mission execution.
 pub async fn sync_workspace_skills(workspace: &Workspace, library: &LibraryStore) -> anyhow::Result<()> {
-    if workspace.skills.is_empty() {
+    sync_skills_to_dir(&workspace.path, &workspace.skills, &workspace.name, library).await
+}
+
+/// Sync skills from library to a specific directory's `.opencode/skill/` folder.
+/// Used for syncing skills to mission directories.
+pub async fn sync_skills_to_dir(
+    target_dir: &Path,
+    skill_names: &[String],
+    context_name: &str,
+    library: &LibraryStore,
+) -> anyhow::Result<()> {
+    if skill_names.is_empty() {
         tracing::debug!(
-            workspace = %workspace.name,
-            "No skills to sync for workspace"
+            context = %context_name,
+            "No skills to sync"
         );
         return Ok(());
     }
 
     let mut skills_to_write: Vec<SkillContent> = Vec::new();
 
-    for skill_name in &workspace.skills {
+    for skill_name in skill_names {
         match library.get_skill(skill_name).await {
             Ok(skill) => {
                 skills_to_write.push(SkillContent {
@@ -577,7 +588,7 @@ pub async fn sync_workspace_skills(workspace: &Workspace, library: &LibraryStore
             Err(e) => {
                 tracing::warn!(
                     skill = %skill_name,
-                    workspace = %workspace.name,
+                    context = %context_name,
                     error = %e,
                     "Failed to load skill from library, skipping"
                 );
@@ -585,12 +596,13 @@ pub async fn sync_workspace_skills(workspace: &Workspace, library: &LibraryStore
         }
     }
 
-    write_skills_to_workspace(&workspace.path, &skills_to_write).await?;
+    write_skills_to_workspace(target_dir, &skills_to_write).await?;
 
     tracing::info!(
-        workspace = %workspace.name,
-        skills = ?workspace.skills,
-        "Synced skills to workspace"
+        context = %context_name,
+        skills = ?skill_names,
+        target = %target_dir.display(),
+        "Synced skills to directory"
     );
 
     Ok(())
@@ -633,6 +645,43 @@ pub async fn prepare_mission_workspace_in(
     prepare_workspace_dir(&dir).await?;
     let mcp_configs = mcp.list_configs().await;
     write_opencode_config(&dir, mcp_configs).await?;
+    Ok(dir)
+}
+
+/// Prepare a workspace directory for a mission with skill syncing.
+/// This version syncs skills from the workspace to the mission directory.
+pub async fn prepare_mission_workspace_with_skills(
+    workspace: &Workspace,
+    mcp: &McpRegistry,
+    library: Option<&LibraryStore>,
+    mission_id: Uuid,
+) -> anyhow::Result<PathBuf> {
+    let dir = mission_workspace_dir_for_root(&workspace.path, mission_id);
+    prepare_workspace_dir(&dir).await?;
+    let mcp_configs = mcp.list_configs().await;
+    write_opencode_config(&dir, mcp_configs).await?;
+
+    // Sync skills from workspace to mission directory
+    if let Some(lib) = library {
+        if !workspace.skills.is_empty() {
+            if let Err(e) = sync_skills_to_dir(
+                &dir,
+                &workspace.skills,
+                &format!("mission-{}", mission_id),
+                lib,
+            )
+            .await
+            {
+                tracing::warn!(
+                    mission = %mission_id,
+                    workspace = %workspace.name,
+                    error = %e,
+                    "Failed to sync skills to mission directory"
+                );
+            }
+        }
+    }
+
     Ok(dir)
 }
 
@@ -693,6 +742,26 @@ pub async fn resolve_workspace_root(
                 config.working_dir.display()
             );
             config.working_dir.clone()
+        }
+    }
+}
+
+/// Resolve the workspace for a mission, including skills and plugins.
+/// Falls back to a default host workspace if not found.
+pub async fn resolve_workspace(
+    workspaces: &SharedWorkspaceStore,
+    config: &Config,
+    workspace_id: Option<Uuid>,
+) -> Workspace {
+    let id = workspace_id.unwrap_or(DEFAULT_WORKSPACE_ID);
+    match workspaces.get(id).await {
+        Some(ws) => ws,
+        None => {
+            warn!(
+                "Workspace {} not found; using default host workspace",
+                id
+            );
+            Workspace::default_host(config.working_dir.clone())
         }
     }
 }

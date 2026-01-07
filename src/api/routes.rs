@@ -110,15 +110,8 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let console_pool = Arc::new(console::SessionPool::new());
     Arc::clone(&console_pool).start_cleanup_task();
 
-    // Spawn the single global control session actor.
-    let control_state = control::ControlHub::new(
-        config.clone(),
-        Arc::clone(&root_agent),
-        Arc::clone(&mcp),
-        Arc::clone(&workspaces),
-    );
-
     // Initialize configuration library (optional - can also be configured at runtime)
+    // Must be created before ControlHub so it can be passed to control sessions
     let library: library_api::SharedLibrary = Arc::new(RwLock::new(None));
     if let Some(library_remote) = config.library_remote.clone() {
         let library_clone = Arc::clone(&library);
@@ -137,6 +130,15 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     } else {
         tracing::info!("Configuration library disabled (no remote configured)");
     }
+
+    // Spawn the single global control session actor.
+    let control_state = control::ControlHub::new(
+        config.clone(),
+        Arc::clone(&root_agent),
+        Arc::clone(&mcp),
+        Arc::clone(&workspaces),
+        Arc::clone(&library),
+    );
 
     let state = Arc::new(AppState {
         config: config.clone(),
