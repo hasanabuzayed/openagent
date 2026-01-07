@@ -310,7 +310,7 @@ async fn handle_new_session(mut socket: WebSocket, state: Arc<AppState>, session
     cmd.arg(format!("{}@{}", cfg.user, cfg.host));
     cmd.env("TERM", "xterm-256color");
 
-    let child = match pair.slave.spawn_command(cmd) {
+    let mut child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
         Err(e) => {
             let _ = socket
@@ -325,6 +325,7 @@ async fn handle_new_session(mut socket: WebSocket, state: Arc<AppState>, session
     let mut reader = match pair.master.try_clone_reader() {
         Ok(r) => r,
         Err(_) => {
+            let _ = child.kill();
             let _ = socket.close().await;
             return;
         }
@@ -338,6 +339,7 @@ async fn handle_new_session(mut socket: WebSocket, state: Arc<AppState>, session
     let mut writer = match master_for_writer.take_writer() {
         Ok(w) => w,
         Err(_) => {
+            let _ = child.kill();
             let _ = socket.close().await;
             return;
         }

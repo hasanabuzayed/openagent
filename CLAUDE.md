@@ -50,14 +50,6 @@ bun install
 bun dev
 ```
 
-## SSH Access
-
-SSH access is available via the Cursor key on this computer. Connect to the remote server with:
-
-```bash
-ssh root@95.216.112.253
-```
-
 ## Notes
 
 - OpenCode config files are generated per workspace; do not keep static `opencode.json` in the repo.

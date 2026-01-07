@@ -1419,9 +1419,6 @@ export default function ControlClient() {
     const handleEvent = (event: { type: string; data: unknown }) => {
       const data: unknown = event.data;
 
-      // DEBUG: Log all SSE events
-      console.log("[SSE Event]", event.type, data);
-
       // Filter events by mission_id - only show events for the mission we're viewing
       const viewingId = viewingMissionIdRef.current;
       const eventMissionId =
@@ -1593,13 +1590,6 @@ export default function ControlClient() {
         const content = String(data["content"] ?? "");
         const done = Boolean(data["done"]);
         const now = Date.now();
-
-        // DEBUG: Log thinking event details
-        console.log("[Thinking Event]", {
-          content: content.substring(0, 100) + (content.length > 100 ? "..." : ""),
-          contentLength: content.length,
-          done,
-        });
 
         setItems((prev) => {
           // Remove phase items when thinking starts
