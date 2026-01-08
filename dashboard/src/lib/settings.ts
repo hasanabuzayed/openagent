@@ -1,8 +1,6 @@
 export type SavedSettings = Partial<{
   apiUrl: string;
   libraryRepo: string;
-  gitAuthorName: string;
-  gitAuthorEmail: string;
 }>;
 
 const STORAGE_KEY = 'settings';
@@ -16,8 +14,6 @@ export function readSavedSettings(): SavedSettings {
     const out: SavedSettings = {};
     if (typeof parsed.apiUrl === 'string') out.apiUrl = parsed.apiUrl;
     if (typeof parsed.libraryRepo === 'string') out.libraryRepo = parsed.libraryRepo;
-    if (typeof parsed.gitAuthorName === 'string') out.gitAuthorName = parsed.gitAuthorName;
-    if (typeof parsed.gitAuthorEmail === 'string') out.gitAuthorEmail = parsed.gitAuthorEmail;
     return out;
   } catch {
     return {};
@@ -50,20 +46,6 @@ export function getRuntimeApiBase(): string {
 export function getRuntimeLibraryRemote(): string | undefined {
   if (typeof window === 'undefined') return undefined;
   const saved = readSavedSettings().libraryRepo;
-  const trimmed = saved?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-export function getGitAuthorName(): string | undefined {
-  if (typeof window === 'undefined') return undefined;
-  const saved = readSavedSettings().gitAuthorName;
-  const trimmed = saved?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-export function getGitAuthorEmail(): string | undefined {
-  if (typeof window === 'undefined') return undefined;
-  const saved = readSavedSettings().gitAuthorEmail;
   const trimmed = saved?.trim();
   return trimmed ? trimmed : undefined;
 }

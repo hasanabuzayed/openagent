@@ -257,11 +257,16 @@ fn resolve_command_path(cmd: &str) -> String {
 
 fn opencode_entry_from_mcp(config: &crate::mcp::McpServerConfig) -> Value {
     match &config.transport {
-        McpTransport::Http { endpoint } => json!({
-            "type": "http",
-            "endpoint": endpoint,
-            "enabled": config.enabled,
-        }),
+        McpTransport::Http { endpoint, headers } => {
+            let mut entry = serde_json::Map::new();
+            entry.insert("type".to_string(), json!("http"));
+            entry.insert("endpoint".to_string(), json!(endpoint));
+            entry.insert("enabled".to_string(), json!(config.enabled));
+            if !headers.is_empty() {
+                entry.insert("headers".to_string(), json!(headers));
+            }
+            json!(entry)
+        }
         McpTransport::Stdio { command, args, .. } => {
             let mut cmd = vec![resolve_command_path(command)];
             cmd.extend(args.clone());

@@ -5,15 +5,15 @@ A managed control plane for OpenCode-based agents. Install it on your server to 
 ## What it does
 
 - **Mission control**: start, stop, and monitor agents on a remote machine.
-- **Workspace isolation**: host or chroot workspaces with per-mission directories.
-- **Library sync**: Git-backed configs for skills, commands, agents, and MCPs.
+- **Workspace isolation**: host or container workspaces (systemd-nspawn) with per-mission directories.
+- **Library sync**: Git-backed configs for skills, commands, agents, tools, rules, and MCPs.
 - **Provider management**: manage OpenCode auth/providers from the dashboard.
 
 ## Architecture
 
 1. **Backend (Rust/Axum)**
-   - Manages workspaces + chroot lifecycle.
-   - Syncs skills and plugins to workspace `.opencode/` directories.
+   - Manages workspaces + container lifecycle (systemd-nspawn).
+   - Syncs skills, tools, and plugins to workspace `.opencode/` directories.
    - Writes OpenCode workspace config (per-mission `opencode.json`).
    - Delegates execution to an OpenCode server and streams events.
    - Syncs the Library repo.
@@ -29,11 +29,11 @@ A managed control plane for OpenCode-based agents. Install it on your server to 
 
 ## Key concepts
 
-- **Library**: Git repo containing agent configs (skills, commands, MCPs, tools).
-- **Workspaces**: Execution environments (host or chroot) with their own skills and plugins. Skills are synced to `.opencode/skill/` for OpenCode to discover.
+- **Library**: Git repo containing agent configs (skills, commands, agents, tools, rules, MCPs). The default template is at [github.com/Th0rgal/openagent-library-template](https://github.com/Th0rgal/openagent-library-template).
+- **Workspaces**: Execution environments (host or container) with their own skills, tools, and plugins. Skills are synced to `.opencode/skill/` and tools to `.opencode/tool/` for OpenCode to discover.
 - **Agents**: Library-defined capabilities (model, permissions, rules). Selected per-mission.
 - **Missions**: Agent selection + workspace + conversation.
-- **MCPs**: Global MCP servers run on the host machine (not inside chroots).
+- **MCPs**: Global MCP servers run on the host machine (not inside containers).
 
 ## Quick start
 
@@ -41,7 +41,7 @@ A managed control plane for OpenCode-based agents. Install it on your server to 
 - Rust 1.75+
 - Bun 1.0+ (dashboard)
 - An OpenCode server reachable from the backend
-- Ubuntu/Debian recommended if you need chroot workspaces
+- Ubuntu/Debian recommended if you need container workspaces (systemd-nspawn)
 
 ### Backend
 ```bash
@@ -51,7 +51,7 @@ export OPENCODE_BASE_URL="http://127.0.0.1:4096"
 # Optional defaults
 export DEFAULT_MODEL="claude-opus-4-5-20251101"
 export WORKING_DIR="/root"
-export LIBRARY_REMOTE="git@github.com:your-org/agent-library.git"
+export LIBRARY_REMOTE="git@github.com:Th0rgal/openagent-library-template.git"
 
 cargo run --release
 ```

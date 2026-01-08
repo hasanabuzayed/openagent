@@ -5,10 +5,11 @@
 //! without re-establishing SSH connections.
 //!
 //! Also provides workspace shell support - PTY sessions that run directly in
-//! workspace directories (using chroot for isolated workspaces).
+//! workspace directories (using systemd-nspawn for isolated workspaces).
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::{env, path::PathBuf};
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -23,6 +24,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use uuid::Uuid;
 
@@ -503,7 +505,7 @@ async fn handle_new_session(mut socket: WebSocket, state: Arc<AppState>, session
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// WebSocket endpoint for workspace shell sessions.
-/// This spawns a PTY directly in the workspace (using chroot for isolated workspaces).
+/// This spawns a PTY directly in the workspace (using systemd-nspawn for isolated workspaces).
 pub async fn workspace_shell_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -536,7 +538,7 @@ pub async fn workspace_shell_ws(
         }
     };
 
-    // For chroot workspaces, verify it's ready
+    // For container workspaces, verify it's ready
     if workspace.workspace_type == WorkspaceType::Chroot
         && workspace.status != crate::workspace::WorkspaceStatus::Ready
     {
@@ -552,6 +554,88 @@ pub async fn workspace_shell_ws(
 
     ws.protocols(["openagent"])
         .on_upgrade(move |socket| handle_workspace_shell(socket, state, workspace_id, session_key))
+}
+
+fn runtime_display_path() -> Option<PathBuf> {
+    if let Ok(path) = env::var("OPEN_AGENT_RUNTIME_DISPLAY_FILE") {
+        if !path.trim().is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    let candidates = [
+        env::var("WORKING_DIR").ok(),
+        env::var("OPEN_AGENT_WORKSPACE_ROOT").ok(),
+        env::var("HOME").ok(),
+    ];
+
+    for base in candidates.into_iter().flatten() {
+        let path = PathBuf::from(base)
+            .join(".openagent")
+            .join("runtime")
+            .join("current_display.json");
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn read_runtime_display() -> Option<String> {
+    if let Ok(display) = env::var("DESKTOP_DISPLAY") {
+        if !display.trim().is_empty() {
+            return Some(display);
+        }
+    }
+
+    let path = runtime_display_path()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    if let Ok(json) = serde_json::from_str::<JsonValue>(&contents) {
+        return json
+            .get("display")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Terminate any existing systemd-nspawn container for the given machine name.
+/// This ensures we don't get "Directory tree is currently busy" errors when
+/// spawning a new container session.
+async fn terminate_stale_container(machine_name: &str) {
+    // Check if machine is running
+    let status = tokio::process::Command::new("machinectl")
+        .args(["show", machine_name, "--property=State"])
+        .output()
+        .await;
+
+    let is_running = match status {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout.contains("State=running")
+        }
+        Err(_) => false,
+    };
+
+    if is_running {
+        tracing::info!(
+            "Terminating stale container '{}' before spawning new session",
+            machine_name
+        );
+        let _ = tokio::process::Command::new("machinectl")
+            .args(["terminate", machine_name])
+            .output()
+            .await;
+        // Give it a moment to fully terminate
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 async fn handle_workspace_shell(
@@ -623,9 +707,28 @@ async fn handle_new_workspace_shell(
     // Build command based on workspace type
     let mut cmd = match workspace.workspace_type {
         WorkspaceType::Chroot => {
-            // For chroot workspaces, use chroot to enter the isolated environment
-            let mut cmd = CommandBuilder::new("chroot");
+            // For container workspaces, use systemd-nspawn to enter the isolated environment
+            // First, terminate any stale container that might be holding the directory lock
+            terminate_stale_container(&workspace.name).await;
+
+            let mut cmd = CommandBuilder::new("systemd-nspawn");
+            cmd.arg("-D");
             cmd.arg(workspace.path.to_string_lossy().to_string());
+            // Register with a consistent machine name so we can detect/terminate it later
+            cmd.arg(format!("--machine={}", workspace.name));
+            cmd.arg("--quiet");
+
+            if let Some(display) = read_runtime_display() {
+                if std::path::Path::new("/tmp/.X11-unix").exists() {
+                    cmd.arg("--bind=/tmp/.X11-unix");
+                    cmd.arg(format!("--setenv=DISPLAY={}", display));
+                }
+            }
+
+            cmd.arg("--setenv=TERM=xterm-256color");
+            cmd.arg(format!("--setenv=WORKSPACE_ID={}", workspace_id));
+            cmd.arg(format!("--setenv=WORKSPACE_NAME={}", workspace.name));
+
             // Try to use bash if available, fallback to sh
             let bash_path = workspace.path.join("bin/bash");
             if bash_path.exists() {

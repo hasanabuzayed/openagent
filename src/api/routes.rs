@@ -68,6 +68,9 @@ pub struct AppState {
 
 /// Start the HTTP server.
 pub async fn serve(config: Config) -> anyhow::Result<()> {
+    // Start monitoring background collector early so clients get history immediately
+    monitoring::init_monitoring();
+
     // Always use OpenCode backend
     let root_agent: AgentRef = Arc::new(OpenCodeAgent::new(config.clone()));
 
@@ -84,7 +87,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         });
     }
 
-    // Initialize workspace store (loads from disk and recovers orphaned chroots)
+    // Initialize workspace store (loads from disk and recovers orphaned containers)
     let workspaces = Arc::new(workspace::WorkspaceStore::new(config.working_dir.clone()).await);
 
     // Initialize OpenCode connection store

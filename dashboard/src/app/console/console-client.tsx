@@ -684,6 +684,24 @@ function WorkspaceShellTab({
     "disconnected" | "connecting" | "connected" | "error"
   >("disconnected");
 
+  const diagnoseApiReachability = useCallback(async (apiBase: string) => {
+    try {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`${apiBase}/api/health`, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeout);
+      if (!res.ok) {
+        return `API reachable but returned ${res.status} from /api/health.`;
+      }
+      return "API reachable, but the websocket upgrade failed. If you're behind a reverse proxy, make sure it forwards Upgrade/Connection headers for /api/workspaces/*/shell.";
+    } catch {
+      return `Cannot reach API at ${apiBase}. Check Settings → API URL, or set HOST=0.0.0.0 on the server.`;
+    }
+  }, []);
+
   const connectWebSocket = useCallback((term: XTerm, fit: FitAddon, isReconnect = false) => {
     wsSeqRef.current += 1;
     const seq = wsSeqRef.current;
@@ -739,6 +757,10 @@ function WorkspaceShellTab({
         setWsStatus("disconnected");
         if (e.code === 1006 && !didOpen) {
           term.writeln(`\x1b[90mConnection to workspace "${workspaceName}" failed.\x1b[0m`);
+          diagnoseApiReachability(API_BASE).then((hint) => {
+            if (!mountedRef.current || wsSeqRef.current !== seq || !hint) return;
+            term.writeln(`\x1b[90m${hint}\x1b[0m`);
+          });
         } else if (e.code !== 1000 && e.code !== 1001 && didOpen) {
           term.writeln("\x1b[90mDisconnected.\x1b[0m");
         }
@@ -793,10 +815,6 @@ function WorkspaceShellTab({
       const fit = new FitAddon();
       fitRef.current = fit;
       term.loadAddon(fit);
-      term.open(container);
-      fit.fit();
-
-      term.writeln(`\x1b[90mConnecting to workspace: ${workspaceName}...\x1b[0m`);
 
       // Forward terminal input to WebSocket
       const onDataDisposable = term.onData((data) => {
@@ -819,7 +837,22 @@ function WorkspaceShellTab({
       };
       window.addEventListener("resize", onResize);
 
-      connectWebSocket(term, fit, false);
+      // Defer opening to next frame to ensure container has dimensions
+      requestAnimationFrame(() => {
+        if (!mountedRef.current) return;
+        try {
+          term.open(container);
+          requestAnimationFrame(() => {
+            if (!mountedRef.current) return;
+            try {
+              fit.fit();
+            } catch { /* Ignore fit errors */ }
+            term.writeln(`\x1b[90mConnecting to workspace: ${workspaceName}...\x1b[0m`);
+            // Connect WebSocket after terminal is ready
+            connectWebSocket(term, fit, false);
+          });
+        } catch { /* Ignore open errors */ }
+      });
 
       return () => {
         mountedRef.current = false;
@@ -843,8 +876,6 @@ function WorkspaceShellTab({
         terminalInitializedRef.current = false;
       };
     }
-
-    return () => { mountedRef.current = false; };
   }, [isActive, connectWebSocket, workspaceName]);
 
   const reconnect = useCallback(() => {

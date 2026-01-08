@@ -110,12 +110,14 @@ enum ToolContent {
 // Tool Registry
 // =============================================================================
 
-fn chroot_root_from_path(path: &Path) -> Option<PathBuf> {
+fn container_root_from_path(path: &Path) -> Option<PathBuf> {
     let mut prefix = PathBuf::new();
     let mut components = path.components();
     while let Some(component) = components.next() {
         prefix.push(component.as_os_str());
-        if component.as_os_str() == std::ffi::OsStr::new("chroots") {
+        if component.as_os_str() == std::ffi::OsStr::new("containers")
+            || component.as_os_str() == std::ffi::OsStr::new("chroots")
+        {
             if let Some(next) = components.next() {
                 prefix.push(next.as_os_str());
                 return Some(prefix);
@@ -139,7 +141,7 @@ fn hydrate_workspace_env(override_path: Option<PathBuf>) -> PathBuf {
     }
 
     if std::env::var("OPEN_AGENT_WORKSPACE_TYPE").is_err() {
-        if let Some(root) = chroot_root_from_path(&workspace) {
+        if let Some(root) = container_root_from_path(&workspace) {
             std::env::set_var("OPEN_AGENT_WORKSPACE_TYPE", "chroot");
             if std::env::var("OPEN_AGENT_WORKSPACE_ROOT").is_err() {
                 std::env::set_var("OPEN_AGENT_WORKSPACE_ROOT", root.to_string_lossy().to_string());

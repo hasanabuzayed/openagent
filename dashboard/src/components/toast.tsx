@@ -38,24 +38,24 @@ interface ToastContextValue {
 
 const toastStyles: Record<
   ToastType,
-  { border: string; text: string; progress: string; defaultTitle: string }
+  { bg: string; text: string; icon: string; defaultTitle: string }
 > = {
   success: {
-    border: 'border-emerald-500/30',
+    bg: 'bg-[#1c1c1e]/95',
     text: 'text-emerald-400',
-    progress: 'bg-emerald-500/50',
+    icon: 'text-emerald-400',
     defaultTitle: 'Success',
   },
   error: {
-    border: 'border-red-500/30',
+    bg: 'bg-[#1c1c1e]/95',
     text: 'text-red-400',
-    progress: 'bg-red-500/50',
+    icon: 'text-red-400',
     defaultTitle: 'Error',
   },
   info: {
-    border: 'border-indigo-500/30',
-    text: 'text-indigo-400',
-    progress: 'bg-indigo-500/50',
+    bg: 'bg-[#1c1c1e]/95',
+    text: 'text-white/90',
+    icon: 'text-white/60',
     defaultTitle: 'Info',
   },
 };
@@ -136,10 +136,9 @@ interface ToastItemProps {
 function ToastItem({ toast, onDismiss, onShowDetails }: ToastItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
-  const [progress, setProgress] = useState(100);
   const startTimeRef = useRef<number>(Date.now());
   const remainingRef = useRef<number>(toast.duration);
-  const frameRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const dismiss = useCallback(() => {
     if (isExiting) return;
@@ -147,41 +146,30 @@ function ToastItem({ toast, onDismiss, onShowDetails }: ToastItemProps) {
     setTimeout(() => onDismiss(toast.id), 200);
   }, [onDismiss, toast.id, isExiting]);
 
+  // Auto-dismiss timer with pause on hover
   useEffect(() => {
-    const animate = () => {
-      if (isHovered || isExiting) {
-        frameRef.current = requestAnimationFrame(animate);
-        return;
+    if (isHovered || isExiting) {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
       }
+      return;
+    }
 
-      const elapsed = Date.now() - startTimeRef.current;
-      const remaining = remainingRef.current - elapsed;
-
-      if (remaining <= 0) {
-        dismiss();
-        return;
-      }
-
-      setProgress((remaining / toast.duration) * 100);
-      frameRef.current = requestAnimationFrame(animate);
-    };
-
-    frameRef.current = requestAnimationFrame(animate);
+    timerRef.current = setTimeout(dismiss, remainingRef.current);
 
     return () => {
-      if (frameRef.current) {
-        cancelAnimationFrame(frameRef.current);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
       }
     };
-  }, [isHovered, isExiting, toast.duration, dismiss]);
+  }, [isHovered, isExiting, dismiss]);
 
   // Pause/resume timer on hover
   useEffect(() => {
     if (isHovered) {
-      // Pausing: save remaining time
       remainingRef.current = remainingRef.current - (Date.now() - startTimeRef.current);
     } else {
-      // Resuming: reset start time
       startTimeRef.current = Date.now();
     }
   }, [isHovered]);
@@ -202,9 +190,9 @@ function ToastItem({ toast, onDismiss, onShowDetails }: ToastItemProps) {
   return (
     <div
       className={cn(
-        'relative flex items-start gap-3 p-4 rounded-xl border shadow-lg transition-all duration-200 max-w-[400px] overflow-hidden bg-[#1c1c1e]/95',
-        style.border,
-        hasDetails && 'cursor-pointer hover:bg-[#2c2c2e]/95',
+        'relative flex items-start gap-3 p-4 rounded-xl shadow-lg transition-all duration-200 max-w-[400px] overflow-hidden border border-white/[0.06] backdrop-blur-xl',
+        style.bg,
+        hasDetails && 'cursor-pointer hover:brightness-110',
         isExiting ? 'animate-toast-out' : 'animate-toast-in'
       )}
       onMouseEnter={() => setIsHovered(true)}
@@ -212,7 +200,7 @@ function ToastItem({ toast, onDismiss, onShowDetails }: ToastItemProps) {
       onClick={handleClick}
     >
       {/* Icon */}
-      <Icon className={cn('h-5 w-5 flex-shrink-0 mt-0.5', style.text)} />
+      <Icon className={cn('h-5 w-5 flex-shrink-0 mt-0.5', style.icon)} />
 
       {/* Content */}
       <div className="flex-1 min-w-0 pr-6">
@@ -233,14 +221,6 @@ function ToastItem({ toast, onDismiss, onShowDetails }: ToastItemProps) {
       >
         <X className="h-3.5 w-3.5" />
       </button>
-
-      {/* Progress bar */}
-      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/[0.04]">
-        <div
-          className={cn('h-full transition-none', style.progress)}
-          style={{ width: `${progress}%` }}
-        />
-      </div>
     </div>
   );
 }
@@ -279,9 +259,13 @@ function DetailsModal({ message, onClose }: DetailsModalProps) {
         onClick={onClose}
       />
       <div
-        className="fixed left-1/2 top-1/2 z-[101] -translate-x-1/2 -translate-y-1/2 w-full max-w-lg animate-scale-in"
-        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 z-[101] flex items-center justify-center p-4"
+        onClick={onClose}
       >
+        <div
+          className="w-full max-w-lg animate-scale-in-simple"
+          onClick={(e) => e.stopPropagation()}
+        >
         <div className="rounded-xl bg-[#1c1c1e]/95 border border-white/[0.08] shadow-2xl">
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
@@ -333,6 +317,7 @@ function DetailsModal({ message, onClose }: DetailsModalProps) {
               Close
             </button>
           </div>
+        </div>
         </div>
       </div>
     </>

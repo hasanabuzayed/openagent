@@ -213,6 +213,17 @@ select:focus-visible {
   }
 }
 
+@keyframes scale-in-simple {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 @keyframes toast-in {
   from {
     opacity: 0;
@@ -253,6 +264,10 @@ select:focus-visible {
 
 .animate-scale-in {
   animation: scale-in 200ms ease-out forwards;
+}
+
+.animate-scale-in-simple {
+  animation: scale-in-simple 200ms ease-out forwards;
 }
 
 .animate-toast-in {

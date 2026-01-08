@@ -15,6 +15,7 @@ import {
   loadMission,
   getMission,
   createMission,
+  listMissions,
   setMissionStatus,
   resumeMission,
   getCurrentMission,
@@ -36,7 +37,7 @@ import {
   type Provider,
   type Workspace,
 } from "@/lib/api";
-import { useLibrary, type LibraryAgentSummary } from "@/contexts/library-context";
+import { useLibrary } from "@/contexts/library-context";
 import {
   Send,
   Square,
@@ -47,7 +48,6 @@ import {
   XCircle,
   Ban,
   Clock,
-  Plus,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -98,6 +98,7 @@ import { useScrollToBottom } from "@/hooks/use-scroll-to-bottom";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { DesktopStream } from "@/components/desktop-stream";
+import { NewMissionDialog } from "@/components/new-mission-dialog";
 
 import type { SharedFile } from "@/lib/api";
 
@@ -199,6 +200,25 @@ function missionStatusLabel(status: MissionStatus): {
       return { label: "Blocked", className: "bg-orange-500/20 text-orange-400" };
     case "not_feasible":
       return { label: "Not Feasible", className: "bg-rose-500/20 text-rose-400" };
+  }
+}
+
+function missionStatusDotClass(status: MissionStatus): string {
+  switch (status) {
+    case "active":
+      return "bg-emerald-400";
+    case "completed":
+      return "bg-emerald-400";
+    case "failed":
+      return "bg-red-400";
+    case "interrupted":
+      return "bg-amber-400";
+    case "blocked":
+      return "bg-orange-400";
+    case "not_feasible":
+      return "bg-red-400";
+    default:
+      return "bg-white/40";
   }
 }
 
@@ -936,6 +956,10 @@ export default function ControlClient() {
   const itemsRef = useRef<ChatItem[]>([]);
   const [draftInput, setDraftInput] = useLocalStorage("control-draft", "");
   const [input, setInput] = useState(draftInput);
+  const [lastMissionId, setLastMissionId] = useLocalStorage<string | null>(
+    "control-last-mission-id",
+    null
+  );
 
   const [runState, setRunState] = useState<ControlRunState>("idle");
   const [queueLen, setQueueLen] = useState(0);
@@ -958,12 +982,7 @@ export default function ControlClient() {
   const [currentMission, setCurrentMission] = useState<Mission | null>(null);
   const [viewingMission, setViewingMission] = useState<Mission | null>(null);
   const [missionLoading, setMissionLoading] = useState(false);
-
-  // New mission dialog state
-  const [showNewMissionDialog, setShowNewMissionDialog] = useState(false);
-  const [newMissionWorkspace, setNewMissionWorkspace] = useState("");
-  const [newMissionAgent, setNewMissionAgent] = useState("");
-  const newMissionDialogRef = useRef<HTMLDivElement>(null);
+  const [recentMissions, setRecentMissions] = useState<Mission[]>([]);
 
   // Workspaces for mission creation
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -1102,6 +1121,15 @@ export default function ControlClient() {
   const isViewingMissionStalled = viewingMissionStallSeconds >= 60;
   const isViewingMissionSeverelyStalled = viewingMissionStallSeconds >= 120;
 
+  const recentMissionList = useMemo(() => {
+    if (recentMissions.length === 0) return [];
+    const runningIds = new Set(runningMissions.map((m) => m.mission_id));
+    const currentId = currentMission?.id ?? null;
+    return recentMissions
+      .filter((mission) => mission.id !== currentId && !runningIds.has(mission.id))
+      .slice(0, 6);
+  }, [recentMissions, runningMissions, currentMission?.id]);
+
   const isBusy = viewingMissionIsRunning;
 
   const streamCleanupRef = useRef<null | (() => void)>(null);
@@ -1171,12 +1199,6 @@ export default function ControlClient() {
   // Close status menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (
-        newMissionDialogRef.current &&
-        !newMissionDialogRef.current.contains(event.target as Node)
-      ) {
-        setShowNewMissionDialog(false);
-      }
       if (
         missionsMenuRef.current &&
         !missionsMenuRef.current.contains(event.target as Node)
@@ -1433,64 +1455,91 @@ export default function ControlClient() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const missionId = searchParams.get("mission");
-    if (missionId) {
+
+    const loadFromQuery = async (id: string) => {
       // Skip loading if we already have this mission in state (e.g., after handleNewMission)
-      if (viewingMissionRef.current?.id === missionId) {
-        setViewingMissionId(missionId);
+      if (viewingMissionRef.current?.id === id) {
+        setViewingMissionId(id);
         return;
       }
       const previousViewingMission = viewingMissionRef.current;
       setMissionLoading(true);
-      setViewingMissionId(missionId); // Set viewing ID immediately to prevent "Agent is working..." flash
-      fetchingMissionIdRef.current = missionId; // Track which mission we're loading
-      loadMission(missionId)
-        .then((mission) => {
-          // Race condition guard: only apply if this is still the mission we want
-          if (fetchingMissionIdRef.current !== missionId) return;
+      setViewingMissionId(id); // Set viewing ID immediately to prevent "Agent is working..." flash
+      fetchingMissionIdRef.current = id; // Track which mission we're loading
+      try {
+        const mission = await loadMission(id);
+        if (cancelled || fetchingMissionIdRef.current !== id) return;
+        setCurrentMission(mission);
+        setViewingMission(mission);
+        setItems(missionHistoryToItems(mission));
+        setHasDesktopSession(missionHasDesktopSession(mission));
+      } catch (err) {
+        if (cancelled || fetchingMissionIdRef.current !== id) return;
+        console.error("Failed to load mission:", err);
+        // Show error toast for mission load failures (skip if likely a 401 during initial page load)
+        const is401 = (err as Error)?.message?.includes("401") || (err as { status?: number })?.status === 401;
+        if (!is401) {
+          toast.error("Failed to load mission");
+        }
+
+        // Revert viewing state to the previous mission to avoid filtering out events
+        const fallbackMission = previousViewingMission ?? currentMissionRef.current;
+        if (fallbackMission) {
+          setViewingMissionId(fallbackMission.id);
+          setViewingMission(fallbackMission);
+          setItems(missionHistoryToItems(fallbackMission));
+        } else {
+          setViewingMissionId(null);
+          setViewingMission(null);
+          setItems([]);
+          setHasDesktopSession(false);
+        }
+      } finally {
+        if (!cancelled) setMissionLoading(false);
+      }
+    };
+
+    const loadFromCurrent = async () => {
+      try {
+        const mission = await getCurrentMission();
+        if (cancelled) return;
+        if (mission) {
           setCurrentMission(mission);
           setViewingMission(mission);
           setItems(missionHistoryToItems(mission));
-        })
-        .catch((err) => {
-          // Race condition guard: only handle error if this is still the mission we want
-          if (fetchingMissionIdRef.current !== missionId) return;
-          console.error("Failed to load mission:", err);
-          // Show error toast for mission load failures (skip if likely a 401 during initial page load)
-          const is401 = err?.message?.includes("401") || err?.status === 401;
-          if (!is401) {
-            toast.error("Failed to load mission");
-          }
+          setHasDesktopSession(missionHasDesktopSession(mission));
+          router.replace(`/control?mission=${mission.id}`, { scroll: false });
+          return;
+        }
 
-          // Revert viewing state to the previous mission to avoid filtering out events
-          const fallbackMission = previousViewingMission ?? currentMissionRef.current;
-          if (fallbackMission) {
-            setViewingMissionId(fallbackMission.id);
-            setViewingMission(fallbackMission);
-            setItems(missionHistoryToItems(fallbackMission));
-          } else {
-            setViewingMissionId(null);
-            setViewingMission(null);
-            setItems([]);
-            setHasDesktopSession(false);
-          }
-        })
-        .finally(() => setMissionLoading(false));
-    } else {
-      getCurrentMission()
-        .then((mission) => {
-          if (mission) {
-            setCurrentMission(mission);
-            setViewingMission(mission);
-            setItems(missionHistoryToItems(mission));
-            router.replace(`/control?mission=${mission.id}`, { scroll: false });
-          }
-        })
-        .catch((err) => {
+        if (lastMissionId) {
+          await loadFromQuery(lastMissionId);
+        }
+      } catch (err) {
+        if (!cancelled) {
           console.error("Failed to get current mission:", err);
-        });
+        }
+      }
+    };
+
+    if (missionId) {
+      loadFromQuery(missionId);
+    } else {
+      loadFromCurrent();
     }
-  }, [searchParams, router, missionHistoryToItems, authRetryTrigger]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, router, missionHistoryToItems, authRetryTrigger, lastMissionId]);
+
+  useEffect(() => {
+    const id = viewingMission?.id ?? currentMission?.id;
+    if (!id) return;
+    setLastMissionId((prev) => (prev === id ? prev : id));
+  }, [viewingMission?.id, currentMission?.id, setLastMissionId]);
 
   // Poll for running parallel missions
   useEffect(() => {
@@ -1512,6 +1561,22 @@ export default function ControlClient() {
     const interval = setInterval(pollRunning, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  const refreshRecentMissions = useCallback(async () => {
+    try {
+      const missions = await listMissions();
+      setRecentMissions(missions);
+    } catch (err) {
+      console.error("Failed to fetch missions:", err);
+    }
+  }, []);
+
+  // Refresh recent missions periodically (after the callback is defined)
+  useEffect(() => {
+    refreshRecentMissions();
+    const interval = setInterval(refreshRecentMissions, 10000);
+    return () => clearInterval(interval);
+  }, [refreshRecentMissions]);
 
   // Fetch available providers and models for mission creation (retry on auth success)
   useEffect(() => {
@@ -1663,6 +1728,7 @@ export default function ControlClient() {
       // Refresh running missions to get accurate state
       const running = await getRunningMissions();
       setRunningMissions(running);
+      refreshRecentMissions();
       router.replace(`/control?mission=${mission.id}`, { scroll: false });
       toast.success("New mission created");
     } catch (err) {
@@ -1685,6 +1751,7 @@ export default function ControlClient() {
       if (viewingMission?.id === mission.id) {
         setViewingMission({ ...mission, status });
       }
+      refreshRecentMissions();
       toast.success(`Mission marked as ${status}`);
     } catch (err) {
       console.error("Failed to set mission status:", err);
@@ -1705,6 +1772,7 @@ export default function ControlClient() {
       const historyItems = missionHistoryToItems(resumed);
       setItems(historyItems);
       setMissionItems((prev) => ({ ...prev, [resumed.id]: historyItems }));
+      refreshRecentMissions();
       toast.success(
         cleanWorkspace 
           ? "Mission resumed with clean workspace" 
@@ -1717,9 +1785,6 @@ export default function ControlClient() {
       setMissionLoading(false);
     }
   };
-
-  const formatWorkspaceType = (type: Workspace['workspace_type']) =>
-    type === 'host' ? 'host' : 'isolated';
 
   // Auto-reconnecting stream with exponential backoff
   useEffect(() => {
@@ -1851,15 +1916,20 @@ export default function ControlClient() {
       if (event.type === "user_message" && isRecord(data)) {
         const msgId = String(data["id"] ?? Date.now());
         const msgContent = String(data["content"] ?? "");
+        const hasQueuedFlag = Object.prototype.hasOwnProperty.call(data, "queued");
+        const queued = data["queued"] === true;
         setItems((prev) => {
           // Check if already added with this ID - if so, mark as not queued (being processed)
           const existingIndex = prev.findIndex((item) => item.id === msgId);
           if (existingIndex !== -1) {
             const existing = prev[existingIndex];
-            if (existing.kind === "user" && existing.queued) {
-              const updated = [...prev];
-              updated[existingIndex] = { ...existing, queued: false };
-              return updated;
+            if (existing.kind === "user") {
+              const nextQueued = hasQueuedFlag ? queued : existing.queued;
+              if (existing.queued !== nextQueued) {
+                const updated = [...prev];
+                updated[existingIndex] = { ...existing, queued: nextQueued };
+                return updated;
+              }
             }
             return prev;
           }
@@ -1878,7 +1948,11 @@ export default function ControlClient() {
             const updated = [...prev];
             const tempItem = updated[tempIndex];
             if (tempItem.kind === "user") {
-              updated[tempIndex] = { ...tempItem, id: msgId, queued: false };
+              updated[tempIndex] = {
+                ...tempItem,
+                id: msgId,
+                queued: hasQueuedFlag ? queued : tempItem.queued,
+              };
             }
             return updated;
           }
@@ -1891,7 +1965,7 @@ export default function ControlClient() {
               id: msgId,
               content: msgContent,
               timestamp: Date.now(),
-              queued: false, // Already being processed
+              queued,
             },
           ];
         });
@@ -2197,8 +2271,10 @@ export default function ControlClient() {
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const timestamp = Date.now();
 
-    // Message is queued only if agent is currently busy
-    const willBeQueued = runState !== "idle";
+    // Message is queued only if agent is currently busy AND there are existing user messages
+    // The first message in a conversation should never be shown as queued
+    const hasExistingUserMessages = items.some((item) => item.kind === "user");
+    const willBeQueued = runState !== "idle" && hasExistingUserMessages;
 
     setItems((prev) => [
       ...prev,
@@ -2216,11 +2292,15 @@ export default function ControlClient() {
 
       // Replace temp ID with server-assigned ID and update queued status
       // This allows SSE handler to correctly deduplicate
-      setItems((prev) =>
-        prev.map((item) =>
-          item.id === tempId ? { ...item, id, queued } : item
-        )
-      );
+      // The first message should never be shown as queued
+      setItems((prev) => {
+        const otherUserMessages = prev.filter((item) => item.kind === "user" && item.id !== tempId);
+        const isFirstMessage = otherUserMessages.length === 0;
+        const effectiveQueued = isFirstMessage ? false : queued;
+        return prev.map((item) =>
+          item.id === tempId ? { ...item, id, queued: effectiveQueued } : item
+        );
+      });
     } catch (err) {
       console.error(err);
       // Remove the optimistic message on error
@@ -2298,6 +2378,7 @@ export default function ControlClient() {
                       e.stopPropagation();
                       const running = await getRunningMissions();
                       setRunningMissions(running);
+                      refreshRecentMissions();
                     }}
                     className="p-0.5 rounded hover:bg-white/[0.04] hover:text-white/70 transition-colors text-white/40"
                     title="Refresh"
@@ -2383,7 +2464,47 @@ export default function ControlClient() {
                     </div>
                   );
                 })}
-                {runningMissions.length === 0 && !currentMission && (
+                {recentMissionList.length > 0 && (
+                  <>
+                    <div className="border-t border-white/[0.06] mt-1 pt-2 px-3">
+                      <span className="text-xs font-medium text-white/40">Recent Missions</span>
+                    </div>
+                    {recentMissionList.map((mission) => {
+                      const isViewingMission = viewingMissionId === mission.id;
+                      const status = missionStatusLabel(mission.status);
+                      return (
+                        <button
+                          key={mission.id}
+                          onClick={() => {
+                            handleViewMission(mission.id);
+                            setShowParallelPanel(false);
+                          }}
+                          className={cn(
+                            "flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors",
+                            isViewingMission
+                              ? "bg-indigo-500/10 text-white"
+                              : "text-white/70 hover:bg-white/[0.04]"
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "h-1.5 w-1.5 rounded-full shrink-0",
+                              missionStatusDotClass(mission.status)
+                            )}
+                          />
+                          <span className="text-[10px] text-white/40 tabular-nums">
+                            {mission.id.slice(0, 8)}
+                          </span>
+                          <span className="text-xs text-white/30">·</span>
+                          <span className="text-xs">{status.label}</span>
+                          <span className="flex-1" />
+                          {isViewingMission && <Check className="h-3 w-3 text-indigo-400" />}
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+                {runningMissions.length === 0 && !currentMission && recentMissionList.length === 0 && (
                   <div className="px-3 py-2 text-sm text-white/40">No missions</div>
                 )}
 
@@ -2462,119 +2583,12 @@ export default function ControlClient() {
         </div>
 
         <div className="flex items-center gap-3 shrink-0">
-
-          <div className="relative" ref={newMissionDialogRef}>
-            <button
-              onClick={() => setShowNewMissionDialog(!showNewMissionDialog)}
-              disabled={missionLoading}
-              className="flex items-center gap-2 rounded-lg bg-indigo-500/20 px-3 py-2 text-sm font-medium text-indigo-400 hover:bg-indigo-500/30 transition-colors disabled:opacity-50"
-            >
-              <Plus className="h-4 w-4" />
-              <span className="hidden sm:inline">New</span> Mission
-            </button>
-            {showNewMissionDialog && (
-              <div className="absolute right-0 top-full mt-1 w-96 rounded-lg border border-white/[0.06] bg-[#1a1a1a] p-4 shadow-xl z-10">
-                <h3 className="text-sm font-medium text-white mb-3">
-                  Create New Mission
-                </h3>
-                <div className="space-y-3">
-                  {/* Workspace selection */}
-                  <div>
-                    <label className="block text-xs text-white/50 mb-1.5">
-                      Workspace
-                    </label>
-                    <select
-                      value={newMissionWorkspace}
-                      onChange={(e) => setNewMissionWorkspace(e.target.value)}
-                      className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-sm text-white focus:border-indigo-500/50 focus:outline-none appearance-none cursor-pointer"
-                      style={{
-                        backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
-                        backgroundPosition: "right 0.5rem center",
-                        backgroundRepeat: "no-repeat",
-                        backgroundSize: "1.5em 1.5em",
-                        paddingRight: "2.5rem",
-                      }}
-                    >
-                      <option value="" className="bg-[#1a1a1a]">
-                        Host (default)
-                      </option>
-                      {workspaces
-                        .filter((ws) => ws.status === "ready" && ws.id !== "00000000-0000-0000-0000-000000000000")
-                        .map((workspace) => (
-                          <option key={workspace.id} value={workspace.id} className="bg-[#1a1a1a]">
-                            {workspace.name} ({formatWorkspaceType(workspace.workspace_type)})
-                          </option>
-                        ))}
-                    </select>
-                    <p className="text-xs text-white/30 mt-1.5">
-                      Where the mission will run
-                    </p>
-                  </div>
-
-                  {/* Agent selection */}
-                  <div>
-                    <label className="block text-xs text-white/50 mb-1.5">
-                      Agent Configuration
-                    </label>
-                    <select
-                      value={newMissionAgent}
-                      onChange={(e) => {
-                        setNewMissionAgent(e.target.value);
-                      }}
-                      className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-sm text-white focus:border-indigo-500/50 focus:outline-none appearance-none cursor-pointer"
-                      style={{
-                        backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
-                        backgroundPosition: "right 0.5rem center",
-                        backgroundRepeat: "no-repeat",
-                        backgroundSize: "1.5em 1.5em",
-                        paddingRight: "2.5rem",
-                      }}
-                    >
-                      <option value="" className="bg-[#1a1a1a]">
-                        Default (no agent)
-                      </option>
-                      {libraryAgents.map((agent) => (
-                        <option key={agent.name} value={agent.name} className="bg-[#1a1a1a]">
-                          {agent.name}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-white/30 mt-1.5">
-                      Pre-configured model, tools & instructions from library
-                    </p>
-                  </div>
-
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      onClick={() => {
-                        setShowNewMissionDialog(false);
-                        setNewMissionWorkspace("");
-                        setNewMissionAgent("");
-                      }}
-                      className="flex-1 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-sm text-white/70 hover:bg-white/[0.04] transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={() => {
-                        handleNewMission({
-                          workspaceId: newMissionWorkspace || undefined,
-                          agent: newMissionAgent || undefined,
-                        });
-                        setShowNewMissionDialog(false);
-                        setNewMissionWorkspace("");
-                        setNewMissionAgent("");
-                      }}
-                      disabled={missionLoading}
-                      className="flex-1 rounded-lg bg-indigo-500 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-600 transition-colors disabled:opacity-50"
-                    >
-                      Create
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          <NewMissionDialog
+            workspaces={workspaces}
+            libraryAgents={libraryAgents}
+            disabled={missionLoading}
+            onCreate={handleNewMission}
+          />
 
           {/* Thinking panel toggle */}
           <button
@@ -2867,7 +2881,7 @@ export default function ControlClient() {
                       <div className="max-w-[80%]">
                         <div
                           className={cn(
-                            "rounded-2xl rounded-br-md px-4 py-3 text-white selection-light",
+                            "rounded-2xl rounded-tr-md px-4 py-3 text-white selection-light",
                             isQueued
                               ? "border-2 border-dashed border-indigo-500/60 bg-indigo-500/20"
                               : "bg-indigo-500"
@@ -2914,7 +2928,7 @@ export default function ControlClient() {
                       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
                         <Bot className="h-4 w-4 text-indigo-400" />
                       </div>
-                      <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                      <div className="max-w-[80%] rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
                         <div className="mb-2 flex items-center gap-2 text-xs text-white/40">
                           <MessageStatusIcon
                             className={cn(
@@ -3050,7 +3064,7 @@ export default function ControlClient() {
                           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
                             <Bot className="h-4 w-4 text-indigo-400" />
                           </div>
-                          <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                          <div className="max-w-[80%] rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
                             <div className="mb-2 text-xs text-white/40">
                               Tool:{" "}
                               <span className="font-mono text-indigo-400">
@@ -3117,7 +3131,7 @@ export default function ControlClient() {
                           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
                             <Bot className="h-4 w-4 text-indigo-400" />
                           </div>
-                          <div className="max-w-[90%] rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                          <div className="max-w-[90%] rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
                             <div className="mb-2 text-xs text-white/40">
                               Tool:{" "}
                               <span className="font-mono text-indigo-400">
@@ -3155,7 +3169,7 @@ export default function ControlClient() {
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.04]">
                       <Ban className="h-4 w-4 text-white/40" />
                     </div>
-                    <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-white/[0.02] border border-white/[0.04] px-4 py-3">
+                    <div className="max-w-[80%] rounded-2xl rounded-tl-md bg-white/[0.02] border border-white/[0.04] px-4 py-3">
                       <p className="whitespace-pre-wrap text-sm text-white/60">
                         {item.content}
                       </p>
@@ -3194,7 +3208,7 @@ export default function ControlClient() {
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-500/20">
                       <Bot className="h-4 w-4 text-indigo-400 animate-pulse" />
                     </div>
-                    <div className="rounded-2xl rounded-bl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
+                    <div className="rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/[0.06] px-4 py-3">
                       <div className="flex items-center gap-2">
                         <Loader className="h-4 w-4 text-indigo-400 animate-spin" />
                         <span className="text-sm text-white/60">

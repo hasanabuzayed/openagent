@@ -141,6 +141,45 @@ fn get_working_dir() -> PathBuf {
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
+fn runtime_display_path() -> PathBuf {
+    get_working_dir()
+        .join(".openagent")
+        .join("runtime")
+        .join("current_display.json")
+}
+
+fn write_display_info(display: &str) -> Result<(), String> {
+    let path = runtime_display_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create runtime dir: {}", e))?;
+    }
+    let payload = json!({
+        "display": display,
+        "updated_at": chrono::Utc::now().to_rfc3339(),
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&payload).unwrap())
+        .map_err(|e| format!("Failed to write display info: {}", e))?;
+    Ok(())
+}
+
+fn clear_display_info_if_current(display: &str) {
+    let path = runtime_display_path();
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if let Ok(payload) = serde_json::from_str::<Value>(&contents) {
+        if payload
+            .get("display")
+            .and_then(|v| v.as_str())
+            .map(|current| current == display)
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Tool: desktop_start_session
 // -----------------------------------------------------------------------------
@@ -276,6 +315,8 @@ fn tool_start_session(args: &Value) -> Result<String, String> {
         return Err(format!("Failed to write session file: {}", e));
     }
 
+    write_display_info(&display_id)?;
+
     Ok(format!(
         "{{\"success\": true, \"display\": \"{}\", \"resolution\": \"{}\", \"xvfb_pid\": {}, \"i3_pid\": {}, \"screenshots_dir\": \"{}\"{}}}",
         display_id,
@@ -333,6 +374,7 @@ fn tool_stop_session(args: &Value) -> Result<String, String> {
     let socket_file = format!("/tmp/.X11-unix/X{}", display_num);
     let _ = std::fs::remove_file(&lock_file);
     let _ = std::fs::remove_file(&socket_file);
+    clear_display_info_if_current(display_id);
 
     Ok(format!(
         "{{\"success\": true, \"display\": \"{}\", \"killed_pids\": {:?}}}",

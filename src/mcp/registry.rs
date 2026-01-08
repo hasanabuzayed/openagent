@@ -146,21 +146,7 @@ impl McpRegistry {
             HashMap::new(),
         );
 
-        // GitHub MCP - requires GITHUB_PERSONAL_ACCESS_TOKEN env var
-        let mut github_env = HashMap::new();
-        if let Ok(token) = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN") {
-            if !token.trim().is_empty() {
-                github_env.insert("GITHUB_PERSONAL_ACCESS_TOKEN".to_string(), token);
-            }
-        }
-        let github = McpServerConfig::new_stdio(
-            "github".to_string(),
-            "mcp-server-github".to_string(),
-            Vec::new(),
-            github_env,
-        );
-
-        vec![host, desktop, playwright, github]
+        vec![host, desktop, playwright]
     }
 
     async fn ensure_defaults(
@@ -271,16 +257,21 @@ impl McpRegistry {
         endpoint: &str,
         method: &str,
         params: Option<serde_json::Value>,
+        headers: &HashMap<String, String>,
     ) -> anyhow::Result<serde_json::Value> {
         let request = JsonRpcRequest::new(self.next_request_id(), method, params);
 
-        let response = self
+        let mut req_builder = self
             .http_client
             .post(endpoint)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
+            .header("Content-Type", "application/json");
+
+        // Add custom headers
+        for (key, value) in headers {
+            req_builder = req_builder.header(key.as_str(), value.as_str());
+        }
+
+        let response = req_builder.json(&request).send().await?;
 
         if !response.status().is_success() {
             anyhow::bail!("HTTP {}", response.status());
@@ -379,7 +370,11 @@ impl McpRegistry {
     }
 
     /// Initialize connection with an MCP server (HTTP)
-    async fn initialize_mcp_http(&self, endpoint: &str) -> anyhow::Result<InitializeResult> {
+    async fn initialize_mcp_http(
+        &self,
+        endpoint: &str,
+        headers: &HashMap<String, String>,
+    ) -> anyhow::Result<InitializeResult> {
         let params = InitializeParams {
             protocol_version: MCP_PROTOCOL_VERSION.to_string(),
             capabilities: ClientCapabilities::default(),
@@ -390,16 +385,27 @@ impl McpRegistry {
         };
 
         let result = self
-            .send_jsonrpc_http(endpoint, "initialize", Some(serde_json::to_value(params)?))
+            .send_jsonrpc_http(
+                endpoint,
+                "initialize",
+                Some(serde_json::to_value(params)?),
+                headers,
+            )
             .await?;
 
         let init_result: InitializeResult = serde_json::from_value(result)?;
 
         // Send initialized notification (no response expected, but some servers require it)
-        let _ = self
+        let mut req_builder = self
             .http_client
             .post(endpoint)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        for (key, value) in headers {
+            req_builder = req_builder.header(key.as_str(), value.as_str());
+        }
+
+        let _ = req_builder
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "notifications/initialized"
@@ -461,7 +467,7 @@ impl McpRegistry {
         let transport = req.effective_transport();
 
         let mut config = match &transport {
-            McpTransport::Http { endpoint } => {
+            McpTransport::Http { endpoint, .. } => {
                 McpServerConfig::new(req.name.clone(), endpoint.clone())
             }
             McpTransport::Stdio { command, args, env } => McpServerConfig::new_stdio(
@@ -592,7 +598,7 @@ impl McpRegistry {
                 if let Some(transport) = &req.transport {
                     c.transport = transport.clone();
                     // Update deprecated endpoint field for backwards compat
-                    if let McpTransport::Http { endpoint } = transport {
+                    if let McpTransport::Http { endpoint, .. } = transport {
                         c.endpoint = endpoint.clone();
                     } else {
                         c.endpoint = String::new();
@@ -686,7 +692,10 @@ impl McpRegistry {
         }
 
         match &state.config.transport {
-            McpTransport::Http { endpoint } => self.refresh_http(id, endpoint.clone()).await,
+            McpTransport::Http { endpoint, headers } => {
+                self.refresh_http(id, endpoint.clone(), headers.clone())
+                    .await
+            }
             McpTransport::Stdio { command, args, env } => {
                 self.refresh_stdio(id, command.clone(), args.clone(), env.clone())
                     .await
@@ -695,11 +704,16 @@ impl McpRegistry {
     }
 
     /// Refresh an HTTP MCP server
-    async fn refresh_http(&self, id: Uuid, endpoint: String) -> anyhow::Result<McpServerState> {
+    async fn refresh_http(
+        &self,
+        id: Uuid,
+        endpoint: String,
+        headers: HashMap<String, String>,
+    ) -> anyhow::Result<McpServerState> {
         let endpoint = endpoint.trim_end_matches('/').to_string();
 
         // Step 1: Initialize the MCP connection with JSON-RPC
-        let init_result = match self.initialize_mcp_http(&endpoint).await {
+        let init_result = match self.initialize_mcp_http(&endpoint, &headers).await {
             Ok(result) => result,
             Err(e) => {
                 self.update_state_error(id, format!("Initialize failed: {}", e))
@@ -718,7 +732,10 @@ impl McpRegistry {
             .and_then(|s| s.version.clone());
 
         // Step 2: List tools using JSON-RPC
-        match self.send_jsonrpc_http(&endpoint, "tools/list", None).await {
+        match self
+            .send_jsonrpc_http(&endpoint, "tools/list", None, &headers)
+            .await
+        {
             Ok(result) => {
                 match serde_json::from_value::<McpToolsResponse>(result) {
                     Ok(tools_response) => {
@@ -900,9 +917,9 @@ impl McpRegistry {
         });
 
         let result = match &state.config.transport {
-            McpTransport::Http { endpoint } => {
+            McpTransport::Http { endpoint, headers } => {
                 let endpoint = endpoint.trim_end_matches('/');
-                self.send_jsonrpc_http(endpoint, "tools/call", Some(params))
+                self.send_jsonrpc_http(endpoint, "tools/call", Some(params), headers)
                     .await
             }
             McpTransport::Stdio { .. } => {

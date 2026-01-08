@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::chroot::ChrootDistro;
+use crate::nspawn::NspawnDistro;
 use crate::workspace::{self, Workspace, WorkspaceStatus, WorkspaceType};
 
 /// Create workspace routes.
@@ -48,6 +48,9 @@ pub struct CreateWorkspaceRequest {
     /// Skill names from library to sync to this workspace
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Tool names from library to sync to this workspace
+    #[serde(default)]
+    pub tools: Vec<String>,
     /// Plugin identifiers for hooks
     #[serde(default)]
     pub plugins: Vec<String>,
@@ -59,6 +62,8 @@ pub struct UpdateWorkspaceRequest {
     pub name: Option<String>,
     /// Skill names from library to sync to this workspace
     pub skills: Option<Vec<String>>,
+    /// Tool names from library to sync to this workspace
+    pub tools: Option<Vec<String>>,
     /// Plugin identifiers for hooks
     pub plugins: Option<Vec<String>>,
 }
@@ -73,6 +78,7 @@ pub struct WorkspaceResponse {
     pub error_message: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub skills: Vec<String>,
+    pub tools: Vec<String>,
     pub plugins: Vec<String>,
 }
 
@@ -87,6 +93,7 @@ impl From<Workspace> for WorkspaceResponse {
             error_message: w.error_message,
             created_at: w.created_at,
             skills: w.skills,
+            tools: w.tools,
             plugins: w.plugins,
         }
     }
@@ -219,11 +226,11 @@ async fn create_workspace(
                 ));
             }
             WorkspaceType::Chroot => {
-                // Chroot workspaces go in a dedicated directory
+                // Container workspaces go in a dedicated directory
                 state
                     .config
                     .working_dir
-                    .join(".openagent/chroots")
+                    .join(".openagent/containers")
                     .join(&req.name)
             }
         },
@@ -240,11 +247,13 @@ async fn create_workspace(
             config: serde_json::json!({}),
             created_at: chrono::Utc::now(),
             skills: req.skills,
+            tools: req.tools,
             plugins: req.plugins,
         },
         WorkspaceType::Chroot => {
             let mut ws = Workspace::new_chroot(req.name, path);
             ws.skills = req.skills;
+            ws.tools = req.tools;
             ws.plugins = req.plugins;
             ws
         }
@@ -252,10 +261,10 @@ async fn create_workspace(
 
     let id = state.workspaces.add(workspace.clone()).await;
 
-    // Sync skills to workspace if any are specified
-    if !workspace.skills.is_empty() {
-        let library_guard = state.library.read().await;
-        if let Some(library) = library_guard.as_ref() {
+    // Sync skills and tools to workspace if any are specified
+    let library_guard = state.library.read().await;
+    if let Some(library) = library_guard.as_ref() {
+        if !workspace.skills.is_empty() {
             if let Err(e) = workspace::sync_workspace_skills(&workspace, library).await {
                 tracing::warn!(
                     workspace = %workspace.name,
@@ -263,13 +272,23 @@ async fn create_workspace(
                     "Failed to sync skills to workspace during creation"
                 );
             }
-        } else {
-            tracing::warn!(
-                workspace = %workspace.name,
-                "Library not initialized, cannot sync skills"
-            );
         }
+        if !workspace.tools.is_empty() {
+            if let Err(e) = workspace::sync_workspace_tools(&workspace, library).await {
+                tracing::warn!(
+                    workspace = %workspace.name,
+                    error = %e,
+                    "Failed to sync tools to workspace during creation"
+                );
+            }
+        }
+    } else if !workspace.skills.is_empty() || !workspace.tools.is_empty() {
+        tracing::warn!(
+            workspace = %workspace.name,
+            "Library not initialized, cannot sync skills/tools"
+        );
     }
+    drop(library_guard);
 
     let response: WorkspaceResponse = workspace.into();
 
@@ -317,6 +336,14 @@ async fn update_workspace(
         false
     };
 
+    // Update tools if provided
+    let tools_changed = if let Some(tools) = req.tools {
+        workspace.tools = tools;
+        true
+    } else {
+        false
+    };
+
     // Update plugins if provided
     if let Some(plugins) = req.plugins {
         workspace.plugins = plugins;
@@ -325,10 +352,10 @@ async fn update_workspace(
     // Save the updated workspace
     state.workspaces.update(workspace.clone()).await;
 
-    // Sync skills if they changed
-    if skills_changed && !workspace.skills.is_empty() {
-        let library_guard = state.library.read().await;
-        if let Some(library) = library_guard.as_ref() {
+    // Sync skills and tools if they changed
+    let library_guard = state.library.read().await;
+    if let Some(library) = library_guard.as_ref() {
+        if skills_changed && !workspace.skills.is_empty() {
             if let Err(e) = workspace::sync_workspace_skills(&workspace, library).await {
                 tracing::warn!(
                     workspace = %workspace.name,
@@ -336,12 +363,23 @@ async fn update_workspace(
                     "Failed to sync skills to workspace during update"
                 );
             }
-        } else {
-            tracing::warn!(
-                workspace = %workspace.name,
-                "Library not initialized, cannot sync skills"
-            );
         }
+        if tools_changed && !workspace.tools.is_empty() {
+            if let Err(e) = workspace::sync_workspace_tools(&workspace, library).await {
+                tracing::warn!(
+                    workspace = %workspace.name,
+                    error = %e,
+                    "Failed to sync tools to workspace during update"
+                );
+            }
+        }
+    } else if (skills_changed && !workspace.skills.is_empty())
+        || (tools_changed && !workspace.tools.is_empty())
+    {
+        tracing::warn!(
+            workspace = %workspace.name,
+            "Library not initialized, cannot sync skills/tools"
+        );
     }
 
     tracing::info!("Updated workspace: {} ({})", workspace.name, id);
@@ -349,7 +387,7 @@ async fn update_workspace(
     Ok(Json(workspace.into()))
 }
 
-/// POST /api/workspaces/:id/sync - Manually sync skills to workspace.
+/// POST /api/workspaces/:id/sync - Manually sync skills and tools to workspace.
 async fn sync_workspace(
     State(state): State<Arc<super::routes::AppState>>,
     AxumPath(id): AxumPath<Uuid>,
@@ -379,8 +417,18 @@ async fn sync_workspace(
             )
         })?;
 
+    // Sync tools to workspace
+    workspace::sync_workspace_tools(&workspace, library)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to sync tools: {}", e),
+            )
+        })?;
+
     tracing::info!(
-        "Synced skills to workspace: {} ({})",
+        "Synced skills and tools to workspace: {} ({})",
         workspace.name,
         id
     );
@@ -400,15 +448,15 @@ async fn delete_workspace(
         ));
     }
 
-    // If it's a chroot workspace, destroy the chroot first
+    // If it's a container workspace, destroy the container first
     if let Some(ws) = state.workspaces.get(id).await {
         if ws.workspace_type == WorkspaceType::Chroot {
             if let Err(e) = crate::workspace::destroy_chroot_workspace(&ws).await {
-                tracing::error!("Failed to destroy chroot for workspace {}: {}", id, e);
+                tracing::error!("Failed to destroy container for workspace {}: {}", id, e);
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!(
-                        "Failed to destroy chroot: {}. Workspace not deleted to prevent orphaned state.",
+                        "Failed to destroy container: {}. Workspace not deleted to prevent orphaned state.",
                         e
                     ),
                 ));
@@ -433,13 +481,13 @@ pub struct BuildWorkspaceRequest {
     pub distro: Option<String>,
 }
 
-/// Parse a distro string into a ChrootDistro enum.
-fn parse_distro(s: &str) -> Result<ChrootDistro, String> {
+/// Parse a distro string into a NspawnDistro enum.
+fn parse_distro(s: &str) -> Result<NspawnDistro, String> {
     match s {
-        "ubuntu-noble" | "noble" => Ok(ChrootDistro::UbuntuNoble),
-        "ubuntu-jammy" | "jammy" => Ok(ChrootDistro::UbuntuJammy),
-        "debian-bookworm" | "bookworm" => Ok(ChrootDistro::DebianBookworm),
-        "arch-linux" | "archlinux" | "arch" => Ok(ChrootDistro::ArchLinux),
+        "ubuntu-noble" | "noble" => Ok(NspawnDistro::UbuntuNoble),
+        "ubuntu-jammy" | "jammy" => Ok(NspawnDistro::UbuntuJammy),
+        "debian-bookworm" | "bookworm" => Ok(NspawnDistro::DebianBookworm),
+        "arch-linux" | "archlinux" | "arch" => Ok(NspawnDistro::ArchLinux),
         _ => Err(format!(
             "Unknown distro '{}'. Supported: ubuntu-noble, ubuntu-jammy, debian-bookworm, arch-linux",
             s
@@ -447,7 +495,7 @@ fn parse_distro(s: &str) -> Result<ChrootDistro, String> {
     }
 }
 
-/// POST /api/workspaces/:id/build - Build a chroot workspace.
+/// POST /api/workspaces/:id/build - Build a container workspace.
 async fn build_workspace(
     State(state): State<Arc<super::routes::AppState>>,
     AxumPath(id): AxumPath<Uuid>,
@@ -462,7 +510,7 @@ async fn build_workspace(
     if workspace.workspace_type != WorkspaceType::Chroot {
         return Err((
             StatusCode::BAD_REQUEST,
-            "Workspace is not a chroot type".to_string(),
+            "Workspace is not a container type".to_string(),
         ));
     }
 
@@ -489,7 +537,7 @@ async fn build_workspace(
     workspace.status = WorkspaceStatus::Building;
     state.workspaces.update(workspace.clone()).await;
 
-    // Build the chroot
+    // Build the container
     match crate::workspace::build_chroot_workspace(&mut workspace, distro).await {
         Ok(()) => {
             // Update in store
@@ -504,7 +552,7 @@ async fn build_workspace(
 
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to build chroot: {}", e),
+                format!("Failed to build container: {}", e),
             ))
         }
     }

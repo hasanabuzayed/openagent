@@ -111,18 +111,13 @@ fn validate_command(cmd: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn chroot_root_from_env() -> Option<PathBuf> {
+fn container_root_from_env() -> Option<PathBuf> {
     let workspace_type = env::var("OPEN_AGENT_WORKSPACE_TYPE").ok()?;
-    if workspace_type != "chroot" {
+    if workspace_type != "chroot" && workspace_type != "nspawn" && workspace_type != "container" {
         return None;
     }
     let root = env::var("OPEN_AGENT_WORKSPACE_ROOT").ok()?;
     Some(PathBuf::from(root))
-}
-
-fn sh_quote(value: &str) -> String {
-    let escaped = value.replace('\'', "'\\''");
-    format!("'{}'", escaped)
 }
 
 #[derive(Debug, Clone)]
@@ -188,27 +183,27 @@ fn parse_command_options(args: &Value) -> CommandOptions {
     }
 }
 
-fn shell_exists(shell: &str, chroot_root: Option<&Path>) -> bool {
-    if let Some(root) = chroot_root {
+fn shell_exists(shell: &str, container_root: Option<&Path>) -> bool {
+    if let Some(root) = container_root {
         let rel = shell.strip_prefix('/').unwrap_or(shell);
         return root.join(rel).exists();
     }
     Path::new(shell).exists()
 }
 
-fn resolve_shell(shell: Option<&str>, chroot_root: Option<&Path>) -> String {
+fn resolve_shell(shell: Option<&str>, container_root: Option<&Path>) -> String {
     if let Some(shell) = shell {
-        if shell_exists(shell, chroot_root) {
+        if shell_exists(shell, container_root) {
             return shell.to_string();
         }
         // Fall back to /bin/sh if requested shell isn't available.
-        if shell_exists("/bin/sh", chroot_root) {
+        if shell_exists("/bin/sh", container_root) {
             return "/bin/sh".to_string();
         }
         return shell.to_string();
     }
 
-    if shell_exists("/bin/sh", chroot_root) {
+    if shell_exists("/bin/sh", container_root) {
         return "/bin/sh".to_string();
     }
 
@@ -273,20 +268,70 @@ async fn run_host_command(
     run_shell_command(&shell, &args, Some(cwd), options).await
 }
 
-async fn run_chroot_command(
-    chroot_root: &Path,
+fn runtime_display_path() -> Option<PathBuf> {
+    if let Ok(path) = env::var("OPEN_AGENT_RUNTIME_DISPLAY_FILE") {
+        if !path.trim().is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    let candidates = [
+        env::var("WORKING_DIR").ok(),
+        env::var("OPEN_AGENT_WORKSPACE_ROOT").ok(),
+        env::var("HOME").ok(),
+    ];
+
+    for base in candidates.into_iter().flatten() {
+        let path = PathBuf::from(base)
+            .join(".openagent")
+            .join("runtime")
+            .join("current_display.json");
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn read_runtime_display() -> Option<String> {
+    if let Ok(display) = env::var("DESKTOP_DISPLAY") {
+        if !display.trim().is_empty() {
+            return Some(display);
+        }
+    }
+
+    let path = runtime_display_path()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
+        return json
+            .get("display")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+async fn run_container_command(
+    container_root: &Path,
     cwd: &Path,
     command: &str,
     options: &CommandOptions,
 ) -> anyhow::Result<Output> {
-    let root = chroot_root
+    let root = container_root
         .canonicalize()
-        .unwrap_or_else(|_| chroot_root.to_path_buf());
+        .unwrap_or_else(|_| container_root.to_path_buf());
     let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
 
     if !cwd.starts_with(&root) {
         return Err(anyhow::anyhow!(
-            "Working directory is outside chroot root: {}",
+            "Working directory is outside container root: {}",
             cwd.display()
         ));
     }
@@ -298,15 +343,31 @@ async fn run_chroot_command(
         format!("/{}", rel.to_string_lossy())
     };
 
-    let wrapped = format!("cd {} && {}", sh_quote(&rel_str), command);
-    let shell = resolve_shell(options.shell.as_deref(), Some(&root));
-    let args = vec![
+    let mut args = vec![
+        "-D".to_string(),
         root.to_string_lossy().to_string(),
-        shell,
-        "-c".to_string(),
-        wrapped,
+        "--quiet".to_string(),
+        "--chdir".to_string(),
+        rel_str,
     ];
-    run_shell_command("chroot", &args, None, options).await
+
+    if let Some(display) = read_runtime_display() {
+        if Path::new("/tmp/.X11-unix").exists() {
+            args.push("--bind=/tmp/.X11-unix".to_string());
+            args.push(format!("--setenv=DISPLAY={}", display));
+        }
+    }
+
+    for (key, value) in &options.env {
+        args.push(format!("--setenv={}={}", key, value));
+    }
+
+    let shell = resolve_shell(options.shell.as_deref(), Some(&root));
+    args.push(shell);
+    args.push("-c".to_string());
+    args.push(command.to_string());
+
+    run_shell_command("systemd-nspawn", &args, None, options).await
 }
 
 /// Run a shell command.
@@ -395,9 +456,9 @@ impl Tool for RunCommand {
 
         tracing::info!("Executing command in {:?}: {}", cwd, command);
 
-        let output = match chroot_root_from_env() {
-            Some(chroot_root) => {
-                run_chroot_command(&chroot_root, &cwd, command, &options).await?
+        let output = match container_root_from_env() {
+            Some(container_root) => {
+                run_container_command(&container_root, &cwd, command, &options).await?
             }
             None => run_host_command(&cwd, command, &options).await?,
         };

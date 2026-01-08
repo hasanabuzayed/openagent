@@ -1,22 +1,28 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
+import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { toast } from '@/components/toast';
 import { StatsCard } from '@/components/stats-card';
 import { ConnectionStatus } from '@/components/connection-status';
 import { RecentTasks } from '@/components/recent-tasks';
 import { ShimmerStat } from '@/components/ui/shimmer';
-import { getStats, StatsResponse } from '@/lib/api';
-import { Activity, CheckCircle, DollarSign, Zap, Plus } from 'lucide-react';
+import { createMission, getStats, listWorkspaces, type StatsResponse, type Workspace } from '@/lib/api';
+import { Activity, CheckCircle, DollarSign, Zap } from 'lucide-react';
 import { formatCents } from '@/lib/utils';
 import { SystemMonitor } from '@/components/system-monitor';
+import { NewMissionDialog } from '@/components/new-mission-dialog';
+import { useLibrary } from '@/contexts/library-context';
 
 export default function OverviewPage() {
+  const router = useRouter();
+  const { libraryAgents } = useLibrary();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [isActive, setIsActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [creatingMission, setCreatingMission] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -51,6 +57,36 @@ export default function OverviewPage() {
     };
   }, []);
 
+  useEffect(() => {
+    listWorkspaces()
+      .then((data) => {
+        setWorkspaces(data);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch workspaces:', err);
+      });
+  }, []);
+
+  const handleNewMission = useCallback(
+    async (options?: { workspaceId?: string; agent?: string }) => {
+      try {
+        setCreatingMission(true);
+        const mission = await createMission({
+          workspaceId: options?.workspaceId,
+          agent: options?.agent,
+        });
+        toast.success('New mission created');
+        router.push(`/control?mission=${mission.id}`);
+      } catch (err) {
+        console.error('Failed to create mission:', err);
+        toast.error('Failed to create new mission');
+      } finally {
+        setCreatingMission(false);
+      }
+    },
+    [router]
+  );
+
   return (
     <div className="flex min-h-screen">
       {/* Main content */}
@@ -75,13 +111,12 @@ export default function OverviewPage() {
           </div>
           
           {/* Quick Actions */}
-          <Link
-            href="/control"
-            className="flex items-center gap-2 rounded-lg bg-indigo-500/20 px-3 py-2 text-sm font-medium text-indigo-400 hover:bg-indigo-500/30 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            New Mission
-          </Link>
+          <NewMissionDialog
+            workspaces={workspaces}
+            libraryAgents={libraryAgents}
+            disabled={creatingMission}
+            onCreate={handleNewMission}
+          />
         </div>
 
         {/* System Metrics Area */}

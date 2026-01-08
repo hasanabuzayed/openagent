@@ -8,7 +8,11 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum McpTransport {
     /// HTTP JSON-RPC transport (server must be running and listening)
-    Http { endpoint: String },
+    Http {
+        endpoint: String,
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+    },
     /// Stdio transport (spawn process, communicate via stdin/stdout)
     Stdio {
         command: String,
@@ -23,6 +27,7 @@ impl Default for McpTransport {
     fn default() -> Self {
         McpTransport::Http {
             endpoint: "http://127.0.0.1:3000".to_string(),
+            headers: std::collections::HashMap::new(),
         }
     }
 }
@@ -184,6 +189,7 @@ impl McpServerConfig {
             name,
             transport: McpTransport::Http {
                 endpoint: endpoint.clone(),
+                headers: std::collections::HashMap::new(),
             },
             endpoint, // Keep for backwards compat
             description: None,
@@ -221,7 +227,7 @@ impl McpServerConfig {
     /// Get the effective endpoint (for backwards compat)
     pub fn effective_endpoint(&self) -> Option<&str> {
         match &self.transport {
-            McpTransport::Http { endpoint } => Some(endpoint.as_str()),
+            McpTransport::Http { endpoint, .. } => Some(endpoint.as_str()),
             McpTransport::Stdio { .. } => None,
         }
     }
@@ -296,6 +302,7 @@ impl AddMcpRequest {
         } else if let Some(endpoint) = &self.endpoint {
             McpTransport::Http {
                 endpoint: endpoint.clone(),
+                headers: std::collections::HashMap::new(),
             }
         } else {
             McpTransport::default()

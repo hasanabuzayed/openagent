@@ -1,5 +1,5 @@
 import { authHeader, clearJwt, signalAuthRequired } from "./auth";
-import { getRuntimeApiBase, getRuntimeLibraryRemote, getGitAuthorName, getGitAuthorEmail } from "./settings";
+import { getRuntimeApiBase, getRuntimeLibraryRemote } from "./settings";
 
 function apiUrl(pathOrUrl: string): string {
   if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
@@ -55,14 +55,6 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const libraryRemote = getRuntimeLibraryRemote();
   if (libraryRemote) {
     headers["x-openagent-library-remote"] = libraryRemote;
-  }
-  const gitAuthorName = getGitAuthorName();
-  if (gitAuthorName) {
-    headers["x-openagent-git-author-name"] = gitAuthorName;
-  }
-  const gitAuthorEmail = getGitAuthorEmail();
-  if (gitAuthorEmail) {
-    headers["x-openagent-git-author-email"] = gitAuthorEmail;
   }
 
   const res = await fetch(apiUrl(path), { ...init, headers });
@@ -506,7 +498,7 @@ export type ControlAgentEvent =
       queue_len: number;
       mission_id?: string;
     }
-  | { type: "user_message"; id: string; content: string; mission_id?: string }
+  | { type: "user_message"; id: string; content: string; mission_id?: string; queued?: boolean }
   | {
       type: "assistant_message";
       id: string;
@@ -701,7 +693,7 @@ export function streamControl(
 export type McpStatus = "connected" | "connecting" | "disconnected" | "error" | "disabled";
 
 export interface McpTransport {
-  http?: { endpoint: string };
+  http?: { endpoint: string; headers: Record<string, string> };
   stdio?: { command: string; args: string[]; env: Record<string, string> };
 }
 

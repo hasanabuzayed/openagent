@@ -7,7 +7,7 @@
 //! ## Workspace Types
 //!
 //! - **Host**: Execute directly on the remote host environment
-//! - **Chroot**: Execute inside an isolated chroot environment
+//! - **Chroot**: Execute inside an isolated container environment (systemd-nspawn)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ use tokio::sync::RwLock;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::chroot::{self, ChrootDistro};
+use crate::nspawn::{self, NspawnDistro};
 use crate::config::Config;
 use crate::library::LibraryStore;
 use crate::mcp::{McpRegistry, McpServerConfig, McpTransport};
@@ -38,7 +38,7 @@ pub const DEFAULT_WORKSPACE_ID: Uuid = Uuid::nil();
 pub enum WorkspaceType {
     /// Execute directly on remote host
     Host,
-    /// Execute inside isolated chroot environment
+    /// Execute inside isolated container environment
     Chroot,
 }
 
@@ -61,9 +61,9 @@ impl WorkspaceType {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceStatus {
-    /// Chroot not yet built
+    /// Container not yet built
     Pending,
-    /// Chroot build in progress
+    /// Container build in progress
     Building,
     /// Ready for execution
     Ready,
@@ -84,7 +84,7 @@ pub struct Workspace {
     pub id: Uuid,
     /// Human-readable name
     pub name: String,
-    /// Type of workspace (Host or Chroot)
+    /// Type of workspace (Host or Container)
     pub workspace_type: WorkspaceType,
     /// Working directory within the workspace
     pub path: PathBuf,
@@ -100,6 +100,9 @@ pub struct Workspace {
     /// Skill names from library to sync to this workspace
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Tool names from library to sync to this workspace
+    #[serde(default)]
+    pub tools: Vec<String>,
     /// Plugin identifiers for hooks
     #[serde(default)]
     pub plugins: Vec<String>,
@@ -118,11 +121,12 @@ impl Workspace {
             config: serde_json::json!({}),
             created_at: Utc::now(),
             skills: Vec::new(),
+            tools: Vec::new(),
             plugins: Vec::new(),
         }
     }
 
-    /// Create a new chroot workspace (pending build).
+    /// Create a new container workspace (pending build).
     pub fn new_chroot(name: String, path: PathBuf) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -134,6 +138,7 @@ impl Workspace {
             config: serde_json::json!({}),
             created_at: Utc::now(),
             skills: Vec::new(),
+            tools: Vec::new(),
             plugins: Vec::new(),
         }
     }
@@ -153,7 +158,7 @@ pub struct WorkspaceStore {
 impl WorkspaceStore {
     /// Create a new workspace store, loading existing data from disk.
     ///
-    /// This also scans for orphaned chroot directories and restores them.
+    /// This also scans for orphaned container directories and restores them.
     pub async fn new(working_dir: PathBuf) -> Self {
         let storage_path = working_dir.join(".openagent/workspaces.json");
 
@@ -178,11 +183,11 @@ impl WorkspaceStore {
             workspaces.insert(host.id, host);
         }
 
-        // Scan for orphaned chroots and restore them
-        let orphaned = store.scan_orphaned_chroots(&workspaces).await;
+        // Scan for orphaned containers and restore them
+        let orphaned = store.scan_orphaned_containers(&workspaces).await;
         for workspace in orphaned {
             tracing::info!(
-                "Restored orphaned chroot workspace: {} at {}",
+                "Restored orphaned container workspace: {} at {}",
                 workspace.name,
                 workspace.path.display()
             );
@@ -233,15 +238,16 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Scan for chroot directories that exist on disk but aren't in the store.
-    async fn scan_orphaned_chroots(&self, known: &HashMap<Uuid, Workspace>) -> Vec<Workspace> {
-        let chroots_dir = self.working_dir.join(".openagent/chroots");
+    /// Scan for container directories that exist on disk but aren't in the store.
+    async fn scan_orphaned_containers(&self, known: &HashMap<Uuid, Workspace>) -> Vec<Workspace> {
+        let containers_dir = self.working_dir.join(".openagent/containers");
+        let legacy_chroots_dir = self.working_dir.join(".openagent/chroots");
 
-        if !chroots_dir.exists() {
+        if !containers_dir.exists() && !legacy_chroots_dir.exists() {
             return Vec::new();
         }
 
-        // Get all known chroot paths
+        // Get all known container paths
         let known_paths: std::collections::HashSet<PathBuf> = known
             .values()
             .filter(|w| w.workspace_type == WorkspaceType::Chroot)
@@ -250,59 +256,66 @@ impl WorkspaceStore {
 
         let mut orphaned = Vec::new();
 
-        // Read chroots directory
-        let entries = match std::fs::read_dir(&chroots_dir) {
-            Ok(entries) => entries,
-            Err(e) => {
-                tracing::warn!("Failed to read chroots directory: {}", e);
-                return Vec::new();
-            }
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-
-            // Skip non-directories
-            if !path.is_dir() {
+        let roots = [containers_dir, legacy_chroots_dir];
+        for root in roots {
+            if !root.exists() {
                 continue;
             }
 
-            // Check if this path is known
-            if known_paths.contains(&path) {
-                continue;
+            let entries = match std::fs::read_dir(&root) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::warn!("Failed to read containers directory {}: {}", root.display(), e);
+                    continue;
+                }
+            };
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+
+                // Skip non-directories
+                if !path.is_dir() {
+                    continue;
+                }
+
+                // Check if this path is known
+                if known_paths.contains(&path) {
+                    continue;
+                }
+
+                // Get the directory name as workspace name
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+
+                // Check if it looks like a valid container (has basic structure)
+                let is_valid_container = path.join("etc").exists() || path.join("bin").exists();
+
+                // Determine status based on filesystem state
+                let status = if is_valid_container {
+                    WorkspaceStatus::Ready
+                } else {
+                    // Incomplete container - might have been interrupted
+                    WorkspaceStatus::Pending
+                };
+
+                let workspace = Workspace {
+                    id: Uuid::new_v4(),
+                    name,
+                    workspace_type: WorkspaceType::Chroot,
+                    path,
+                    status,
+                    error_message: None,
+                    config: serde_json::json!({}),
+                    created_at: Utc::now(), // We don't know the actual creation time
+                    skills: Vec::new(),
+                    tools: Vec::new(),
+                    plugins: Vec::new(),
+                };
+
+                orphaned.push(workspace);
             }
-
-            // Get the directory name as workspace name
-            let name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-
-            // Check if it looks like a valid chroot (has basic structure)
-            let is_valid_chroot = path.join("etc").exists() || path.join("bin").exists();
-
-            // Determine status based on filesystem state
-            let status = if is_valid_chroot {
-                WorkspaceStatus::Ready
-            } else {
-                // Incomplete chroot - might have been interrupted
-                WorkspaceStatus::Pending
-            };
-
-            let workspace = Workspace {
-                id: Uuid::new_v4(),
-                name,
-                workspace_type: WorkspaceType::Chroot,
-                path,
-                status,
-                error_message: None,
-                config: serde_json::json!({}),
-                created_at: Utc::now(), // We don't know the actual creation time
-                skills: Vec::new(),
-                plugins: Vec::new(),
-            };
-
-            orphaned.push(workspace);
         }
 
         orphaned
@@ -481,11 +494,16 @@ fn opencode_entry_from_mcp(
     }
 
     match &config.transport {
-        McpTransport::Http { endpoint } => json!({
-            "type": "http",
-            "endpoint": endpoint,
-            "enabled": config.enabled,
-        }),
+        McpTransport::Http { endpoint, headers } => {
+            let mut entry = serde_json::Map::new();
+            entry.insert("type".to_string(), json!("http"));
+            entry.insert("endpoint".to_string(), json!(endpoint));
+            entry.insert("enabled".to_string(), json!(config.enabled));
+            if !headers.is_empty() {
+                entry.insert("headers".to_string(), json!(headers));
+            }
+            json!(entry)
+        }
         McpTransport::Stdio { command, args, env } => {
             let mut entry = serde_json::Map::new();
             entry.insert("type".to_string(), json!("local"));
@@ -524,9 +542,6 @@ async fn write_opencode_config(
         if !c.enabled {
             return false;
         }
-        if workspace_type == WorkspaceType::Chroot {
-            return c.name != "desktop" && c.name != "playwright";
-        }
         true
     });
 
@@ -548,12 +563,12 @@ async fn write_opencode_config(
 
     // Prevent OpenCode's builtin bash tool from running on the host when we're
     // targeting an isolated workspace. This forces tool usage through MCP,
-    // which we route via chroot.
+    // which we route via systemd-nspawn.
     if workspace_type == WorkspaceType::Chroot {
         let mut tools = serde_json::Map::new();
         tools.insert("bash".to_string(), json!(false));
-        tools.insert("desktop_*".to_string(), json!(false));
-        tools.insert("playwright_*".to_string(), json!(false));
+        tools.insert("desktop_*".to_string(), json!(true));
+        tools.insert("playwright_*".to_string(), json!(true));
         tools.insert("browser_*".to_string(), json!(false));
         tools.insert("host_*".to_string(), json!(true));
         config_json.insert("tools".to_string(), serde_json::Value::Object(tools));
@@ -725,6 +740,103 @@ pub async fn sync_skills_to_dir(
     Ok(())
 }
 
+/// Tool content to be written to the workspace.
+pub struct ToolContent {
+    /// Tool name (filename without .ts)
+    pub name: String,
+    /// Full TypeScript content
+    pub content: String,
+}
+
+/// Write tool files to the workspace's `.opencode/tool/` directory.
+/// This makes custom tools available to OpenCode when running in this workspace.
+/// OpenCode looks for tools in `.opencode/tool/*.ts`
+pub async fn write_tools_to_workspace(
+    workspace_dir: &Path,
+    tools: &[ToolContent],
+) -> anyhow::Result<()> {
+    if tools.is_empty() {
+        return Ok(());
+    }
+
+    let tools_dir = workspace_dir.join(".opencode").join("tool");
+    tokio::fs::create_dir_all(&tools_dir).await?;
+
+    for tool in tools {
+        let tool_path = tools_dir.join(format!("{}.ts", &tool.name));
+        tokio::fs::write(&tool_path, &tool.content).await?;
+
+        tracing::debug!(
+            tool = %tool.name,
+            workspace = %workspace_dir.display(),
+            "Wrote tool to workspace"
+        );
+    }
+
+    tracing::info!(
+        count = tools.len(),
+        workspace = %workspace_dir.display(),
+        "Wrote tools to workspace"
+    );
+
+    Ok(())
+}
+
+/// Sync tools from library to workspace's `.opencode/tool/` directory.
+/// Called when workspace is created, updated, or before mission execution.
+pub async fn sync_workspace_tools(workspace: &Workspace, library: &LibraryStore) -> anyhow::Result<()> {
+    sync_tools_to_dir(&workspace.path, &workspace.tools, &workspace.name, library).await
+}
+
+/// Sync tools from library to a specific directory's `.opencode/tool/` folder.
+/// Used for syncing tools to mission directories.
+pub async fn sync_tools_to_dir(
+    target_dir: &Path,
+    tool_names: &[String],
+    context_name: &str,
+    library: &LibraryStore,
+) -> anyhow::Result<()> {
+    if tool_names.is_empty() {
+        tracing::debug!(
+            context = %context_name,
+            "No tools to sync"
+        );
+        return Ok(());
+    }
+
+    let mut tools_to_write: Vec<ToolContent> = Vec::new();
+
+    for tool_name in tool_names {
+        match library.get_library_tool(tool_name).await {
+            Ok(tool) => {
+                tools_to_write.push(ToolContent {
+                    name: tool.name,
+                    content: tool.content,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(
+                    tool = %tool_name,
+                    context = %context_name,
+                    error = %e,
+                    "Failed to load tool from library, skipping"
+                );
+            }
+        }
+    }
+
+    write_tools_to_workspace(target_dir, &tools_to_write).await?;
+
+    tracing::info!(
+        context = %context_name,
+        tools = ?tool_names,
+        target = %target_dir.display(),
+        "Synced tools to directory"
+    );
+
+    Ok(())
+}
+
 async fn prepare_workspace_dir(path: &Path) -> anyhow::Result<PathBuf> {
     tokio::fs::create_dir_all(path.join("output")).await?;
     tokio::fs::create_dir_all(path.join("temp")).await?;
@@ -772,8 +884,8 @@ pub async fn prepare_mission_workspace_in(
     Ok(dir)
 }
 
-/// Prepare a workspace directory for a mission with skill syncing.
-/// This version syncs skills from the workspace to the mission directory.
+/// Prepare a workspace directory for a mission with skill and tool syncing.
+/// This version syncs skills and tools from the workspace to the mission directory.
 pub async fn prepare_mission_workspace_with_skills(
     workspace: &Workspace,
     mcp: &McpRegistry,
@@ -785,22 +897,30 @@ pub async fn prepare_mission_workspace_with_skills(
     let mcp_configs = mcp.list_configs().await;
     write_opencode_config(&dir, mcp_configs, &workspace.path, workspace.workspace_type).await?;
 
-    // Sync skills from workspace to mission directory
+    // Sync skills and tools from workspace to mission directory
     if let Some(lib) = library {
+        let context = format!("mission-{}", mission_id);
+
+        // Sync skills
         if !workspace.skills.is_empty() {
-            if let Err(e) = sync_skills_to_dir(
-                &dir,
-                &workspace.skills,
-                &format!("mission-{}", mission_id),
-                lib,
-            )
-            .await
-            {
+            if let Err(e) = sync_skills_to_dir(&dir, &workspace.skills, &context, lib).await {
                 tracing::warn!(
                     mission = %mission_id,
                     workspace = %workspace.name,
                     error = %e,
                     "Failed to sync skills to mission directory"
+                );
+            }
+        }
+
+        // Sync tools
+        if !workspace.tools.is_empty() {
+            if let Err(e) = sync_tools_to_dir(&dir, &workspace.tools, &context, lib).await {
+                tracing::warn!(
+                    mission = %mission_id,
+                    workspace = %workspace.name,
+                    error = %e,
+                    "Failed to sync tools to mission directory"
                 );
             }
         }
@@ -918,14 +1038,14 @@ pub async fn resolve_workspace(
     }
 }
 
-/// Build a chroot workspace.
+/// Build a container workspace.
 pub async fn build_chroot_workspace(
     workspace: &mut Workspace,
-    distro: Option<ChrootDistro>,
+    distro: Option<NspawnDistro>,
 ) -> anyhow::Result<()> {
     if workspace.workspace_type != WorkspaceType::Chroot {
         return Err(anyhow::anyhow!(
-            "Workspace is not a chroot type"
+            "Workspace is not a container type"
         ));
     }
 
@@ -935,11 +1055,11 @@ pub async fn build_chroot_workspace(
     let distro = distro.unwrap_or_default();
 
     // Check if already built with the right distro
-    if chroot::is_chroot_created(&workspace.path).await {
-        if let Some(existing) = chroot::detect_chroot_distro(&workspace.path).await {
+    if nspawn::is_container_ready(&workspace.path) {
+        if let Some(existing) = nspawn::detect_container_distro(&workspace.path).await {
             if existing == distro {
                 tracing::info!(
-                    "Chroot already exists at {} with distro {}",
+                    "Container already exists at {} with distro {}",
                     workspace.path.display(),
                     distro.as_str()
                 );
@@ -947,55 +1067,55 @@ pub async fn build_chroot_workspace(
                 return Ok(());
             }
             tracing::info!(
-                "Chroot exists at {} with distro {}, rebuilding to {}",
+                "Container exists at {} with distro {}, rebuilding to {}",
                 workspace.path.display(),
                 existing.as_str(),
                 distro.as_str()
             );
         } else {
             tracing::info!(
-                "Chroot exists at {} with unknown distro, rebuilding to {}",
+                "Container exists at {} with unknown distro, rebuilding to {}",
                 workspace.path.display(),
                 distro.as_str()
             );
         }
-        chroot::destroy_chroot(&workspace.path).await?;
+        nspawn::destroy_container(&workspace.path).await?;
     }
 
     tracing::info!(
-        "Building chroot workspace at {} with distro {}",
+        "Building container workspace at {} with distro {}",
         workspace.path.display(),
         distro.as_str()
     );
 
-    // Create the chroot
-    match chroot::create_chroot(&workspace.path, distro).await {
+    // Create the container
+    match nspawn::create_container(&workspace.path, distro).await {
         Ok(()) => {
             workspace.status = WorkspaceStatus::Ready;
             workspace.error_message = None;
-            tracing::info!("Chroot workspace built successfully");
+            tracing::info!("Container workspace built successfully");
             Ok(())
         }
         Err(e) => {
             workspace.status = WorkspaceStatus::Error;
-            workspace.error_message = Some(format!("Chroot build failed: {}", e));
-            tracing::error!("Failed to build chroot: {}", e);
-            Err(anyhow::anyhow!("Chroot build failed: {}", e))
+            workspace.error_message = Some(format!("Container build failed: {}", e));
+            tracing::error!("Failed to build container: {}", e);
+            Err(anyhow::anyhow!("Container build failed: {}", e))
         }
     }
 }
 
-/// Destroy a chroot workspace.
+/// Destroy a container workspace.
 pub async fn destroy_chroot_workspace(workspace: &Workspace) -> anyhow::Result<()> {
     if workspace.workspace_type != WorkspaceType::Chroot {
         return Err(anyhow::anyhow!(
-            "Workspace is not a chroot type"
+            "Workspace is not a container type"
         ));
     }
 
-    tracing::info!("Destroying chroot workspace at {}", workspace.path.display());
+    tracing::info!("Destroying container workspace at {}", workspace.path.display());
 
-    chroot::destroy_chroot(&workspace.path).await?;
+    nspawn::destroy_container(&workspace.path).await?;
 
     Ok(())
 }

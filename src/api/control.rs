@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,6 +22,7 @@ use axum::{
 use chrono::Utc;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -174,6 +176,9 @@ pub enum AgentEvent {
     UserMessage {
         id: Uuid,
         content: String,
+        /// Whether this message is queued (not yet being processed).
+        #[serde(default)]
+        queued: bool,
         /// Mission this message belongs to (for parallel execution)
         #[serde(skip_serializing_if = "Option::is_none")]
         mission_id: Option<Uuid>,
@@ -534,6 +539,87 @@ impl InMemoryMissionStore {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct MissionStoreSnapshot {
+    missions: HashMap<Uuid, Mission>,
+    trees: HashMap<Uuid, AgentTreeNode>,
+}
+
+#[derive(Clone)]
+struct FileMissionStore {
+    path: PathBuf,
+    missions: Arc<RwLock<HashMap<Uuid, Mission>>>,
+    trees: Arc<RwLock<HashMap<Uuid, AgentTreeNode>>>,
+    persist_lock: Arc<Mutex<()>>,
+}
+
+impl FileMissionStore {
+    async fn new(base_dir: PathBuf, user_id: &str) -> Result<Self, String> {
+        fs::create_dir_all(&base_dir)
+            .await
+            .map_err(|e| format!("Failed to create mission store dir: {}", e))?;
+        let filename = format!("missions-{}.json", sanitize_filename(user_id));
+        let path = base_dir.join(filename);
+        let snapshot = match fs::read(&path).await {
+            Ok(bytes) => match serde_json::from_slice::<MissionStoreSnapshot>(&bytes) {
+                Ok(snapshot) => snapshot,
+                Err(e) => {
+                    tracing::warn!("Failed to parse mission store {}: {}", path.display(), e);
+                    MissionStoreSnapshot::default()
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                MissionStoreSnapshot::default()
+            }
+            Err(err) => {
+                tracing::warn!("Failed to read mission store {}: {}", path.display(), err);
+                MissionStoreSnapshot::default()
+            }
+        };
+
+        Ok(Self {
+            path,
+            missions: Arc::new(RwLock::new(snapshot.missions)),
+            trees: Arc::new(RwLock::new(snapshot.trees)),
+            persist_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    async fn persist(&self) -> Result<(), String> {
+        let _guard = self.persist_lock.lock().await;
+        let snapshot = MissionStoreSnapshot {
+            missions: self.missions.read().await.clone(),
+            trees: self.trees.read().await.clone(),
+        };
+        let data = serde_json::to_vec_pretty(&snapshot)
+            .map_err(|e| format!("Failed to serialize mission store: {}", e))?;
+        let tmp_path = self.path.with_extension("json.tmp");
+        fs::write(&tmp_path, data)
+            .await
+            .map_err(|e| format!("Failed to write mission store: {}", e))?;
+        fs::rename(&tmp_path, &self.path)
+            .await
+            .map_err(|e| format!("Failed to finalize mission store: {}", e))?;
+        Ok(())
+    }
+}
+
+fn sanitize_filename(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "default".to_string()
+    } else {
+        out
+    }
+}
+
 #[async_trait]
 impl MissionStore for InMemoryMissionStore {
     fn is_persistent(&self) -> bool {
@@ -703,6 +789,179 @@ impl MissionStore for InMemoryMissionStore {
     }
 }
 
+#[async_trait]
+impl MissionStore for FileMissionStore {
+    fn is_persistent(&self) -> bool {
+        true
+    }
+
+    async fn list_missions(&self, limit: usize, offset: usize) -> Result<Vec<Mission>, String> {
+        let mut missions: Vec<Mission> = self.missions.read().await.values().cloned().collect();
+        missions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        let missions = missions.into_iter().skip(offset).take(limit).collect();
+        Ok(missions)
+    }
+
+    async fn get_mission(&self, id: Uuid) -> Result<Option<Mission>, String> {
+        Ok(self.missions.read().await.get(&id).cloned())
+    }
+
+    async fn create_mission(
+        &self,
+        title: Option<&str>,
+        workspace_id: Option<Uuid>,
+        agent: Option<&str>,
+    ) -> Result<Mission, String> {
+        let now = now_string();
+        let mission = Mission {
+            id: Uuid::new_v4(),
+            status: MissionStatus::Active,
+            title: title.map(|s| s.to_string()),
+            workspace_id: workspace_id.unwrap_or(crate::workspace::DEFAULT_WORKSPACE_ID),
+            agent: agent.map(|s| s.to_string()),
+            history: vec![],
+            created_at: now.clone(),
+            updated_at: now,
+            interrupted_at: None,
+            resumable: false,
+        };
+        self.missions
+            .write()
+            .await
+            .insert(mission.id, mission.clone());
+        self.persist().await?;
+        Ok(mission)
+    }
+
+    async fn update_mission_status(&self, id: Uuid, status: MissionStatus) -> Result<(), String> {
+        let mut missions = self.missions.write().await;
+        let mission = missions
+            .get_mut(&id)
+            .ok_or_else(|| format!("Mission {} not found", id))?;
+        mission.status = status;
+        let now = now_string();
+        mission.updated_at = now.clone();
+        if matches!(status, MissionStatus::Interrupted | MissionStatus::Blocked) {
+            mission.interrupted_at = Some(now);
+            mission.resumable = true;
+        } else {
+            mission.interrupted_at = None;
+            mission.resumable = false;
+        }
+        drop(missions);
+        self.persist().await
+    }
+
+    async fn update_mission_history(
+        &self,
+        id: Uuid,
+        history: &[MissionHistoryEntry],
+    ) -> Result<(), String> {
+        let mut missions = self.missions.write().await;
+        let mission = missions
+            .get_mut(&id)
+            .ok_or_else(|| format!("Mission {} not found", id))?;
+        mission.history = history.to_vec();
+        mission.updated_at = now_string();
+        drop(missions);
+        self.persist().await
+    }
+
+    async fn update_mission_title(&self, id: Uuid, title: &str) -> Result<(), String> {
+        let mut missions = self.missions.write().await;
+        let mission = missions
+            .get_mut(&id)
+            .ok_or_else(|| format!("Mission {} not found", id))?;
+        mission.title = Some(title.to_string());
+        mission.updated_at = now_string();
+        drop(missions);
+        self.persist().await
+    }
+
+    async fn update_mission_tree(&self, id: Uuid, tree: &AgentTreeNode) -> Result<(), String> {
+        self.trees.write().await.insert(id, tree.clone());
+        self.persist().await
+    }
+
+    async fn get_mission_tree(&self, id: Uuid) -> Result<Option<AgentTreeNode>, String> {
+        Ok(self.trees.read().await.get(&id).cloned())
+    }
+
+    async fn delete_mission(&self, id: Uuid) -> Result<bool, String> {
+        let removed = self.missions.write().await.remove(&id).is_some();
+        self.trees.write().await.remove(&id);
+        self.persist().await?;
+        Ok(removed)
+    }
+
+    async fn delete_empty_untitled_missions_excluding(
+        &self,
+        exclude: &[Uuid],
+    ) -> Result<usize, String> {
+        let mut missions = self.missions.write().await;
+
+        let to_delete: Vec<Uuid> = missions
+            .iter()
+            .filter(|(id, mission)| {
+                if exclude.contains(id) {
+                    return false;
+                }
+                let title = mission.title.clone().unwrap_or_default();
+                let title_empty = title.trim().is_empty() || title == "Untitled Mission";
+                let history_empty = mission.history.is_empty();
+                let active = mission.status == MissionStatus::Active;
+                active && history_empty && title_empty
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in &to_delete {
+            missions.remove(id);
+        }
+        drop(missions);
+
+        let mut trees = self.trees.write().await;
+        for id in &to_delete {
+            trees.remove(id);
+        }
+        drop(trees);
+
+        self.persist().await?;
+        Ok(to_delete.len())
+    }
+
+    async fn get_stale_active_missions(&self, stale_hours: u64) -> Result<Vec<Mission>, String> {
+        if stale_hours == 0 {
+            return Ok(Vec::new());
+        }
+        let cutoff = Utc::now() - chrono::Duration::hours(stale_hours as i64);
+        let missions: Vec<Mission> = self
+            .missions
+            .read()
+            .await
+            .values()
+            .filter(|m| m.status == MissionStatus::Active)
+            .filter(|m| {
+                chrono::DateTime::parse_from_rfc3339(&m.updated_at)
+                    .map(|t| t < cutoff)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        Ok(missions)
+    }
+
+    async fn insert_mission_summary(
+        &self,
+        _mission_id: Uuid,
+        _summary: &str,
+        _key_files: &[String],
+        _success: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// Shared tool hub used to await frontend tool results.
 #[derive(Debug)]
 pub struct FrontendToolHub {
@@ -793,7 +1052,24 @@ impl ControlHub {
         if let Some(existing) = sessions.get(&user.id).cloned() {
             return existing;
         }
-        let mission_store: Arc<dyn MissionStore> = Arc::new(InMemoryMissionStore::new());
+        let mission_store: Arc<dyn MissionStore> = match FileMissionStore::new(
+            self.config
+                .working_dir
+                .join(".openagent")
+                .join("missions"),
+            &user.id,
+        )
+        .await
+        {
+            Ok(store) => Arc::new(store),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to initialize mission store, falling back to memory: {}",
+                    err
+                );
+                Arc::new(InMemoryMissionStore::new())
+            }
+        };
         let state = spawn_control_session(
             self.config.clone(),
             Arc::clone(&self.root_agent),
@@ -864,8 +1140,11 @@ pub async fn post_message(
     }
 
     let id = Uuid::new_v4();
-    let queued = true;
     let control = control_for_user(&state, &user).await;
+    let queued = {
+        let status = control.status.read().await;
+        status.state != ControlRunState::Idle
+    };
     control
         .cmd_tx
         .send(ControlCommand::UserMessage {
@@ -2038,6 +2317,8 @@ async fn control_actor_loop(
                             }
                         }
 
+                        let was_running = running.is_some();
+                        let content_clone = content.clone();
                         queue.push_back((id, content));
                         set_and_emit_status(
                             &status,
@@ -2045,11 +2326,20 @@ async fn control_actor_loop(
                             if running.is_some() { ControlRunState::Running } else { ControlRunState::Idle },
                             queue.len(),
                         ).await;
+                        if was_running {
+                            let current_mid = current_mission.read().await.clone();
+                            let _ = events_tx.send(AgentEvent::UserMessage {
+                                id,
+                                content: content_clone,
+                                queued: true,
+                                mission_id: current_mid,
+                            });
+                        }
                         if running.is_none() {
                             if let Some((mid, msg)) = queue.pop_front() {
                                 set_and_emit_status(&status, &events_tx, ControlRunState::Running, queue.len()).await;
                                 let current_mid = current_mission.read().await.clone();
-                                let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), mission_id: current_mid });
+                                let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), queued: false, mission_id: current_mid });
 
                                 // Immediately persist user message so it's visible when loading mission
                                 history.push(("user".to_string(), msg.clone()));
@@ -2388,7 +2678,7 @@ async fn control_actor_loop(
                                 if running.is_none() {
                                     if let Some((mid, msg)) = queue.pop_front() {
                                         set_and_emit_status(&status, &events_tx, ControlRunState::Running, queue.len()).await;
-                                        let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), mission_id: Some(mission_id) });
+                                        let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), queued: false, mission_id: Some(mission_id) });
                                         let cfg = config.clone();
                                         let agent = Arc::clone(&root_agent);
                                         let mcp_ref = Arc::clone(&mcp);
@@ -2755,7 +3045,7 @@ async fn control_actor_loop(
                 if let Some((mid, msg)) = queue.pop_front() {
                     set_and_emit_status(&status, &events_tx, ControlRunState::Running, queue.len()).await;
                     let current_mid = current_mission.read().await.clone();
-                    let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), mission_id: current_mid });
+                    let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), queued: false, mission_id: current_mid });
 
                     // Immediately persist user message so it's visible when loading mission
                     history.push(("user".to_string(), msg.clone()));

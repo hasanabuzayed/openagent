@@ -63,19 +63,11 @@ export default function SettingsPage() {
   const [libraryRepo, setLibraryRepo] = useState(
     () => readSavedSettings().libraryRepo ?? ''
   );
-  const [gitAuthorName, setGitAuthorName] = useState(
-    () => readSavedSettings().gitAuthorName ?? ''
-  );
-  const [gitAuthorEmail, setGitAuthorEmail] = useState(
-    () => readSavedSettings().gitAuthorEmail ?? ''
-  );
 
   // Track original values for unsaved changes
   const [originalValues, setOriginalValues] = useState({
     apiUrl: readSavedSettings().apiUrl ?? 'http://127.0.0.1:3000',
     libraryRepo: readSavedSettings().libraryRepo ?? '',
-    gitAuthorName: readSavedSettings().gitAuthorName ?? '',
-    gitAuthorEmail: readSavedSettings().gitAuthorEmail ?? '',
   });
 
   // Validation state
@@ -99,9 +91,7 @@ export default function SettingsPage() {
   // Check if there are unsaved changes
   const hasUnsavedChanges =
     apiUrl !== originalValues.apiUrl ||
-    libraryRepo !== originalValues.libraryRepo ||
-    gitAuthorName !== originalValues.gitAuthorName ||
-    gitAuthorEmail !== originalValues.gitAuthorEmail;
+    libraryRepo !== originalValues.libraryRepo;
 
   // Validate URL
   const validateUrl = useCallback((url: string) => {
@@ -131,16 +121,6 @@ export default function SettingsPage() {
     }
     setRepoError(null);
     return true;
-  }, []);
-
-  const validateEmail = useCallback((email: string) => {
-    const trimmed = email.trim();
-    if (!trimmed) {
-      return true; // Optional field
-    }
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(trimmed);
   }, []);
 
   // Load health and providers on mount
@@ -216,25 +196,19 @@ export default function SettingsPage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [apiUrl, libraryRepo, gitAuthorName, gitAuthorEmail]);
+  }, [apiUrl, libraryRepo]);
 
   const handleSave = () => {
     const urlValid = validateUrl(apiUrl);
     const repoValid = validateRepo(libraryRepo);
-    const emailValid = validateEmail(gitAuthorEmail);
 
     if (!urlValid || !repoValid) {
       toast.error('Please fix validation errors before saving');
       return;
     }
 
-    if (!emailValid) {
-      toast.error('Please enter a valid email address');
-      return;
-    }
-
-    writeSavedSettings({ apiUrl, libraryRepo, gitAuthorName, gitAuthorEmail });
-    setOriginalValues({ apiUrl, libraryRepo, gitAuthorName, gitAuthorEmail });
+    writeSavedSettings({ apiUrl, libraryRepo });
+    setOriginalValues({ apiUrl, libraryRepo });
     toast.success('Settings saved!');
   };
 
@@ -624,71 +598,37 @@ export default function SettingsPage() {
               <div>
                 <h2 className="text-sm font-medium text-white">Git</h2>
                 <p className="text-xs text-white/40">
-                  Configuration library and commit settings
+                  Configuration library settings
                 </p>
               </div>
             </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-white/60 mb-1.5">
-                  Library Repo (optional)
-                </label>
-                <input
-                  type="text"
-                  value={libraryRepo}
-                  onChange={(e) => {
-                    setLibraryRepo(e.target.value);
-                    validateRepo(e.target.value);
-                  }}
-                  placeholder="https://github.com/your/library.git"
-                  className={cn(
-                    'w-full rounded-lg border bg-white/[0.02] px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none transition-colors',
-                    repoError
-                      ? 'border-red-500/50 focus:border-red-500/50'
-                      : 'border-white/[0.06] focus:border-indigo-500/50'
-                  )}
-                />
-                {repoError ? (
-                  <p className="mt-1.5 text-xs text-red-400">{repoError}</p>
-                ) : (
-                  <p className="mt-1.5 text-xs text-white/30">
-                    Leave blank to disable library features.
-                  </p>
+            <div>
+              <label className="block text-xs font-medium text-white/60 mb-1.5">
+                Library Repo (optional)
+              </label>
+              <input
+                type="text"
+                value={libraryRepo}
+                onChange={(e) => {
+                  setLibraryRepo(e.target.value);
+                  validateRepo(e.target.value);
+                }}
+                placeholder="git@github.com:your/library.git"
+                className={cn(
+                  'w-full rounded-lg border bg-white/[0.02] px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none transition-colors',
+                  repoError
+                    ? 'border-red-500/50 focus:border-red-500/50'
+                    : 'border-white/[0.06] focus:border-indigo-500/50'
                 )}
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-white/60 mb-1.5">
-                  Author Name
-                </label>
-                <input
-                  type="text"
-                  value={gitAuthorName}
-                  onChange={(e) => setGitAuthorName(e.target.value)}
-                  placeholder="Your Name"
-                  className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-indigo-500/50 transition-colors"
-                />
+              />
+              {repoError ? (
+                <p className="mt-1.5 text-xs text-red-400">{repoError}</p>
+              ) : (
                 <p className="mt-1.5 text-xs text-white/30">
-                  Name used for git commits in the library.
+                  Leave blank to disable library features.
                 </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-white/60 mb-1.5">
-                  Author Email
-                </label>
-                <input
-                  type="email"
-                  value={gitAuthorEmail}
-                  onChange={(e) => setGitAuthorEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-indigo-500/50 transition-colors"
-                />
-                <p className="mt-1.5 text-xs text-white/30">
-                  Email used for git commits in the library.
-                </p>
-              </div>
+              )}
             </div>
           </div>
 

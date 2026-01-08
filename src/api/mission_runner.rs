@@ -246,6 +246,7 @@ impl MissionRunner {
         let _ = events_tx.send(AgentEvent::UserMessage {
             id: msg_id,
             content: user_message.clone(),
+            queued: false,
             mission_id: Some(mission_id),
         });
 
