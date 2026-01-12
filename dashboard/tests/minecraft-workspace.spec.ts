@@ -124,9 +124,8 @@ test.describe('Minecraft workspace mission', () => {
 
     const prompt = [
       'Start the desktop session and ensure DISPLAY is set.',
-      'Launch start-mc-demo with MC_DEMO_CONNECT=true to join demo.oraxen.com automatically.',
-      'After the client loads, take a screenshot and keep it in the mission workspace screenshots folder.',
-      'Reply with the screenshot path.',
+      'Run start-mc-demo with MC_DEMO_DETACH=true MC_DEMO_CONNECT=true MC_DEMO_CAPTURE=true MC_SCREENSHOT_PATH="screenshots/mc-demo.png" so it auto-joins demo.oraxen.com and saves a screenshot.',
+      'After it finishes, reply with the screenshot path (kept under the mission workspace screenshots folder).',
     ].join(' ');
 
     const msgRes = await request.post(`${apiBase}/api/control/message`, {

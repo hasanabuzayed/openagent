@@ -189,6 +189,18 @@ struct CommandOptions {
 
 const DEFAULT_MAX_OUTPUT_CHARS: usize = 10_000;
 const MAX_OUTPUT_CHARS_LIMIT: usize = 50_000;
+const DEFAULT_COMMAND_TIMEOUT_SECS: f64 = 300.0;
+
+fn default_timeout_from_env() -> Duration {
+    if let Ok(raw) = env::var("OPEN_AGENT_COMMAND_TIMEOUT_SECS") {
+        if let Ok(value) = raw.parse::<f64>() {
+            if value > 0.0 {
+                return Duration::from_secs_f64(value);
+            }
+        }
+    }
+    Duration::from_secs_f64(DEFAULT_COMMAND_TIMEOUT_SECS)
+}
 
 fn parse_timeout(args: &Value) -> Duration {
     if let Some(ms) = args.get("timeout_ms").and_then(|v| v.as_u64()) {
@@ -202,7 +214,7 @@ fn parse_timeout(args: &Value) -> Duration {
             return Duration::from_secs_f64(secs);
         }
     }
-    Duration::from_secs(60)
+    default_timeout_from_env()
 }
 
 fn parse_env(args: &Value) -> HashMap<String, String> {
