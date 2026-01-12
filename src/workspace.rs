@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_recursion::async_recursion;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1590,9 +1591,9 @@ pub async fn build_chroot_workspace(
     // Create the container
     match nspawn::create_container(&workspace.path, distro).await {
         Ok(()) => {
-            match seed_shard_accounts(&workspace.path).await {
+            match seed_shard_data(&workspace.path).await {
                 Ok(true) => {
-                    tracing::info!(workspace = %workspace.name, "Seeded Shard credentials into container workspace")
+                    tracing::info!(workspace = %workspace.name, "Seeded Shard data into container workspace")
                 }
                 Ok(false) => {
                     tracing::debug!(workspace = %workspace.name, "No Shard seed directory found to copy")
@@ -1629,7 +1630,7 @@ pub async fn build_chroot_workspace(
     }
 }
 
-async fn seed_shard_accounts(container_root: &Path) -> anyhow::Result<bool> {
+async fn seed_shard_data(container_root: &Path) -> anyhow::Result<bool> {
     let seed_dir = std::env::var("OPEN_AGENT_SHARD_SEED")
         .ok()
         .filter(|path| !path.trim().is_empty())
@@ -1657,27 +1658,34 @@ async fn seed_shard_accounts(container_root: &Path) -> anyhow::Result<bool> {
     }
 
     let dest_dir = container_root.join("root/.shard");
-    tokio::fs::create_dir_all(&dest_dir).await?;
+    let _ = tokio::fs::remove_dir_all(&dest_dir).await;
+    copy_dir_recursive(&seed_dir, &dest_dir).await?;
 
-    let mut copied = false;
-    for filename in ["accounts.json", "config.json", "profile-organization.json"] {
-        let src = seed_dir.join(filename);
-        if !src.exists() {
-            continue;
-        }
-        let dest = dest_dir.join(filename);
-        match tokio::fs::copy(&src, &dest).await {
-            Ok(_) => {
-                copied = true;
-                tracing::info!(source = %src.display(), dest = %dest.display(), "Seeded Shard file into container workspace");
+    Ok(true)
+}
+
+#[async_recursion]
+async fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    tokio::fs::create_dir_all(dst).await?;
+
+    let mut entries = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let entry_path = entry.path();
+        let file_name = entry.file_name();
+        let dest_path = dst.join(&file_name);
+
+        let metadata = tokio::fs::metadata(&entry_path).await?;
+        if metadata.is_dir() {
+            copy_dir_recursive(&entry_path, &dest_path).await?;
+        } else {
+            if let Some(parent) = dest_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
             }
-            Err(e) => {
-                tracing::warn!(source = %src.display(), dest = %dest.display(), error = %e, "Failed to copy Shard file into workspace");
-            }
+            tokio::fs::copy(&entry_path, &dest_path).await?;
         }
     }
 
-    Ok(copied)
+    Ok(())
 }
 
 async fn run_workspace_init_script(workspace: &Workspace) -> anyhow::Result<()> {
