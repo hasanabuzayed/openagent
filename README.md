@@ -27,16 +27,13 @@
 
 ## Vision
 
-Open Agent is built for a future where AI agents handle complex, long-running tasks autonomously. Here's what I want to be able to achieve:
+What if you could:
 
-### 1. Cloud-native development
-An agent that reads GitHub issues, writes code, launches a Minecraft server to test changes, and opens pull requests when everything works. Full development cycle, zero manual intervention.
+**Hand off entire dev cycles.** Point an agent at a GitHub issue, let it write code, test by launching a Minecraft server, and open a PR when tests pass. You review the diff, not the process.
 
-### 2. Long-running autonomous tasks
-Give an agent VPN access to my home network and let it SSH into my machines. I want it to be able to read Nvidia documentation and orchestrate multiple days tasks like LLM fine-tunning.
+**Run multi-day operations unattended.** Give an agent SSH access to your home GPU through a VPN. It reads Nvidia docs, sets up training, fine-tunes models while you sleep.
 
-### 3. Private data on self-hosted infrastructure
-I should be able to run everything locally (including LLM inference) and use isolated environments so sensitive data never leaves my machines. I want to be able to ask my agent to analyze my sequenced DNA, to cross-reference each allele against scientific literature without leaking anything about me.
+**Keep sensitive data local.** Analyze your sequenced DNA against scientific literature. Local inference, isolated containers, nothing leaves your machines.
 
 ---
 
