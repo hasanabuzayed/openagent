@@ -54,7 +54,7 @@ rsync -az --delete \
 
 # on host
 cd /opt/open_agent/vaduz-v1
-cargo build --bin open_agent
+cargo build --bin open_agent --bin host-mcp --bin desktop-mcp
 # restart services when needed:
 # - OpenCode server: `opencode.service`
 # - Open Agent backend: `open_agent.service`
@@ -62,6 +62,7 @@ cargo build --bin open_agent
 
 Notes to avoid common deploy pitfalls:
 - Always include the SSH key in rsync: `-e "ssh -i ~/.ssh/cursor"` (otherwise auth will fail in non-interactive shells).
+- Build `host-mcp` and `desktop-mcp` too so chroot builds can copy the binaries from PATH.
 - The host uses rustup; build with `source /root/.cargo/env` so the newer toolchain is on PATH.
 
 ## Debugging Missions

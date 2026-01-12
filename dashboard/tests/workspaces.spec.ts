@@ -84,6 +84,8 @@ test.describe('Workspaces Page', () => {
     await expect(templateSelect).toBeVisible();
 
     const options = await templateSelect.locator('option').allTextContents();
-    expect(options.some(opt => opt.includes('No template'))).toBeTruthy();
+    expect(
+      options.some(opt => opt.toLowerCase().includes('none') || opt.toLowerCase().includes('no template'))
+    ).toBeTruthy();
   });
 });

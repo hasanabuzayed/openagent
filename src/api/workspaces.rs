@@ -708,11 +708,6 @@ async fn build_workspace(
         ));
     }
 
-    // If ready and no distro override requested, no-op
-    if workspace.status == WorkspaceStatus::Ready && distro.is_none() && !force_rebuild {
-        return Ok(Json(workspace.into()));
-    }
-
     // Set status to Building immediately to prevent concurrent builds
     workspace.status = WorkspaceStatus::Building;
     state.workspaces.update(workspace.clone()).await;
