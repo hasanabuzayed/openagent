@@ -17,6 +17,12 @@
   <a href="#getting-started">Getting Started</a>
 </p>
 
+<br/>
+
+<p align="center">
+  <img src="screenshots/hero.webp" alt="Open Agent Dashboard" width="100%" />
+</p>
+
 ---
 
 ## Vision
@@ -72,27 +78,6 @@ Works great with [**oh-my-opencode**](https://github.com/code-yeongyu/oh-my-open
   <img src="screenshots/mcp-servers.webp" alt="MCP Servers" width="100%" />
 </p>
 <p align="center"><em>MCP server management with runtime status and Library integration</em></p>
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Open Agent                              │
-├─────────────────────────────────────────────────────────────────┤
-│  Dashboard (Next.js)  │  iOS App (SwiftUI)                      │
-├───────────────────────┴─────────────────────────────────────────┤
-│                     Rust Backend (Axum)                         │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
-│  │  Missions   │  │ Workspaces  │  │   Library   │              │
-│  │  (Control)  │  │ (Isolation) │  │ (Git Sync)  │              │
-│  └─────────────┘  └─────────────┘  └─────────────┘              │
-├─────────────────────────────────────────────────────────────────┤
-│                     OpenCode Server                             │
-│              (Model inference & execution)                      │
-└─────────────────────────────────────────────────────────────────┘
-```
 
 ---
 
