@@ -36,15 +36,13 @@ import {
   RefreshCw,
   Save,
   Bookmark,
-  FileText,
   Sparkles,
-  Eye,
-  EyeOff,
-  Lock,
+  FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/components/toast';
 import { ConfigCodeEditor } from '@/components/config-code-editor';
+import { EnvVarsEditor, type EnvRow, toEnvRows, envRowsToMap } from '@/components/env-vars-editor';
 
 // The nil UUID represents the default "host" workspace which cannot be deleted
 const DEFAULT_WORKSPACE_ID = '00000000-0000-0000-0000-000000000000';
@@ -116,38 +114,6 @@ export default function WorkspacesPage() {
       setAvailableSkills([]);
       setSkillsError(err instanceof Error ? err.message : 'Failed to load skills');
     }
-  };
-
-  // Patterns that indicate a sensitive value
-  const isSensitiveKey = (key: string) => {
-    const upperKey = key.toUpperCase();
-    const sensitivePatterns = [
-      'KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASS', 'CREDENTIAL', 'AUTH',
-      'PRIVATE', 'API_KEY', 'ACCESS_TOKEN', 'B64', 'BASE64', 'ENCRYPTED',
-    ];
-    return sensitivePatterns.some(pattern => upperKey.includes(pattern));
-  };
-
-  const toEnvRows = (env: Record<string, string>) =>
-    Object.entries(env).map(([key, value]) => {
-      const secret = isSensitiveKey(key);
-      return {
-        id: `${key}-${Math.random().toString(36).slice(2, 8)}`,
-        key,
-        value,
-        secret,
-        visible: !secret, // Hidden by default if secret
-      };
-    });
-
-  const envRowsToMap = (rows: { key: string; value: string }[]) => {
-    const env: Record<string, string> = {};
-    rows.forEach((row) => {
-      const key = row.key.trim();
-      if (!key) return;
-      env[key] = row.value;
-    });
-    return env;
   };
 
   const workspaceTabs = [
@@ -840,117 +806,11 @@ export default function WorkspacesPage() {
 
               {workspaceTab === 'environment' && (
                 <div className="px-6 py-5 space-y-4">
-                  {/* Environment Variables */}
-                  <div className="rounded-xl bg-white/[0.02] border border-white/[0.05] overflow-hidden">
-                    <div className="px-4 py-3 border-b border-white/[0.05] flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <FileText className="h-4 w-4 text-indigo-400" />
-                        <p className="text-xs text-white/50 font-medium">Environment Variables</p>
-                      </div>
-                      <button
-                        onClick={() =>
-                          setEnvRows((rows) => [
-                            ...rows,
-                            { id: Math.random().toString(36).slice(2), key: '', value: '', secret: false, visible: true },
-                          ])
-                        }
-                        className="text-xs text-indigo-400 hover:text-indigo-300 font-medium"
-                      >
-                        + Add
-                      </button>
-                    </div>
-
-                    <div className="p-4">
-                      {envRows.length === 0 ? (
-                        <div className="py-6 text-center">
-                          <p className="text-xs text-white/40">No environment variables</p>
-                          <button
-                            onClick={() =>
-                              setEnvRows([{ id: Math.random().toString(36).slice(2), key: '', value: '', secret: false, visible: true }])
-                            }
-                            className="text-xs text-indigo-400 hover:text-indigo-300 mt-2"
-                          >
-                            Add your first variable
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          {envRows.map((row) => (
-                            <div key={row.id} className="flex items-center gap-2">
-                              <input
-                                value={row.key}
-                                onChange={(e) => {
-                                  const newKey = e.target.value;
-                                  const secret = isSensitiveKey(newKey);
-                                  setEnvRows((rows) =>
-                                    rows.map((r) =>
-                                      r.id === row.id ? { ...r, key: newKey, secret, visible: r.visible || !secret } : r
-                                    )
-                                  );
-                                }}
-                                placeholder="KEY"
-                                className="flex-1 px-3 py-2 rounded-lg bg-black/20 border border-white/[0.06] text-xs text-white placeholder:text-white/25 font-mono focus:outline-none focus:border-indigo-500/50"
-                              />
-                              <span className="text-white/20">=</span>
-                              <div className="flex-1 relative">
-                                <input
-                                  type={row.secret && !row.visible ? 'password' : 'text'}
-                                  value={row.value}
-                                  onChange={(e) =>
-                                    setEnvRows((rows) =>
-                                      rows.map((r) =>
-                                        r.id === row.id ? { ...r, value: e.target.value } : r
-                                      )
-                                    )
-                                  }
-                                  placeholder="value"
-                                  className={cn(
-                                    "w-full px-3 py-2 rounded-lg bg-black/20 border border-white/[0.06] text-xs text-white placeholder:text-white/25 font-mono focus:outline-none focus:border-indigo-500/50",
-                                    row.secret && "pr-8"
-                                  )}
-                                />
-                                {row.secret && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setEnvRows((rows) =>
-                                        rows.map((r) =>
-                                          r.id === row.id ? { ...r, visible: !r.visible } : r
-                                        )
-                                      )
-                                    }
-                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition-colors"
-                                  >
-                                    {row.visible ? (
-                                      <EyeOff className="h-3.5 w-3.5" />
-                                    ) : (
-                                      <Eye className="h-3.5 w-3.5" />
-                                    )}
-                                  </button>
-                                )}
-                              </div>
-                              {row.secret && (
-                                <span title="Sensitive value - will be encrypted">
-                                  <Lock className="h-3.5 w-3.5 text-amber-400/60" />
-                                </span>
-                              )}
-                              <button
-                                onClick={() => setEnvRows((rows) => rows.filter((r) => r.id !== row.id))}
-                                className="p-2 text-white/30 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                              >
-                                <X className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {envRows.length > 0 && (
-                        <p className="text-xs text-white/35 mt-4 pt-3 border-t border-white/[0.04]">
-                          Injected into workspace shells and MCP tool runs. Sensitive values (<Lock className="h-3 w-3 inline-block text-amber-400/60 -mt-0.5" />) are encrypted at rest.
-                        </p>
-                      )}
-                    </div>
-                  </div>
+                  <EnvVarsEditor
+                    rows={envRows}
+                    onChange={setEnvRows}
+                    description="Injected into workspace shells and MCP tool runs. Sensitive values (keys, tokens, passwords) are encrypted at rest."
+                  />
 
                   {/* Init Script */}
                   <div className="rounded-xl bg-white/[0.02] border border-white/[0.05] overflow-hidden">

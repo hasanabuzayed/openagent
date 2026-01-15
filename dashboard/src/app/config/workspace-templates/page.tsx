@@ -25,7 +25,6 @@ import {
   X,
   LayoutTemplate,
   Sparkles,
-  FileText,
   Terminal,
   Upload,
   Pencil,
@@ -33,6 +32,7 @@ import {
 import { cn } from '@/lib/utils';
 import { LibraryUnavailable } from '@/components/library-unavailable';
 import { useLibrary } from '@/contexts/library-context';
+import { EnvVarsEditor, type EnvRow, toEnvRows, envRowsToMap } from '@/components/env-vars-editor';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
 import 'prismjs/components/prism-bash';
@@ -45,25 +45,6 @@ const templateTabs: { id: TemplateTab; label: string }[] = [
   { id: 'environment', label: 'Environment' },
   { id: 'init', label: 'Init Script' },
 ];
-
-type EnvRow = { id: string; key: string; value: string };
-
-const toEnvRows = (env: Record<string, string>): EnvRow[] =>
-  Object.entries(env).map(([key, value]) => ({
-    id: `${key}-${Math.random().toString(36).slice(2, 8)}`,
-    key,
-    value,
-  }));
-
-const envRowsToMap = (rows: EnvRow[]) => {
-  const env: Record<string, string> = {};
-  rows.forEach((row) => {
-    const key = row.key.trim();
-    if (!key) return;
-    env[key] = row.value;
-  });
-  return env;
-};
 
 const buildSnapshot = (data: {
   description: string;
@@ -364,7 +345,7 @@ export default function WorkspaceTemplatesPage() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col p-6 max-w-7xl mx-auto space-y-4">
+    <div className="h-screen flex flex-col overflow-hidden p-6 max-w-7xl mx-auto space-y-4">
       {/* Git Status Bar */}
       {status && (
         <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
@@ -431,9 +412,9 @@ export default function WorkspaceTemplatesPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-12 gap-4 flex-1">
+      <div className="grid grid-cols-12 gap-4 flex-1 min-h-0">
         {/* Template List */}
-        <div className="col-span-4 rounded-xl bg-white/[0.02] border border-white/[0.06] flex flex-col min-h-[560px]">
+        <div className="col-span-4 rounded-xl bg-white/[0.02] border border-white/[0.06] flex flex-col min-h-0">
           <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
             <div className="flex items-center gap-2">
               <LayoutTemplate className="h-4 w-4 text-indigo-400" />
@@ -504,7 +485,7 @@ export default function WorkspaceTemplatesPage() {
         </div>
 
         {/* Editor */}
-        <div className="col-span-8 rounded-xl bg-white/[0.02] border border-white/[0.06] flex flex-col min-h-[560px]">
+        <div className="col-span-8 rounded-xl bg-white/[0.02] border border-white/[0.06] flex flex-col min-h-0">
           <div className="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-white">Workspace</p>
@@ -569,8 +550,10 @@ export default function WorkspaceTemplatesPage() {
               </div>
 
               <div className={cn(
-                "flex-1 min-h-0 overflow-y-auto p-5",
-                activeTab === 'init' ? "flex flex-col" : "space-y-4"
+                "flex-1 min-h-0 p-5",
+                activeTab === 'environment' || activeTab === 'init'
+                  ? "flex flex-col overflow-hidden"
+                  : "overflow-y-auto space-y-4"
               )}>
                 {activeTab === 'overview' && (
                   <div className="space-y-4">
@@ -680,78 +663,12 @@ export default function WorkspaceTemplatesPage() {
                 )}
 
                 {activeTab === 'environment' && (
-                  <div className="rounded-xl bg-white/[0.02] border border-white/[0.05] overflow-hidden">
-                    <div className="px-4 py-3 border-b border-white/[0.05] flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <FileText className="h-4 w-4 text-indigo-400" />
-                        <p className="text-xs text-white/50 font-medium">Environment Variables</p>
-                      </div>
-                      <button
-                        onClick={() =>
-                          setEnvRows((rows) => [
-                            ...rows,
-                            { id: Math.random().toString(36).slice(2), key: '', value: '' },
-                          ])
-                        }
-                        className="text-xs text-indigo-400 hover:text-indigo-300 font-medium"
-                      >
-                        + Add
-                      </button>
-                    </div>
-                    <div className="p-4 space-y-3">
-                      {envRows.length === 0 ? (
-                        <div className="py-6 text-center">
-                          <p className="text-xs text-white/40">No environment variables</p>
-                          <button
-                            onClick={() =>
-                              setEnvRows([{ id: Math.random().toString(36).slice(2), key: '', value: '' }])
-                            }
-                            className="mt-3 text-xs text-indigo-400 hover:text-indigo-300"
-                          >
-                            Add first variable
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          {envRows.map((row) => (
-                            <div key={row.id} className="flex items-center gap-2">
-                              <input
-                                value={row.key}
-                                onChange={(e) =>
-                                  setEnvRows((rows) =>
-                                    rows.map((r) => (r.id === row.id ? { ...r, key: e.target.value } : r))
-                                  )
-                                }
-                                placeholder="KEY"
-                                className="flex-1 px-3 py-2 rounded-lg bg-black/20 border border-white/[0.06] text-xs text-white placeholder:text-white/30 focus:outline-none focus:border-indigo-500/50"
-                              />
-                              <input
-                                value={row.value}
-                                onChange={(e) =>
-                                  setEnvRows((rows) =>
-                                    rows.map((r) => (r.id === row.id ? { ...r, value: e.target.value } : r))
-                                  )
-                                }
-                                placeholder="value"
-                                className="flex-1 px-3 py-2 rounded-lg bg-black/20 border border-white/[0.06] text-xs text-white placeholder:text-white/30 focus:outline-none focus:border-indigo-500/50"
-                              />
-                              <button
-                                onClick={() => setEnvRows((rows) => rows.filter((r) => r.id !== row.id))}
-                                className="p-2 rounded-lg text-white/40 hover:text-white/70 hover:bg-white/[0.06] transition-colors"
-                              >
-                                <X className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {envRows.length > 0 && (
-                        <p className="text-xs text-white/35 mt-4 pt-3 border-t border-white/[0.04]">
-                          Injected into workspace shells and MCP tool runs.
-                        </p>
-                      )}
-                    </div>
-                  </div>
+                  <EnvVarsEditor
+                    rows={envRows}
+                    onChange={setEnvRows}
+                    className="flex-1"
+                    description="Injected into workspace shells and MCP tool runs. Sensitive values (keys, tokens, passwords) are encrypted at rest."
+                  />
                 )}
 
                 {activeTab === 'init' && (
