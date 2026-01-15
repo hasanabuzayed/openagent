@@ -33,8 +33,10 @@ const IMAGE_CACHE_LIMIT = 50;
 const imageUrlCache = new Map<string, string>();
 
 function cacheImageUrl(path: string, url: string): void {
-  // If already cached, just update access order
+  // If already cached, revoke the duplicate URL and update access order
   if (imageUrlCache.has(path)) {
+    // Revoke the incoming duplicate URL to prevent memory leak from concurrent fetches
+    URL.revokeObjectURL(url);
     const existingUrl = imageUrlCache.get(path)!;
     imageUrlCache.delete(path);
     imageUrlCache.set(path, existingUrl);
