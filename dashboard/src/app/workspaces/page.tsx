@@ -159,20 +159,33 @@ export default function WorkspacesPage() {
     }
   }, [selectedWorkspace, showNewWorkspaceDialog]);
 
+  // Track the last selected workspace ID to avoid resetting state on refresh
+  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
+
   useEffect(() => {
-    if (!selectedWorkspace) return;
-    if (selectedWorkspace.distro) {
-      setSelectedDistro(selectedWorkspace.distro as ChrootDistro);
-    } else {
-      setSelectedDistro('ubuntu-noble');
+    if (!selectedWorkspace) {
+      setLastSelectedId(null);
+      return;
     }
-    setEnvRows(toEnvRows(selectedWorkspace.env_vars ?? {}));
-    setInitScript(selectedWorkspace.init_script ?? '');
-    setSelectedSkills(selectedWorkspace.skills ?? []);
-    setTemplateName(`${selectedWorkspace.name}-template`);
-    setTemplateDescription('');
-    setWorkspaceTab('overview');
-  }, [selectedWorkspace]);
+
+    // Only reset form state when switching to a DIFFERENT workspace, not on refresh
+    const isDifferentWorkspace = lastSelectedId !== selectedWorkspace.id;
+
+    if (isDifferentWorkspace) {
+      setLastSelectedId(selectedWorkspace.id);
+      if (selectedWorkspace.distro) {
+        setSelectedDistro(selectedWorkspace.distro as ChrootDistro);
+      } else {
+        setSelectedDistro('ubuntu-noble');
+      }
+      setEnvRows(toEnvRows(selectedWorkspace.env_vars ?? {}));
+      setInitScript(selectedWorkspace.init_script ?? '');
+      setSelectedSkills(selectedWorkspace.skills ?? []);
+      setTemplateName(`${selectedWorkspace.name}-template`);
+      setTemplateDescription('');
+      setWorkspaceTab('overview');
+    }
+  }, [selectedWorkspace, lastSelectedId]);
 
   useEffect(() => {
     if (newWorkspaceTemplate) {
@@ -238,15 +251,36 @@ export default function WorkspacesPage() {
     if (!newWorkspaceName.trim()) return;
     try {
       setCreating(true);
-      await createWorkspace({
+      const workspaceType = newWorkspaceTemplate ? 'chroot' : newWorkspaceType;
+      const created = await createWorkspace({
         name: newWorkspaceName,
-        workspace_type: newWorkspaceTemplate ? 'chroot' : newWorkspaceType,
+        workspace_type: workspaceType,
         template: newWorkspaceTemplate || undefined,
       });
       await loadData();
       setShowNewWorkspaceDialog(false);
       setNewWorkspaceName('');
       setNewWorkspaceTemplate('');
+
+      // Auto-select the new workspace
+      setSelectedWorkspace(created);
+
+      // Auto-trigger build for isolated (chroot) workspaces
+      if (workspaceType === 'chroot') {
+        setBuilding(true);
+        try {
+          const updated = await buildWorkspace(created.id, created.distro as ChrootDistro || 'ubuntu-noble', false);
+          setSelectedWorkspace(updated);
+          await loadData();
+        } catch (buildErr) {
+          showError(buildErr instanceof Error ? buildErr.message : 'Failed to start build');
+          // Refresh workspace to get error status
+          const refreshed = await getWorkspace(created.id);
+          setSelectedWorkspace(refreshed);
+        } finally {
+          setBuilding(false);
+        }
+      }
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Failed to create workspace');
     } finally {
