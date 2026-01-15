@@ -183,7 +183,7 @@ export default function WorkspaceTemplatesPage() {
       setDescription(template.description || '');
       setDistro(template.distro || '');
       setSelectedSkills(template.skills || []);
-      const rows = toEnvRows(template.env_vars || {}, template.encrypted_keys || []);
+      const rows = toEnvRows(template.env_vars || {}, template.encrypted_keys);
       setEnvRows(rows);
       setInitScript(template.init_script || '');
       baselineRef.current = buildSnapshot({
