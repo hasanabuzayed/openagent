@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { toast } from "@/components/toast";
 import { MarkdownContent } from "@/components/markdown-content";
@@ -17,6 +17,7 @@ import {
   streamControl,
   loadMission,
   getMission,
+  getMissionEvents,
   createMission,
   listMissions,
   setMissionStatus,
@@ -47,6 +48,7 @@ import {
   type Workspace,
   type DesktopSessionDetail,
   type DesktopSessionStatus,
+  type StoredEvent,
 } from "@/lib/api";
 import {
   Send,
@@ -718,6 +720,7 @@ function ThinkingGroupItem({
   }, [hasActiveItem, expanded, startTime]);
 
   const formatDuration = (seconds: number) => {
+    if (seconds <= 0) return "<1s";
     if (seconds < 60) return `${seconds}s`;
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -819,6 +822,7 @@ function ThinkingPanelItem({
   }, [item.done, item.startTime]);
 
   const formatDuration = (seconds: number) => {
+    if (seconds <= 0) return "<1s";
     if (seconds < 60) return `${seconds}s`;
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -1056,9 +1060,10 @@ function extractSubagentInfo(args: unknown): {
 // Parse subagent result for summary stats
 function parseSubagentResult(result: unknown): {
   success: boolean;
+  cancelled: boolean;
   summary: string | null;
 } {
-  if (!result) return { success: false, summary: null };
+  if (!result) return { success: false, cancelled: false, summary: null };
 
   // Handle string results
   if (typeof result === "string") {
@@ -1073,28 +1078,32 @@ function parseSubagentResult(result: unknown): {
     // Try to extract a meaningful summary from the result
     const lines = cleanedResult.split("\n").filter(l => l.trim());
     const summary = lines.length > 0 ? truncateText(lines[0], 100) : null;
-    return { success: !isError, summary };
+    return { success: !isError, cancelled: false, summary };
   }
 
   // Handle object results
   if (typeof result === "object") {
     const resultObj = result as Record<string, unknown>;
     const statusLower = typeof resultObj.status === "string" ? resultObj.status.toLowerCase() : "";
-    const isError = resultObj.error !== undefined ||
+    const isCancelled = statusLower === "cancelled";
+    const isError = !isCancelled && (
+                    resultObj.error !== undefined ||
                     resultObj.is_error === true ||
                     resultObj.success === false ||
-                    statusLower === "error" || statusLower === "failed";
+                    statusLower === "error" || statusLower === "failed");
     const summary = typeof resultObj.summary === "string" ? resultObj.summary :
                     typeof resultObj.message === "string" ? resultObj.message :
+                    typeof resultObj.reason === "string" ? resultObj.reason :
                     typeof resultObj.result === "string" ? truncateText(resultObj.result, 100) : null;
-    return { success: !isError, summary };
+    return { success: !isError && !isCancelled, cancelled: isCancelled, summary };
   }
 
-  return { success: true, summary: null };
+  return { success: true, cancelled: false, summary: null };
 }
 
 // Subagent/Background Task tool item with enhanced UX
-function SubagentToolItem({
+// Memoized to prevent re-renders when parent state changes
+const SubagentToolItem = memo(function SubagentToolItem({
   item,
 }: {
   item: Extract<ChatItem, { kind: "tool" }>;
@@ -1103,8 +1112,17 @@ function SubagentToolItem({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const isDone = item.result !== undefined;
 
-  const { agentName, description, prompt } = extractSubagentInfo(item.args);
-  const { success, summary } = isDone ? parseSubagentResult(item.result) : { success: false, summary: null };
+  // Memoize subagent info extraction
+  const { agentName, description, prompt } = useMemo(
+    () => extractSubagentInfo(item.args),
+    [item.args]
+  );
+
+  // Memoize result parsing
+  const { success, cancelled, summary } = useMemo(
+    () => (isDone ? parseSubagentResult(item.result) : { success: false, cancelled: false, summary: null }),
+    [isDone, item.result]
+  );
 
   // Update elapsed time while tool is running
   useEffect(() => {
@@ -1128,7 +1146,11 @@ function SubagentToolItem({
     ? formatDuration(Math.floor((item.endTime - item.startTime) / 1000))
     : formatDuration(elapsedSeconds);
 
-  const resultStr = item.result !== undefined ? formatToolArgs(item.result) : null;
+  // Memoize result string formatting
+  const resultStr = useMemo(
+    () => (item.result !== undefined ? formatToolArgs(item.result) : null),
+    [item.result]
+  );
 
   return (
     <div className="my-3">
@@ -1138,8 +1160,9 @@ function SubagentToolItem({
           "rounded-lg border overflow-hidden",
           "bg-white/[0.02]",
           !isDone && "border-purple-500/30",
-          isDone && success && "border-emerald-500/20",
-          isDone && !success && "border-red-500/20"
+          isDone && cancelled && "border-amber-500/20",
+          isDone && success && !cancelled && "border-emerald-500/20",
+          isDone && !success && !cancelled && "border-red-500/20"
         )}
       >
         {/* Header */}
@@ -1154,11 +1177,14 @@ function SubagentToolItem({
           <div className={cn(
             "flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center",
             !isDone && "bg-purple-500/20",
-            isDone && success && "bg-emerald-500/20",
-            isDone && !success && "bg-red-500/20"
+            isDone && cancelled && "bg-amber-500/20",
+            isDone && success && !cancelled && "bg-emerald-500/20",
+            isDone && !success && !cancelled && "bg-red-500/20"
           )}>
             {!isDone ? (
               <Cpu className="h-4 w-4 text-purple-400 animate-pulse" />
+            ) : cancelled ? (
+              <XCircle className="h-4 w-4 text-amber-400" />
             ) : success ? (
               <CheckCircle className="h-4 w-4 text-emerald-400" />
             ) : (
@@ -1172,8 +1198,9 @@ function SubagentToolItem({
               <span className={cn(
                 "text-sm font-medium",
                 !isDone && "text-purple-300",
-                isDone && success && "text-emerald-300",
-                isDone && !success && "text-red-300"
+                isDone && cancelled && "text-amber-300",
+                isDone && success && !cancelled && "text-emerald-300",
+                isDone && !success && !cancelled && "text-red-300"
               )}>
                 {agentName || "Subagent"}
               </span>
@@ -1190,6 +1217,15 @@ function SubagentToolItem({
                 <>
                   <span className="text-xs text-white/50">Running for {duration}</span>
                   <Loader className="h-3 w-3 animate-spin text-purple-400" />
+                </>
+              ) : cancelled ? (
+                <>
+                  <span className="text-xs text-amber-400">Cancelled</span>
+                  {summary && (
+                    <span className="text-xs text-white/40 truncate max-w-[200px]">
+                      — {summary}
+                    </span>
+                  )}
                 </>
               ) : (
                 <>
@@ -1295,7 +1331,7 @@ function SubagentToolItem({
       </div>
     </div>
   );
-}
+});
 
 // Extract image file paths from tool result strings
 // Matches patterns like "/path/to/image.png" or "screenshots/file.jpg"
@@ -1412,7 +1448,8 @@ function ImagePreview({ path }: { path: string }) {
 }
 
 // Tool call item component with collapsible UI
-function ToolCallItem({
+// Memoized to prevent re-renders when parent state changes
+const ToolCallItem = memo(function ToolCallItem({
   item,
 }: {
   item: Extract<ChatItem, { kind: "tool" }>;
@@ -1432,6 +1469,7 @@ function ToolCallItem({
   }, [isDone, item.startTime]);
 
   const formatDuration = (seconds: number) => {
+    if (seconds <= 0) return "<1s";
     if (seconds < 60) return `${seconds}s`;
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -1443,12 +1481,27 @@ function ToolCallItem({
     ? formatDuration(Math.floor((item.endTime - item.startTime) / 1000))
     : formatDuration(elapsedSeconds);
 
-  const argsStr = formatToolArgs(item.args);
-  const resultStr = item.result !== undefined ? formatToolArgs(item.result) : null;
-  
-  // Determine result status - check for explicit error indicators, not just keyword presence
-  const isError = (() => {
-    if (resultStr === null) return false;
+  // Memoize expensive string formatting - only recompute when item.args changes
+  const argsStr = useMemo(() => formatToolArgs(item.args), [item.args]);
+
+  // Memoize result string - only recompute when item.result changes
+  const resultStr = useMemo(
+    () => (item.result !== undefined ? formatToolArgs(item.result) : null),
+    [item.result]
+  );
+
+  // Memoize cancelled detection - check if tool was cancelled due to mission ending
+  const isCancelled = useMemo(() => {
+    if (typeof item.result === "object" && item.result !== null) {
+      const resultObj = item.result as Record<string, unknown>;
+      return resultObj.status === "cancelled";
+    }
+    return false;
+  }, [item.result]);
+
+  // Memoize error detection - only recompute when result changes
+  const isError = useMemo(() => {
+    if (resultStr === null || isCancelled) return false;
 
     // Check if the result is an object with explicit error fields
     if (typeof item.result === "object" && item.result !== null) {
@@ -1464,14 +1517,17 @@ function ToolCallItem({
            trimmedLower.startsWith("error -") ||
            trimmedLower.startsWith("failed:") ||
            trimmedLower.startsWith("exception:");
-  })();
+  }, [item.result, resultStr, isCancelled]);
 
-  // Get a preview of the args for the collapsed state
-  const argsPreview = truncateText(
-    typeof item.args === "object" && item.args !== null
-      ? Object.keys(item.args as Record<string, unknown>).slice(0, 2).join(", ")
-      : argsStr,
-    50
+  // Memoize args preview - only recompute when item.args changes
+  const argsPreview = useMemo(
+    () => truncateText(
+      typeof item.args === "object" && item.args !== null
+        ? Object.keys(item.args as Record<string, unknown>).slice(0, 2).join(", ")
+        : argsStr,
+      50
+    ),
+    [item.args, argsStr]
   );
 
   return (
@@ -1485,7 +1541,8 @@ function ToolCallItem({
           "text-white/40 hover:text-white/60 hover:bg-white/[0.06]",
           "transition-all duration-200",
           !isDone && "border-amber-500/20",
-          isDone && !isError && "border-emerald-500/20",
+          isDone && isCancelled && "border-amber-500/20",
+          isDone && !isError && !isCancelled && "border-emerald-500/20",
           isDone && isError && "border-red-500/20"
         )}
       >
@@ -1493,7 +1550,8 @@ function ToolCallItem({
           className={cn(
             "h-3 w-3",
             !isDone && "animate-pulse text-amber-400",
-            isDone && !isError && "text-emerald-400",
+            isDone && isCancelled && "text-amber-400",
+            isDone && !isError && !isCancelled && "text-emerald-400",
             isDone && isError && "text-red-400"
           )}
         />
@@ -1504,9 +1562,10 @@ function ToolCallItem({
           </span>
         )}
         <span className="text-xs text-white/30 ml-1">
-          {isDone ? `${duration}` : `${duration}...`}
+          {isDone ? (isCancelled ? "cancelled" : duration) : `${duration}...`}
         </span>
-        {isDone && !isError && <CheckCircle className="h-3 w-3 text-emerald-400" />}
+        {isDone && !isError && !isCancelled && <CheckCircle className="h-3 w-3 text-emerald-400" />}
+        {isDone && isCancelled && <XCircle className="h-3 w-3 text-amber-400" />}
         {isDone && isError && <XCircle className="h-3 w-3 text-red-400" />}
         {!isDone && <Loader className="h-3 w-3 animate-spin text-amber-400" />}
         <ChevronDown
@@ -1618,7 +1677,7 @@ function ToolCallItem({
       </div>
     </div>
   );
-}
+});
 
 // Collapsed tool group component - shows last tool with expand option
 function CollapsedToolGroup({
@@ -1728,6 +1787,9 @@ export default function ControlClient() {
   );
 
   const [runState, setRunState] = useState<ControlRunState>("idle");
+  const [runStateMissionId, setRunStateMissionId] = useState<string | null>(
+    null
+  );
   const [queueLen, setQueueLen] = useState(0);
 
   // Connection state for SSE stream - starts as disconnected until first event received
@@ -1744,13 +1806,18 @@ export default function ControlClient() {
   });
   const [diagTick, setDiagTick] = useState(0);
 
-  // Progress state (for "Subtask X of Y" indicator)
-  const [progress, setProgress] = useState<{
-    total: number;
-    completed: number;
-    current: string | null;
-    depth: number;
-  } | null>(null);
+  // Progress state (for "Subtask X of Y" indicator), tracked per mission
+  const [progressByMission, setProgressByMission] = useState<
+    Record<
+      string,
+      {
+        total: number;
+        completed: number;
+        current: string | null;
+        depth: number;
+      }
+    >
+  >({});
 
   // Mission state
   const [currentMission, setCurrentMission] = useState<Mission | null>(null);
@@ -1927,23 +1994,64 @@ export default function ControlClient() {
     return result;
   }, [items, showThinkingPanel]);
 
-  // Check if the mission we're viewing is actually running (not just any mission)
+  const runningMissionById = useMemo(() => {
+    return new Map(runningMissions.map((m) => [m.mission_id, m]));
+  }, [runningMissions]);
+
+  const viewingRunningInfo = useMemo(() => {
+    if (!viewingMissionId) return null;
+    return runningMissionById.get(viewingMissionId) ?? null;
+  }, [runningMissionById, viewingMissionId]);
+
+  const viewingRunState = useMemo<ControlRunState>(() => {
+    if (!viewingMissionId) return "idle";
+    if (viewingRunningInfo) {
+      if (viewingRunningInfo.state === "waiting_for_tool") return "waiting_for_tool";
+      if (viewingRunningInfo.state === "queued" || viewingRunningInfo.state === "running") {
+        return "running";
+      }
+      return "idle";
+    }
+    if (runStateMissionId === viewingMissionId) {
+      return runState;
+    }
+    return "idle";
+  }, [viewingMissionId, viewingRunningInfo, runStateMissionId, runState]);
+
+  const viewingQueueLen = useMemo(() => {
+    if (!viewingMissionId) return 0;
+    if (viewingRunningInfo) return viewingRunningInfo.queue_len;
+    if (runStateMissionId === viewingMissionId) return queueLen;
+    return 0;
+  }, [viewingMissionId, viewingRunningInfo, runStateMissionId, queueLen]);
+
   const viewingMissionIsRunning = useMemo(() => {
-    if (!viewingMissionId) return runState !== "idle";
-    const mission = runningMissions.find((m) => m.mission_id === viewingMissionId);
-    if (!mission) return false;
-    // Check the actual state from the backend
-    return mission.state === "running" || mission.state === "waiting_for_tool";
-  }, [viewingMissionId, runningMissions, runState]);
+    if (!viewingMissionId) return false;
+    if (viewingRunningInfo) {
+      return (
+        viewingRunningInfo.state === "running" ||
+        viewingRunningInfo.state === "waiting_for_tool" ||
+        viewingRunningInfo.state === "queued"
+      );
+    }
+    if (runStateMissionId === viewingMissionId) {
+      return runState !== "idle";
+    }
+    return false;
+  }, [viewingMissionId, viewingRunningInfo, runStateMissionId, runState]);
+
+  const viewingProgress = useMemo(() => {
+    if (!viewingMissionId) return null;
+    return progressByMission[viewingMissionId] ?? null;
+  }, [progressByMission, viewingMissionId]);
 
   // Check if the mission we're viewing appears stalled (no activity for 60+ seconds)
   const viewingMissionStallSeconds = useMemo(() => {
     if (!viewingMissionId) return 0;
-    const mission = runningMissions.find((m) => m.mission_id === viewingMissionId);
-    if (!mission) return 0;
-    if (mission.state !== "running") return 0;
-    return mission.seconds_since_activity;
-  }, [viewingMissionId, runningMissions]);
+    if (!viewingRunningInfo) return 0;
+    if (viewingRunningInfo.state !== "running") return 0;
+    return viewingRunningInfo.seconds_since_activity;
+  }, [viewingMissionId, viewingRunningInfo]);
 
   const hasPendingQuestion = useMemo(
     () =>
@@ -1956,8 +2064,25 @@ export default function ControlClient() {
     [items]
   );
 
-  const isViewingMissionStalled = viewingMissionStallSeconds >= 60;
-  const isViewingMissionSeverelyStalled = viewingMissionStallSeconds >= 120;
+  // Check if there are any pending tool calls (tools without results)
+  // These may be long-running operations like desktop automation or subagents
+  // When tools are running, we should be less aggressive about stall warnings
+  const hasPendingToolCalls = useMemo(
+    () =>
+      items.some(
+        (item) =>
+          item.kind === "tool" &&
+          item.name !== "question" &&
+          item.result === undefined
+      ),
+    [items]
+  );
+
+  // Use higher threshold when tools are actively running (they may not emit events during execution)
+  const stallThreshold = hasPendingToolCalls ? 180 : 60;
+  const severeStallThreshold = hasPendingToolCalls ? 300 : 120;
+  const isViewingMissionStalled = viewingMissionStallSeconds >= stallThreshold;
+  const isViewingMissionSeverelyStalled = viewingMissionStallSeconds >= severeStallThreshold;
 
   const recentMissionList = useMemo(() => {
     if (recentMissions.length === 0) return [];
@@ -1974,14 +2099,20 @@ export default function ControlClient() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const viewingMissionIdRef = useRef<string | null>(null);
+  const runStateMissionIdRef = useRef<string | null>(null);
   const runningMissionsRef = useRef<RunningMissionInfo[]>([]);
   const currentMissionRef = useRef<Mission | null>(null);
   const viewingMissionRef = useRef<Mission | null>(null);
+  const submittingRef = useRef(false); // Guard against double-submission
 
   // Keep refs in sync with state
   useEffect(() => {
     viewingMissionIdRef.current = viewingMissionId;
   }, [viewingMissionId]);
+
+  useEffect(() => {
+    runStateMissionIdRef.current = runStateMissionId;
+  }, [runStateMissionId]);
 
   useEffect(() => {
     runningMissionsRef.current = runningMissions;
@@ -2270,21 +2401,33 @@ export default function ControlClient() {
   // Derive working directory from mission's desktop sessions for file path resolution
   const missionWorkingDirectory = useMemo(() => {
     const mission = viewingMission ?? currentMission;
-    if (!mission?.desktop_sessions?.length) return undefined;
+    if (!mission) return undefined;
 
-    // Try to find screenshots_dir from any session (prefer active/latest)
-    for (let i = mission.desktop_sessions.length - 1; i >= 0; i--) {
-      const session = mission.desktop_sessions[i];
-      if (session?.screenshots_dir) {
-        // screenshots_dir is like /path/to/workspaces/mission-xxx/screenshots/
-        // We want the parent: /path/to/workspaces/mission-xxx/
-        const dir = session.screenshots_dir.replace(/\/?$/, ''); // remove trailing slash
-        const parent = dir.substring(0, dir.lastIndexOf('/'));
-        if (parent) return parent;
+    if (mission.desktop_sessions?.length) {
+      // Try to find screenshots_dir from any session (prefer active/latest)
+      for (let i = mission.desktop_sessions.length - 1; i >= 0; i--) {
+        const session = mission.desktop_sessions[i];
+        if (session?.screenshots_dir) {
+          // screenshots_dir is like /path/to/workspaces/mission-xxx/screenshots/
+          // We want the parent: /path/to/workspaces/mission-xxx/
+          const dir = session.screenshots_dir.replace(/\/?$/, ""); // remove trailing slash
+          const parent = dir.substring(0, dir.lastIndexOf("/"));
+          if (parent) return parent;
+        }
       }
     }
-    return undefined;
-  }, [viewingMission, currentMission]);
+
+    const shortId = mission.id?.slice(0, 8);
+    if (!shortId) return undefined;
+
+    const workspace =
+      workspaces.find((ws) => ws.id === mission.workspace_id) ??
+      workspaces.find((ws) => ws.workspace_type === "host");
+
+    if (!workspace?.path) return undefined;
+    const cleanRoot = workspace.path.replace(/\/+$/, "");
+    return `${cleanRoot}/workspaces/mission-${shortId}`;
+  }, [viewingMission, currentMission, workspaces]);
 
   const missionHistoryToItems = useCallback((mission: Mission): ChatItem[] => {
     // Estimate timestamps based on mission creation time
@@ -2311,6 +2454,178 @@ export default function ControlClient() {
         };
       }
     });
+  }, []);
+
+  // Convert stored events (from SQLite) to ChatItems for display
+  // This enables full history replay including tool calls on page refresh
+  const eventsToItems = useCallback((events: StoredEvent[]): ChatItem[] => {
+    const items: ChatItem[] = [];
+    const toolCallMap = new Map<string, number>(); // tool_call_id -> index in items
+    // Track current in-progress thinking item index for consolidation
+    // Multiple thinking events (deltas) are streamed and stored; we consolidate them here
+    let currentThinkingIdx: number | null = null;
+
+    // Helper to finalize pending thinking item
+    const finalizePendingThinking = (endTime: number) => {
+      if (currentThinkingIdx !== null) {
+        const pending = items[currentThinkingIdx] as Extract<ChatItem, { kind: "thinking" }>;
+        if (!pending.done) {
+          items[currentThinkingIdx] = {
+            ...pending,
+            done: true,
+            endTime,
+          };
+        }
+        currentThinkingIdx = null;
+      }
+    };
+
+    for (const event of events) {
+      const timestamp = new Date(event.timestamp).getTime();
+
+      switch (event.event_type) {
+        case "user_message":
+          // Finalize any pending thinking before user message
+          finalizePendingThinking(timestamp);
+          items.push({
+            kind: "user" as const,
+            id: `event-${event.id}`,
+            content: event.content,
+            timestamp,
+          });
+          break;
+
+        case "assistant_message": {
+          // Finalize any pending thinking before assistant message
+          finalizePendingThinking(timestamp);
+          const meta = event.metadata || {};
+          const isFailure = meta.success === false;
+
+          // When mission fails, mark all pending tool calls as failed
+          // This ensures subagent headers don't stay stuck showing "Running for X"
+          if (isFailure) {
+            const errorMessage = event.content || "Mission failed";
+            for (let i = 0; i < items.length; i++) {
+              const it = items[i];
+              if (it.kind === "tool" && it.result === undefined) {
+                items[i] = {
+                  ...it,
+                  result: { error: errorMessage, status: "failed" },
+                  endTime: timestamp,
+                };
+              }
+            }
+          }
+
+          items.push({
+            kind: "assistant" as const,
+            id: `event-${event.id}`,
+            content: event.content,
+            success: !isFailure,
+            costCents: typeof meta.cost_cents === "number" ? meta.cost_cents : 0,
+            model: typeof meta.model === "string" ? meta.model : null,
+            timestamp,
+          });
+          break;
+        }
+
+        case "thinking": {
+          // Consolidate thinking events: backend streams multiple deltas that we merge
+          const meta = event.metadata || {};
+          const isDone = meta.done === true;
+          const content = event.content || "";
+
+          if (currentThinkingIdx !== null) {
+            // Update existing thinking item with latest/longer content
+            const existing = items[currentThinkingIdx] as Extract<ChatItem, { kind: "thinking" }>;
+            // Keep the longer content (backend may send cumulative or final)
+            const newContent = content.length > existing.content.length ? content : existing.content;
+            items[currentThinkingIdx] = {
+              ...existing,
+              content: newContent,
+              done: isDone,
+              endTime: isDone ? timestamp : existing.endTime,
+            };
+            if (isDone) {
+              currentThinkingIdx = null; // Reset for next thinking session
+            }
+          } else {
+            // Create new thinking item
+            const newIdx = items.length;
+            items.push({
+              kind: "thinking" as const,
+              id: `event-${event.id}`,
+              content,
+              done: isDone,
+              startTime: timestamp,
+              endTime: isDone ? timestamp : undefined,
+            });
+            if (!isDone) {
+              currentThinkingIdx = newIdx; // Track for consolidation
+            }
+          }
+          break;
+        }
+
+        case "tool_call": {
+          // Finalize any pending thinking before tool call
+          finalizePendingThinking(timestamp);
+          const toolCallId = event.tool_call_id || `unknown-${event.id}`;
+          const name = event.tool_name || "unknown";
+          const isUiTool = name.startsWith("ui_") || name === "question";
+          // Parse args from content (stored as JSON string)
+          let args: unknown = undefined;
+          try {
+            args = event.content ? JSON.parse(event.content) : undefined;
+          } catch {
+            args = event.content;
+          }
+          const toolItem: ChatItem = {
+            kind: "tool" as const,
+            id: `tool-${toolCallId}`,
+            toolCallId,
+            name,
+            args,
+            isUiTool,
+            startTime: timestamp,
+            result: undefined,
+            endTime: undefined,
+          };
+          toolCallMap.set(toolCallId, items.length);
+          items.push(toolItem);
+          break;
+        }
+
+        case "tool_result": {
+          const toolCallId = event.tool_call_id || "";
+          const idx = toolCallMap.get(toolCallId);
+          if (idx !== undefined) {
+            // Update existing tool item with result
+            const toolItem = items[idx] as Extract<ChatItem, { kind: "tool" }>;
+            // Parse result from content
+            let result: unknown = event.content;
+            try {
+              result = event.content ? JSON.parse(event.content) : event.content;
+            } catch {
+              // Keep as string if not valid JSON
+            }
+            items[idx] = {
+              ...toolItem,
+              result,
+              endTime: timestamp,
+            };
+          }
+          break;
+        }
+
+        // Skip other event types (error, mission_status_changed, etc.)
+      }
+    }
+
+    // Finalize any pending thinking item (e.g., if done event wasn't stored)
+    finalizePendingThinking(Date.now());
+
+    return items;
   }, []);
 
   // Load mission from URL param on mount (and retry on auth success)
@@ -2348,11 +2663,16 @@ export default function ControlClient() {
       setViewingMissionId(id); // Set viewing ID immediately to prevent "Agent is working..." flash
       fetchingMissionIdRef.current = id; // Track which mission we're loading
       try {
-        const mission = await loadMission(id);
+        // Load mission and events in parallel for faster load
+        const [mission, events] = await Promise.all([
+          loadMission(id),
+          getMissionEvents(id).catch(() => null), // Don't fail if events unavailable
+        ]);
         if (cancelled || fetchingMissionIdRef.current !== id) return;
         setCurrentMission(mission);
         setViewingMission(mission);
-        setItems(missionHistoryToItems(mission));
+        // Use events if available, otherwise fall back to basic history
+        setItems(events ? eventsToItems(events) : missionHistoryToItems(mission));
         applyDesktopSessionState(mission);
       } catch (err) {
         if (cancelled || fetchingMissionIdRef.current !== id) return;
@@ -2388,9 +2708,17 @@ export default function ControlClient() {
         if (mission) {
           setCurrentMission(mission);
           setViewingMission(mission);
+          // Show basic history immediately, then load full events
           setItems(missionHistoryToItems(mission));
           applyDesktopSessionState(mission);
           router.replace(`/control?mission=${mission.id}`, { scroll: false });
+          // Load full events in background (including tool calls)
+          getMissionEvents(mission.id)
+            .then((events) => {
+              if (cancelled) return;
+              setItems(eventsToItems(events));
+            })
+            .catch(() => {}); // Keep basic history on failure
           return;
         }
 
@@ -2688,14 +3016,19 @@ export default function ControlClient() {
       // Always load fresh history from API when switching missions
       // This ensures we don't show stale cached events
       try {
-        const mission = await getMission(missionId);
+        // Load mission and events in parallel for faster load
+        const [mission, events] = await Promise.all([
+          getMission(missionId),
+          getMissionEvents(missionId).catch(() => null), // Don't fail if events unavailable
+        ]);
 
         // Race condition guard: only update if this is still the mission we want
         if (fetchingMissionIdRef.current !== missionId) {
           return; // Another mission was requested, discard this response
         }
 
-        const historyItems = missionHistoryToItems(mission);
+        // Use events if available, otherwise fall back to basic history
+        const historyItems = events ? eventsToItems(events) : missionHistoryToItems(mission);
         setItems(historyItems);
         // Check if mission has an active desktop session (stored metadata or fallback to history)
         applyDesktopSessionState(mission);
@@ -2735,7 +3068,7 @@ export default function ControlClient() {
         }
       }
     },
-    [missionItems, missionHistoryToItems, applyDesktopSessionState, router]
+    [missionItems, missionHistoryToItems, eventsToItems, applyDesktopSessionState, router]
   );
 
   // Sync viewingMissionId with currentMission only when there's no explicit viewing mission set
@@ -2815,15 +3148,24 @@ export default function ControlClient() {
       setCurrentMission(resumed);
       setViewingMission(resumed);
       setViewingMissionId(resumed.id);
-      const historyItems = missionHistoryToItems(resumed);
-      setItems(historyItems);
-      setMissionItems((prev) => ({ ...prev, [resumed.id]: historyItems }));
+      // Show basic history immediately
+      const basicItems = missionHistoryToItems(resumed);
+      setItems(basicItems);
+      setMissionItems((prev) => ({ ...prev, [resumed.id]: basicItems }));
       refreshRecentMissions();
       toast.success(
-        cleanWorkspace 
-          ? "Mission resumed with clean workspace" 
+        cleanWorkspace
+          ? "Mission resumed with clean workspace"
           : (mission.status === "blocked" ? "Continuing mission" : "Mission resumed")
       );
+      // Load full events in background (including tool calls)
+      getMissionEvents(resumed.id)
+        .then((events) => {
+          const fullItems = eventsToItems(events);
+          setItems(fullItems);
+          setMissionItems((prev) => ({ ...prev, [resumed.id]: fullItems }));
+        })
+        .catch(() => {}); // Keep basic history on failure
     } catch (err) {
       console.error("Failed to resume mission:", err);
       toast.error("Failed to resume mission");
@@ -2845,12 +3187,18 @@ export default function ControlClient() {
     getProgress()
       .then((p) => {
         if (mounted && p.total_subtasks > 0) {
-          setProgress({
-            total: p.total_subtasks,
-            completed: p.completed_subtasks,
-            current: p.current_subtask,
-            depth: p.current_depth,
-          });
+          const currentId = currentMissionRef.current?.id;
+          if (currentId) {
+            setProgressByMission((prev) => ({
+              ...prev,
+              [currentId]: {
+                total: p.total_subtasks,
+                completed: p.completed_subtasks,
+                current: p.current_subtask,
+                depth: p.current_depth,
+              },
+            }));
+          }
         }
       })
       .catch(() => {}); // Ignore errors
@@ -2916,14 +3264,24 @@ export default function ControlClient() {
 
         // If we just reconnected, refresh the viewed mission's history to catch missed events
         if (wasReconnecting && viewingId) {
-          getMission(viewingId)
-            .then((mission) => {
+          Promise.all([getMission(viewingId), getMissionEvents(viewingId)])
+            .then(([mission, events]) => {
               if (!mounted) return;
-              const historyItems = missionHistoryToItems(mission);
+              const historyItems = eventsToItems(events);
               setItems(historyItems);
               setMissionItems((prev) => ({ ...prev, [viewingId]: historyItems }));
             })
-            .catch(() => {}); // Ignore errors - we'll get updates via stream
+            .catch(() => {
+              // Fall back to basic history if events fail
+              getMission(viewingId)
+                .then((mission) => {
+                  if (!mounted) return;
+                  const historyItems = missionHistoryToItems(mission);
+                  setItems(historyItems);
+                  setMissionItems((prev) => ({ ...prev, [viewingId]: historyItems }));
+                })
+                .catch(() => {}); // Ignore errors - we'll get updates via stream
+            });
         }
 
         const st = data["state"];
@@ -2931,48 +3289,51 @@ export default function ControlClient() {
           typeof st === "string" ? (st as ControlRunState) : "idle";
         const q = data["queue_len"];
 
-        // Status filtering: only apply status if it matches the mission we're viewing
-        const statusMissionId = typeof data["mission_id"] === "string" ? data["mission_id"] : null;
+        // Status filtering: only apply UI side-effects if it matches the mission we're viewing
+        const statusMissionId =
+          typeof data["mission_id"] === "string" ? data["mission_id"] : null;
+        const effectiveMissionId =
+          statusMissionId ?? runStateMissionIdRef.current ?? null;
         let shouldApplyStatus = true;
 
-        if (statusMissionId) {
-          // Status for a specific mission - only apply if viewing that mission
-          shouldApplyStatus = statusMissionId === viewingId;
+        if (effectiveMissionId) {
+          shouldApplyStatus = effectiveMissionId === viewingId;
         } else {
-          // Status for main session - only apply if viewing main mission, no specific mission,
-          // or currentMissionId hasn't loaded yet (to match event filter logic and avoid
-          // desktop stream staying open when status=idle comes during loading)
+          // No mission id available - only apply if viewing main mission or none selected
           shouldApplyStatus = !viewingId || viewingId === currentMissionId || !currentMissionId;
         }
 
-        if (shouldApplyStatus) {
-          setQueueLen(typeof q === "number" ? q : 0);
+        setQueueLen(typeof q === "number" ? q : 0);
+        setRunStateMissionId(effectiveMissionId);
 
-          // Clear progress and auto-close desktop stream when idle
-          if (newState === "idle") {
-            setProgress(null);
+        // Clear progress and auto-close desktop stream when idle for the active mission
+        if (newState === "idle" && effectiveMissionId) {
+          setProgressByMission((prev) => {
+            if (!prev[effectiveMissionId]) return prev;
+            const { [effectiveMissionId]: _removed, ...rest } = prev;
+            return rest;
+          });
+          if (shouldApplyStatus) {
             // Auto-close desktop stream when agent finishes
             setShowDesktopStream(false);
           }
-
-          // If we reconnected and agent is already running, add a visual indicator
-          setRunState((prevState) => {
-            // Only show reconnect notice if we weren't already tracking this as running
-            // and there's no active thinking/phase item (means we missed some events)
-            if (newState === "running" && prevState === "idle") {
-              setItems((prevItems) => {
-                const hasActiveThinking = prevItems.some(
-                  (it) =>
-                    (it.kind === "thinking" && !it.done) || it.kind === "phase"
-                );
-                // If there's no active streaming item, the user is seeing stale state
-                // The "Agent is working..." indicator will show via the render logic
-                return prevItems;
-              });
-            }
-            return newState;
-          });
         }
+
+        // If we reconnected and agent is already running, add a visual indicator
+        setRunState((prevState) => {
+          if (shouldApplyStatus && newState === "running" && prevState === "idle") {
+            setItems((prevItems) => {
+              const hasActiveThinking = prevItems.some(
+                (it) =>
+                  (it.kind === "thinking" && !it.done) || it.kind === "phase"
+              );
+              // If there's no active streaming item, the user is seeing stale state
+              // The "Agent is working..." indicator will show via the render logic
+              return prevItems;
+            });
+          }
+          return newState;
+        });
         return;
       }
 
@@ -3049,20 +3410,44 @@ export default function ControlClient() {
         }
 
         const resumable = data["resumable"] === true;
-        setItems((prev) => [
-          ...prev.filter((it) => it.kind !== "thinking" || it.done),
-          {
-            kind: "assistant",
-            id: String(data["id"] ?? Date.now()),
-            content: String(data["content"] ?? ""),
-            success: Boolean(data["success"]),
-            costCents: Number(data["cost_cents"] ?? 0),
-            model: data["model"] ? String(data["model"]) : null,
-            timestamp: Date.now(),
-            sharedFiles,
-            resumable,
-          },
-        ]);
+        // Use strict equality to match eventsToItems behavior:
+        // undefined means no explicit status, only false means actual failure
+        const isFailure = data["success"] === false;
+        setItems((prev) => {
+          // Filter out incomplete thinking
+          let filtered = prev.filter((it) => it.kind !== "thinking" || it.done);
+
+          // When mission fails, mark all pending tool calls as failed
+          // This ensures subagent headers don't stay stuck showing "Running for X"
+          if (isFailure) {
+            const errorMessage = String(data["content"] ?? "Mission failed");
+            filtered = filtered.map((it) => {
+              if (it.kind === "tool" && it.result === undefined) {
+                return {
+                  ...it,
+                  result: { error: errorMessage, status: "failed" },
+                  endTime: Date.now(),
+                };
+              }
+              return it;
+            });
+          }
+
+          return [
+            ...filtered,
+            {
+              kind: "assistant",
+              id: String(data["id"] ?? Date.now()),
+              content: String(data["content"] ?? ""),
+              success: !isFailure,
+              costCents: Number(data["cost_cents"] ?? 0),
+              model: data["model"] ? String(data["model"]) : null,
+              timestamp: Date.now(),
+              sharedFiles,
+              resumable,
+            },
+          ];
+        });
         return;
       }
 
@@ -3281,14 +3666,60 @@ export default function ControlClient() {
         }
       }
 
+      // Handle mission status changes - mark pending tools as cancelled when mission ends
+      if (event.type === "mission_status_changed" && isRecord(data)) {
+        const newStatus = String(data["status"] ?? "");
+        const missionId = typeof data["mission_id"] === "string" ? data["mission_id"] : undefined;
+
+        // When mission is no longer active, mark all pending tool calls as cancelled
+        if (newStatus !== "active") {
+          const now = Date.now();
+          setItems((prev) =>
+            prev.map((item) => {
+              if (item.kind === "tool" && item.result === undefined) {
+                return {
+                  ...item,
+                  result: { status: "cancelled", reason: `Mission ${newStatus}` },
+                  endTime: now,
+                };
+              }
+              return item;
+            })
+          );
+
+          // Also update the mission in our local state if it matches
+          if (missionId) {
+            setMissions((prev) =>
+              prev.map((m) =>
+                m.id === missionId ? { ...m, status: newStatus as MissionStatus } : m
+              )
+            );
+            if (currentMissionRef.current?.id === missionId) {
+              setCurrentMission((prev) =>
+                prev ? { ...prev, status: newStatus as MissionStatus } : prev
+              );
+            }
+          }
+        }
+      }
+
       // Handle progress updates
       if (event.type === "progress" && isRecord(data)) {
-        setProgress({
-          total: Number(data["total_subtasks"] ?? 0),
-          completed: Number(data["completed_subtasks"] ?? 0),
-          current: data["current_subtask"] as string | null,
-          depth: Number(data["depth"] ?? 0),
-        });
+        const progressMissionId =
+          typeof data["mission_id"] === "string"
+            ? data["mission_id"]
+            : currentMissionRef.current?.id ?? null;
+        if (progressMissionId) {
+          setProgressByMission((prev) => ({
+            ...prev,
+            [progressMissionId]: {
+              total: Number(data["total_subtasks"] ?? 0),
+              completed: Number(data["completed_subtasks"] ?? 0),
+              current: data["current_subtask"] as string | null,
+              depth: Number(data["depth"] ?? 0),
+            },
+          }));
+        }
       }
     };
 
@@ -3328,7 +3759,7 @@ export default function ControlClient() {
     };
   }, []);
 
-  const status = useMemo(() => statusLabel(runState), [runState]);
+  const status = useMemo(() => statusLabel(viewingRunState), [viewingRunState]);
   const StatusIcon = status.Icon;
 
   const streamHints = useMemo(() => {
@@ -3359,20 +3790,33 @@ export default function ControlClient() {
   }, [streamDiagnostics, diagTick]);
 
   const handleCopyDiagnostics = useCallback(async () => {
+    const mission = viewingMission ?? currentMission;
     const payload = {
       captured_at: new Date().toISOString(),
+      mission: mission ? {
+        id: mission.id,
+        status: mission.status,
+        title: mission.title,
+        workspace_id: mission.workspace_id,
+        workspace_name: mission.workspace_name,
+      } : null,
+      stream: {
+        phase: streamDiagnostics.phase,
+        status: streamDiagnostics.status,
+        bytes: streamDiagnostics.bytes,
+        last_event: streamDiagnostics.lastEventAt,
+        last_error: streamDiagnostics.lastError,
+      },
       connection_state: connectionState,
       reconnect_attempt: reconnectAttempt,
-      stream: streamDiagnostics,
-      user_agent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
     };
     try {
       await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-      toast.success("Copied stream diagnostics");
+      toast.success("Copied debug info");
     } catch {
-      toast.error("Failed to copy diagnostics");
+      toast.error("Failed to copy");
     }
-  }, [connectionState, reconnectAttempt, streamDiagnostics]);
+  }, [connectionState, reconnectAttempt, streamDiagnostics, viewingMission, currentMission]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3380,23 +3824,27 @@ export default function ControlClient() {
     if (!content) return;
 
     const targetMissionId = viewingMissionIdRef.current;
-    const currentMissionId = currentMissionRef.current?.id ?? null;
 
-    if (targetMissionId && targetMissionId !== currentMissionId) {
+    // Always sync with backend before sending to prevent mission routing bugs.
+    // The backend's current_mission can get out of sync (e.g., from another tab or auto-creation).
+    if (targetMissionId) {
       try {
-        console.debug("[control] switching current mission before send", {
-          from: currentMissionId,
-          to: targetMissionId,
-        });
+        console.debug("[control] syncing mission before send", { targetMissionId });
         const mission = await loadMission(targetMissionId);
         setCurrentMission(mission);
         setViewingMission(mission);
         setViewingMissionId(mission.id);
-        setItems(missionHistoryToItems(mission));
+        // Only update items if history changed (avoid flicker for in-progress conversations)
+        const currentIds = items.filter(i => i.kind === "user" || i.kind === "assistant").map(i => i.id).join(",");
+        const newItems = missionHistoryToItems(mission);
+        const newIds = newItems.filter(i => i.kind === "user" || i.kind === "assistant").map(i => i.id).join(",");
+        if (currentIds !== newIds) {
+          setItems(newItems);
+        }
         applyDesktopSessionState(mission);
       } catch (err) {
-        console.error("Failed to switch mission before sending:", err);
-        toast.error("Failed to switch mission before sending");
+        console.error("Failed to sync mission before sending:", err);
+        toast.error("Failed to sync mission before sending");
         return;
       }
     }
@@ -3412,7 +3860,7 @@ export default function ControlClient() {
     // Message is queued only if agent is currently busy AND there are existing user messages
     // The first message in a conversation should never be shown as queued
     const hasExistingUserMessages = items.some((item) => item.kind === "user");
-    const willBeQueued = runState !== "idle" && hasExistingUserMessages;
+    const willBeQueued = viewingMissionIsRunning && hasExistingUserMessages;
 
     setItems((prev) => [
       ...prev,
@@ -3452,24 +3900,33 @@ export default function ControlClient() {
     const { content, agent } = payload;
     if (!content.trim()) return;
 
-    const targetMissionId = viewingMissionIdRef.current;
-    const currentMissionId = currentMissionRef.current?.id ?? null;
+    // Guard against double-submission (e.g., double-click, React StrictMode)
+    if (submittingRef.current) {
+      console.debug("[control] ignoring duplicate submission");
+      return;
+    }
+    submittingRef.current = true;
 
-    if (targetMissionId && targetMissionId !== currentMissionId) {
+    const targetMissionId = viewingMissionIdRef.current;
+
+    // Sync mission state before sending (for UI consistency)
+    if (targetMissionId) {
       try {
-        console.debug("[control] switching current mission before send", {
-          from: currentMissionId,
-          to: targetMissionId,
-        });
         const mission = await loadMission(targetMissionId);
         setCurrentMission(mission);
         setViewingMission(mission);
         setViewingMissionId(mission.id);
-        setItems(missionHistoryToItems(mission));
+        const currentIds = items.filter(i => i.kind === "user" || i.kind === "assistant").map(i => i.id).join(",");
+        const newItems = missionHistoryToItems(mission);
+        const newIds = newItems.filter(i => i.kind === "user" || i.kind === "assistant").map(i => i.id).join(",");
+        if (currentIds !== newIds) {
+          setItems(newItems);
+        }
         applyDesktopSessionState(mission);
       } catch (err) {
-        console.error("Failed to switch mission before sending:", err);
-        toast.error("Failed to switch mission before sending");
+        console.error("Failed to sync mission before sending:", err);
+        toast.error("Failed to sync mission before sending");
+        submittingRef.current = false;
         return;
       }
     }
@@ -3480,9 +3937,7 @@ export default function ControlClient() {
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const timestamp = Date.now();
     const hasExistingUserMessages = items.some((item) => item.kind === "user");
-    const willBeQueued = runState !== "idle" && hasExistingUserMessages;
-
-    // Display the original content with agent mention for UI
+    const willBeQueued = viewingMissionIsRunning && hasExistingUserMessages;
     const displayContent = agent ? `@${agent} ${content}` : content;
 
     setItems((prev) => [
@@ -3497,8 +3952,11 @@ export default function ControlClient() {
     ]);
 
     try {
-      // Send content to API, with agent as separate parameter
-      const { id, queued } = await postControlMessage(content, agent ? { agent } : undefined);
+      // Send message with mission_id - backend handles routing (main vs parallel)
+      const { id, queued } = await postControlMessage(content, {
+        agent: agent || undefined,
+        mission_id: targetMissionId || undefined,
+      });
       setItems((prev) => {
         const otherUserMessages = prev.filter((item) => item.kind === "user" && item.id !== tempId);
         const isFirstMessage = otherUserMessages.length === 0;
@@ -3511,10 +3969,17 @@ export default function ControlClient() {
       console.error(err);
       setItems((prev) => prev.filter((item) => item.id !== tempId));
       toast.error("Failed to send message");
+    } finally {
+      submittingRef.current = false;
     }
-  }, [items, runState, applyDesktopSessionState, missionHistoryToItems]);
+  }, [items, viewingMissionIsRunning, applyDesktopSessionState, missionHistoryToItems]);
 
   const handleStop = async () => {
+    const targetId = viewingMissionIdRef.current;
+    if (targetId) {
+      await handleCancelMission(targetId);
+      return;
+    }
     try {
       await cancelControl();
       toast.success("Cancelled");
@@ -3577,8 +4042,16 @@ export default function ControlClient() {
                     )}
                     title={missionStatus?.label}
                   />
+                  {activeMission.workspace_name && (
+                    <>
+                      <span className="text-sm font-medium text-white/50">
+                        {activeMission.workspace_name}
+                      </span>
+                      <div className="h-4 w-px bg-white/20" />
+                    </>
+                  )}
                   <span className="text-sm font-medium text-white/70">
-                    {activeMission.workspace_name || activeMission.id.slice(0, 8)}
+                    {[activeMission.agent, activeMission.id.slice(0, 8)].filter(Boolean).join(' · ')}
                   </span>
                 </>
               ) : (
@@ -3659,9 +4132,9 @@ export default function ControlClient() {
                     {/* Show sessions from API if available, otherwise show hardcoded list */}
                     {desktopSessions.length > 0 ? (
                       <>
-                        {desktopSessions.filter(s => s.process_running).map((session) => (
+                        {desktopSessions.filter(s => s.process_running).map((session, index) => (
                           <div
-                            key={session.display}
+                            key={`${session.display}-${session.mission_id || index}`}
                             className={cn(
                               "flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-white/[0.04]",
                               desktopDisplayId === session.display
@@ -3834,162 +4307,121 @@ export default function ControlClient() {
               </>
             )}
 
-            {/* Stream diagnostics toggle */}
+            {/* Run state indicator with debug dropdown */}
             <div className="relative">
               <button
                 onClick={() => setShowStreamDiagnostics((prev) => !prev)}
-                className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-xs text-white/70 transition-colors hover:bg-white/[0.04]"
-                title="Stream diagnostics"
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-2 py-1 transition-colors hover:bg-white/[0.04]",
+                  status.className
+                )}
+                title="Click for debug info"
               >
-                <span
+                <StatusIcon
                   className={cn(
-                    "h-2 w-2 rounded-full",
-                    (streamDiagnostics.phase === "streaming" || streamDiagnostics.phase === "open") &&
-                      "bg-emerald-400",
-                    streamDiagnostics.phase === "connecting" && "bg-amber-400 animate-pulse",
-                    streamDiagnostics.phase === "error" && "bg-red-400",
-                    streamDiagnostics.phase === "closed" && "bg-white/30",
-                    streamDiagnostics.phase === "idle" && "bg-white/20"
+                    "h-3.5 w-3.5",
+                    viewingRunState !== "idle" && "animate-spin"
                   )}
                 />
-                Stream
-                <ChevronDown className="h-3 w-3 text-white/50" />
+                <span className="text-sm font-medium">{status.label}</span>
               </button>
 
               {showStreamDiagnostics && (
-                <div className="absolute right-0 top-full z-50 mt-2 w-[360px] rounded-lg border border-white/[0.08] bg-[#121214] p-3 shadow-xl">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-white/80">Stream diagnostics</span>
-                    <button
-                      onClick={handleCopyDiagnostics}
-                      className="text-[11px] text-white/50 hover:text-white/80 transition-colors"
-                    >
-                      Copy
-                    </button>
-                  </div>
+                <div className="absolute right-0 top-full z-50 mt-2 w-[280px] rounded-lg border border-white/[0.08] bg-[#121214] p-2.5 shadow-xl">
+                  {/* Mission Info */}
+                  {(viewingMission ?? currentMission) && (
+                    <div className="space-y-0.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-white/40">Mission</span>
+                        <span className="font-mono text-[11px] text-white/60 select-all">
+                          {(viewingMission ?? currentMission)?.id.slice(0, 8)}
+                        </span>
+                      </div>
+                      {(viewingMission ?? currentMission)?.workspace_name && (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-white/40">Workspace</span>
+                          <span className="font-mono text-white/80">{(viewingMission ?? currentMission)?.workspace_name}</span>
+                        </div>
+                      )}
+                      {(viewingMission ?? currentMission)?.agent && (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-white/40">Agent</span>
+                          <span className="font-mono text-white/80">{(viewingMission ?? currentMission)?.agent}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-                  <div className="mt-2 space-y-1 text-xs text-white/70">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Phase</span>
-                      <span className="font-mono text-white/80">{streamDiagnostics.phase}</span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">URL</span>
-                      <span className="max-w-[230px] truncate font-mono text-white/80">
-                        {streamDiagnostics.url ?? "—"}
+                  {/* Stream Status */}
+                  <div className={cn("space-y-0.5 text-xs", (viewingMission ?? currentMission) && "mt-2 pt-2 border-t border-white/[0.06]")}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/40">Stream</span>
+                      <span className="flex items-center gap-1.5 font-mono text-white/80">
+                        <span
+                          className={cn(
+                            "h-1.5 w-1.5 rounded-full",
+                            (streamDiagnostics.phase === "streaming" || streamDiagnostics.phase === "open") && "bg-emerald-400",
+                            streamDiagnostics.phase === "connecting" && "bg-amber-400",
+                            streamDiagnostics.phase === "error" && "bg-red-400",
+                            (streamDiagnostics.phase === "closed" || streamDiagnostics.phase === "idle") && "bg-white/30"
+                          )}
+                        />
+                        {streamDiagnostics.phase}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Status</span>
-                      <span className="font-mono text-white/80">
-                        {typeof streamDiagnostics.status === "number"
-                          ? streamDiagnostics.status
-                          : "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Content-Type</span>
-                      <span className="max-w-[230px] truncate font-mono text-white/80">
-                        {streamDiagnostics.contentType ?? "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Content-Encoding</span>
-                      <span className="max-w-[230px] truncate font-mono text-white/80">
-                        {streamDiagnostics.contentEncoding ?? "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Cache-Control</span>
-                      <span className="max-w-[230px] truncate font-mono text-white/80">
-                        {streamDiagnostics.cacheControl ?? "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Transfer-Encoding</span>
-                      <span className="max-w-[230px] truncate font-mono text-white/80">
-                        {streamDiagnostics.transferEncoding ?? "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Server/Via</span>
-                      <span className="max-w-[230px] truncate font-mono text-white/80">
-                        {[streamDiagnostics.server, streamDiagnostics.via]
-                          .filter(Boolean)
-                          .join(" • ") || "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Last event</span>
-                      <span className="font-mono text-white/80">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/40">Activity</span>
+                      <span className="font-mono text-white/60 text-[11px]">
                         {formatDiagAge(streamDiagnostics.lastEventAt)}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Last chunk</span>
-                      <span className="font-mono text-white/80">
-                        {formatDiagAge(streamDiagnostics.lastChunkAt)}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/40">Bytes</span>
-                      <span className="font-mono text-white/80">
-                        {streamDiagnostics.bytes.toLocaleString()}
                       </span>
                     </div>
                   </div>
 
                   {streamDiagnostics.lastError && (
-                    <div className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-300">
+                    <div className="mt-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-300">
                       {streamDiagnostics.lastError}
                     </div>
                   )}
 
                   {streamHints.length > 0 && (
-                    <div className="mt-2 space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
+                    <div className="mt-2 space-y-0.5 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
                       {streamHints.map((hint) => (
                         <div key={hint}>{hint}</div>
                       ))}
                     </div>
                   )}
+
+                  <button
+                    onClick={handleCopyDiagnostics}
+                    className="mt-2 w-full text-center text-[11px] text-white/40 hover:text-white/70 transition-colors"
+                  >
+                    Copy debug info
+                  </button>
                 </div>
               )}
-            </div>
-
-            <div className="h-4 w-px bg-white/[0.08]" />
-
-            {/* Run state indicator */}
-            <div className={cn("flex items-center gap-2", status.className)}>
-              <StatusIcon
-                className={cn(
-                  "h-3.5 w-3.5",
-                  runState !== "idle" && "animate-spin"
-                )}
-              />
-              <span className="text-sm font-medium">{status.label}</span>
             </div>
 
             {/* Queue count */}
             <div className="h-4 w-px bg-white/[0.08]" />
             <div
               className="flex items-center gap-1.5"
-              title={queueLen > 0 ? `${queueLen} message${queueLen > 1 ? 's' : ''} waiting to be processed` : 'No messages queued'}
+              title={viewingQueueLen > 0 ? `${viewingQueueLen} message${viewingQueueLen > 1 ? 's' : ''} waiting to be processed` : 'No messages queued'}
             >
               <span className="text-[10px] uppercase tracking-wider text-white/40">
                 Queue
               </span>
               <span className={cn(
                 "text-sm font-medium tabular-nums",
-                queueLen === 0 && "text-white/70",
-                queueLen > 0 && queueLen < 3 && "text-amber-400",
-                queueLen >= 3 && "text-orange-400"
+                viewingQueueLen === 0 && "text-white/70",
+                viewingQueueLen > 0 && viewingQueueLen < 3 && "text-amber-400",
+                viewingQueueLen >= 3 && "text-orange-400"
               )}>
-                {queueLen}
+                {viewingQueueLen}
               </span>
             </div>
 
             {/* Progress indicator */}
-            {progress && progress.total > 0 && (
+            {viewingProgress && viewingProgress.total > 0 && (
               <>
                 <div className="h-4 w-px bg-white/[0.08]" />
                 <div className="flex items-center gap-1.5">
@@ -3997,7 +4429,7 @@ export default function ControlClient() {
                     Subtask
                   </span>
                   <span className="text-sm font-medium text-emerald-400 tabular-nums">
-                    {progress.completed + 1}/{progress.total}
+                    {viewingProgress.completed + 1}/{viewingProgress.total}
                   </span>
                 </div>
               </>

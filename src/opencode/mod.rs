@@ -680,6 +680,84 @@ impl OpenCodeClient {
         }
         Ok(())
     }
+
+    /// List all sessions in OpenCode.
+    /// Returns session metadata including id, title, directory, and timestamps.
+    pub async fn list_sessions(&self) -> anyhow::Result<Vec<OpenCodeSessionInfo>> {
+        let url = format!("{}/session", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("Failed to list OpenCode sessions")?;
+
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("OpenCode session list failed: {}", text);
+        }
+
+        let sessions: Vec<OpenCodeSessionInfo> = resp
+            .json()
+            .await
+            .context("Failed to parse OpenCode sessions list")?;
+        Ok(sessions)
+    }
+
+    /// Delete an OpenCode session by ID.
+    pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
+        let url = format!("{}/session/{}", self.base_url, session_id);
+        let resp = self
+            .client
+            .delete(&url)
+            .send()
+            .await
+            .context("Failed to delete OpenCode session")?;
+
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("OpenCode session delete failed: {}", text);
+        }
+
+        tracing::info!(session_id = %session_id, "Deleted OpenCode session");
+        Ok(())
+    }
+
+    /// Clean up old sessions that are older than the specified duration.
+    /// Returns the number of sessions deleted.
+    pub async fn cleanup_old_sessions(&self, max_age: Duration) -> anyhow::Result<usize> {
+        let sessions = self.list_sessions().await?;
+        let now = chrono::Utc::now();
+        let mut deleted = 0;
+
+        for session in sessions {
+            // Parse the updated_at timestamp to determine age
+            if let Some(updated_at) = &session.updated_at {
+                if let Ok(updated) = chrono::DateTime::parse_from_rfc3339(updated_at) {
+                    let age = now.signed_duration_since(updated.with_timezone(&chrono::Utc));
+                    if age > chrono::Duration::from_std(max_age).unwrap_or(chrono::Duration::hours(1)) {
+                        if let Err(e) = self.delete_session(&session.id).await {
+                            tracing::warn!(
+                                session_id = %session.id,
+                                error = %e,
+                                "Failed to delete old session"
+                            );
+                        } else {
+                            deleted += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            deleted = deleted,
+            max_age_secs = max_age.as_secs(),
+            "Cleaned up old OpenCode sessions"
+        );
+        Ok(deleted)
+    }
 }
 
 /// Status information about an OpenCode session for debugging.
@@ -1207,6 +1285,20 @@ fn parse_sse_event(
 #[derive(Debug, Deserialize)]
 pub struct OpenCodeSession {
     pub id: String,
+}
+
+/// Extended session info returned from listing sessions.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OpenCodeSessionInfo {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

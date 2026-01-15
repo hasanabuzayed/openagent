@@ -29,6 +29,7 @@ use crate::mcp::McpRegistry;
 use crate::workspace;
 
 use super::auth::AuthUser;
+use super::desktop;
 use super::library::SharedLibrary;
 use super::mission_store::{
     self, create_mission_store, now_string, Mission, MissionHistoryEntry, MissionStore,
@@ -66,6 +67,53 @@ fn build_history_context(history: &[(String, String)], max_chars: usize) -> Stri
     result
 }
 
+async fn close_mission_desktop_sessions(
+    mission_store: &Arc<dyn MissionStore>,
+    mission_id: Uuid,
+    working_dir: &std::path::Path,
+) {
+    let Ok(Some(mission)) = mission_store.get_mission(mission_id).await else {
+        return;
+    };
+
+    if mission.desktop_sessions.is_empty() {
+        return;
+    }
+
+    let mut sessions = mission.desktop_sessions.clone();
+    let now = now_string();
+    let mut updated = false;
+
+    for session in sessions
+        .iter_mut()
+        .filter(|session| session.stopped_at.is_none())
+    {
+        if let Err(err) = desktop::close_desktop_session(&session.display, working_dir).await {
+            tracing::warn!(
+                mission_id = %mission_id,
+                display = %session.display,
+                error = %err,
+                "Failed to close desktop session"
+            );
+        }
+        session.stopped_at = Some(now.clone());
+        updated = true;
+    }
+
+    if updated {
+        if let Err(err) = mission_store
+            .update_mission_desktop_sessions(mission_id, &sessions)
+            .await
+        {
+            tracing::warn!(
+                mission_id = %mission_id,
+                error = %err,
+                "Failed to persist desktop session shutdown"
+            );
+        }
+    }
+}
+
 /// Message posted by a user to the control session.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ControlMessageRequest {
@@ -73,6 +121,10 @@ pub struct ControlMessageRequest {
     /// Optional agent override for this specific message (e.g., from @agent mention)
     #[serde(default)]
     pub agent: Option<String>,
+    /// Target mission ID. If provided and differs from the currently running mission,
+    /// the backend will automatically start this mission in parallel (if capacity allows).
+    #[serde(default)]
+    pub mission_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -397,6 +449,10 @@ pub enum ControlCommand {
         content: String,
         /// Optional agent override for this specific message
         agent: Option<String>,
+        /// Target mission ID - if provided and differs from running mission, start in parallel
+        target_mission_id: Option<Uuid>,
+        /// Respond with whether the message was queued (true = waiting to be processed)
+        respond: oneshot::Sender<bool>,
     },
     ToolResult {
         tool_call_id: String,
@@ -688,6 +744,7 @@ pub struct ExecutionProgress {
 pub struct ControlStatus {
     pub state: ControlRunState,
     pub queue_len: usize,
+    pub mission_id: Option<Uuid>,
 }
 
 async fn set_and_emit_status(
@@ -695,16 +752,18 @@ async fn set_and_emit_status(
     events: &broadcast::Sender<AgentEvent>,
     state: ControlRunState,
     queue_len: usize,
+    mission_id: Option<Uuid>,
 ) {
     {
         let mut s = status.write().await;
         s.state = state;
         s.queue_len = queue_len;
+        s.mission_id = mission_id;
     }
     let _ = events.send(AgentEvent::Status {
         state,
         queue_len,
-        mission_id: None,
+        mission_id,
     });
 }
 
@@ -713,6 +772,8 @@ async fn control_for_user(state: &Arc<AppState>, user: &AuthUser) -> ControlStat
 }
 
 /// Enqueue a user message for the global control session.
+/// If mission_id is provided and differs from the currently running mission,
+/// the backend will automatically start it in parallel (if capacity allows).
 pub async fn post_message(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
@@ -725,23 +786,27 @@ pub async fn post_message(
 
     let id = Uuid::new_v4();
     let agent = req.agent;
+    let target_mission_id = req.mission_id;
     let control = control_for_user(&state, &user).await;
-    let queued = {
-        let status = control.status.read().await;
-        status.state != ControlRunState::Idle
-    };
+    let (queued_tx, queued_rx) = oneshot::channel();
     tracing::info!(
         user_id = %user.id,
         username = %user.username,
         message_id = %id,
-        queued,
         content_len = content.len(),
         agent = ?agent,
+        target_mission_id = ?target_mission_id,
         "Received control message"
     );
     control
         .cmd_tx
-        .send(ControlCommand::UserMessage { id, content, agent })
+        .send(ControlCommand::UserMessage {
+            id,
+            content,
+            agent,
+            target_mission_id,
+            respond: queued_tx,
+        })
         .await
         .map_err(|_| {
             (
@@ -749,7 +814,13 @@ pub async fn post_message(
                 "control session unavailable".to_string(),
             )
         })?;
-
+    let queued = match queued_rx.await {
+        Ok(value) => value,
+        Err(_) => {
+            let status = control.status.read().await;
+            status.state != ControlRunState::Idle
+        }
+    };
     Ok(Json(ControlMessageResponse { id, queued }))
 }
 
@@ -1534,7 +1605,7 @@ pub async fn stream(
         let _guard = drop_guard;
         let init_ev = Event::default()
             .event("status")
-            .json_data(AgentEvent::Status { state: initial.state, queue_len: initial.queue_len, mission_id: None })
+            .json_data(AgentEvent::Status { state: initial.state, queue_len: initial.queue_len, mission_id: initial.mission_id })
             .unwrap();
         yield Ok(init_ev);
 
@@ -1614,6 +1685,7 @@ fn spawn_control_session(
     let status = Arc::new(RwLock::new(ControlStatus {
         state: ControlRunState::Idle,
         queue_len: 0,
+        mission_id: None,
     }));
     let current_mission = Arc::new(RwLock::new(None));
 
@@ -2054,16 +2126,150 @@ async fn control_actor_loop(
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { break };
                 match cmd {
-                    ControlCommand::UserMessage { id, content, agent: msg_agent } => {
+                    ControlCommand::UserMessage { id, content, agent: msg_agent, target_mission_id, respond } => {
+                        // Smart routing: decide where to send this message based on target_mission_id
+                        // and what's currently running.
+
+                        let current_mission_id = current_mission.read().await.clone();
+                        let running_mid = running_mission_id;
+                        let main_mission_id = if running_mid.is_some() {
+                            running_mid
+                        } else {
+                            current_mission_id
+                        };
+                        let main_is_running = running.is_some();
+
+                        // Determine if target is already running somewhere
+                        let target_in_parallel = target_mission_id
+                            .map(|tid| parallel_runners.contains_key(&tid))
+                            .unwrap_or(false);
+                        let target_is_main = target_mission_id
+                            .map(|tid| main_mission_id == Some(tid))
+                            .unwrap_or(true); // No target = use main
+
+                        // Case 1: Target is already running in parallel_runners - queue to it
+                        if let Some(tid) = target_mission_id {
+                            if target_in_parallel {
+                                if let Some(runner) = parallel_runners.get_mut(&tid) {
+                                    let was_running = runner.is_running();
+                                    runner.queue_message(id, content.clone(), msg_agent);
+                                    let _ = events_tx.send(AgentEvent::UserMessage {
+                                        id,
+                                        content: content.clone(),
+                                        queued: was_running,
+                                        mission_id: Some(tid),
+                                    });
+                                    // Try to start if not already running
+                                    if !runner.is_running() {
+                                        runner.start_next(
+                                            config.clone(),
+                                            Arc::clone(&root_agent),
+                                            Arc::clone(&mcp),
+                                            Arc::clone(&workspaces),
+                                            library.clone(),
+                                            events_tx.clone(),
+                                            Arc::clone(&tool_hub),
+                                            Arc::clone(&status),
+                                            mission_cmd_tx.clone(),
+                                            Arc::new(RwLock::new(Some(tid))),
+                                        );
+                                    }
+                                    let _ = respond.send(was_running);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Case 2: Target differs from main AND main is running → start parallel
+                        if let Some(tid) = target_mission_id {
+                            if !target_is_main && main_is_running {
+                                // Check capacity
+                                let parallel_running = parallel_runners.values().filter(|r| r.is_running()).count();
+                                let total_running = parallel_running + 1; // +1 for main
+                                let max_parallel = config.max_parallel_missions;
+
+                                if total_running >= max_parallel {
+                                    tracing::warn!(
+                                        "Cannot start parallel mission {}: max {} reached",
+                                        tid, max_parallel
+                                    );
+                                    // Fall through to queue on main as fallback
+                                } else {
+                                    // Load mission and start in parallel
+                                    match load_mission_record(&mission_store, tid).await {
+                                        Ok(mission) => {
+                                            let mut runner = super::mission_runner::MissionRunner::new(
+                                                tid,
+                                                mission.workspace_id,
+                                                mission.agent.clone(),
+                                            );
+                                            // Load existing history
+                                            for entry in &mission.history {
+                                                runner.history.push((entry.role.clone(), entry.content.clone()));
+                                            }
+                                            // Queue the message
+                                            runner.queue_message(id, content.clone(), msg_agent);
+                                            // Emit user message event
+                                            let _ = events_tx.send(AgentEvent::UserMessage {
+                                                id,
+                                                content: content.clone(),
+                                                queued: false,
+                                                mission_id: Some(tid),
+                                            });
+                                            // Start execution
+                                            runner.start_next(
+                                                config.clone(),
+                                                Arc::clone(&root_agent),
+                                                Arc::clone(&mcp),
+                                                Arc::clone(&workspaces),
+                                                library.clone(),
+                                                events_tx.clone(),
+                                                Arc::clone(&tool_hub),
+                                                Arc::clone(&status),
+                                                mission_cmd_tx.clone(),
+                                                Arc::new(RwLock::new(Some(tid))),
+                                            );
+                                            tracing::info!("Auto-started mission {} in parallel", tid);
+                                            parallel_runners.insert(tid, runner);
+                                            let _ = respond.send(false);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Failed to load mission {} for parallel: {}", tid, e);
+                                            // Fall through to queue on main as fallback
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Case 3: Queue to main session (default behavior)
                         // Auto-create mission on first message if none exists
                         {
                             let mission_id = current_mission.read().await.clone();
                             if mission_id.is_none() {
-                                if let Ok(new_mission) =
-                                    create_new_mission(&mission_store).await
-                                {
+                                // Use target_mission_id if provided, otherwise create new
+                                if let Some(tid) = target_mission_id {
+                                    *current_mission.write().await = Some(tid);
+                                    tracing::info!("Set current mission to target: {}", tid);
+                                } else if let Ok(new_mission) = create_new_mission(&mission_store).await {
                                     *current_mission.write().await = Some(new_mission.id);
                                     tracing::info!("Auto-created mission: {}", new_mission.id);
+                                }
+                            } else if let Some(tid) = target_mission_id {
+                                // Switch main session to target mission if nothing running
+                                if !main_is_running && mission_id != Some(tid) {
+                                    // Persist current history before switching
+                                    persist_mission_history(&mission_store, &current_mission, &history).await;
+                                    // Load new mission's history
+                                    if let Ok(mission) = load_mission_record(&mission_store, tid).await {
+                                        history.clear();
+                                        for entry in &mission.history {
+                                            history.push((entry.role.clone(), entry.content.clone()));
+                                        }
+                                    }
+                                    *current_mission.write().await = Some(tid);
+                                    tracing::info!("Switched main session to mission: {}", tid);
                                 }
                             }
                         }
@@ -2071,11 +2277,17 @@ async fn control_actor_loop(
                         let was_running = running.is_some();
                         let content_clone = content.clone();
                         queue.push_back((id, content, msg_agent));
+                        let status_mission_id = if running.is_some() {
+                            running_mission_id
+                        } else {
+                            current_mission.read().await.clone()
+                        };
                         set_and_emit_status(
                             &status,
                             &events_tx,
                             if running.is_some() { ControlRunState::Running } else { ControlRunState::Idle },
                             queue.len(),
+                            status_mission_id,
                         ).await;
                         if was_running {
                             let current_mid = current_mission.read().await.clone();
@@ -2088,8 +2300,14 @@ async fn control_actor_loop(
                         }
                         if running.is_none() {
                             if let Some((mid, msg, per_msg_agent)) = queue.pop_front() {
-                                set_and_emit_status(&status, &events_tx, ControlRunState::Running, queue.len()).await;
                                 let current_mid = current_mission.read().await.clone();
+                                set_and_emit_status(
+                                    &status,
+                                    &events_tx,
+                                    ControlRunState::Running,
+                                    queue.len(),
+                                    current_mid,
+                                ).await;
                                 let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), queued: false, mission_id: current_mid });
 
                                 // Immediately persist user message so it's visible when loading mission
@@ -2172,9 +2390,10 @@ async fn control_actor_loop(
                                     (mid, msg, result)
                                 }));
                             } else {
-                                set_and_emit_status(&status, &events_tx, ControlRunState::Idle, 0).await;
+                                set_and_emit_status(&status, &events_tx, ControlRunState::Idle, 0, None).await;
                             }
                         }
+                        let _ = respond.send(was_running);
                     }
                     ControlCommand::ToolResult { tool_call_id, name, result } => {
                         // Deliver to the tool hub. The executor emits ToolResult events when it receives it.
@@ -2213,6 +2432,24 @@ async fn control_actor_loop(
                                     .map(|e| (e.role.clone(), e.content.clone()))
                                     .collect();
                                 *current_mission.write().await = Some(id);
+
+                                // Write runtime workspace state so file uploads work immediately
+                                // (without needing to send a message first)
+                                let ws = workspace::resolve_workspace(
+                                    &workspaces,
+                                    &config,
+                                    Some(mission.workspace_id),
+                                ).await;
+                                if let Err(e) = workspace::write_runtime_workspace_state(
+                                    &config.working_dir,
+                                    &ws,
+                                    &ws.path,
+                                    Some(id),
+                                    &config.context.context_dir_name,
+                                ).await {
+                                    tracing::warn!("Failed to write runtime workspace state on load: {}", e);
+                                }
+
                                 let _ = respond.send(Ok(mission));
                             }
                             Err(e) => {
@@ -2241,6 +2478,23 @@ async fn control_actor_loop(
                             Ok(mission) => {
                                 history.clear();
                                 *current_mission.write().await = Some(mission.id);
+
+                                // Write runtime workspace state so file uploads work immediately
+                                let ws = workspace::resolve_workspace(
+                                    &workspaces,
+                                    &config,
+                                    Some(mission.workspace_id),
+                                ).await;
+                                if let Err(e) = workspace::write_runtime_workspace_state(
+                                    &config.working_dir,
+                                    &ws,
+                                    &ws.path,
+                                    Some(mission.id),
+                                    &config.context.context_dir_name,
+                                ).await {
+                                    tracing::warn!("Failed to write runtime workspace state on create: {}", e);
+                                }
+
                                 let _ = respond.send(Ok(mission));
                             }
                             Err(e) => {
@@ -2352,6 +2606,12 @@ async fn control_actor_loop(
                                 resumable: true, // Cancelled missions can be resumed
                             });
                             parallel_runners.remove(&mission_id);
+                            close_mission_desktop_sessions(
+                                &mission_store,
+                                mission_id,
+                                &config.working_dir,
+                            )
+                            .await;
                             let _ = respond.send(Ok(()));
                         } else {
                             // Check if this is the currently executing mission
@@ -2361,6 +2621,12 @@ async fn control_actor_loop(
                                 // Cancel the current execution
                                 if let Some(token) = &running_cancel {
                                     token.cancel();
+                                    close_mission_desktop_sessions(
+                                        &mission_store,
+                                        mission_id,
+                                        &config.working_dir,
+                                    )
+                                    .await;
                                     // Don't send Error event here - the task will complete and send
                                     // an AssistantMessage with resumable=true when it finishes.
                                     // Sending both causes duplicate UI messages.
@@ -2439,7 +2705,13 @@ async fn control_actor_loop(
                                 // Start execution if not already running
                                 if running.is_none() {
                                     if let Some((mid, msg, _per_msg_agent)) = queue.pop_front() {
-                                        set_and_emit_status(&status, &events_tx, ControlRunState::Running, queue.len()).await;
+                                        set_and_emit_status(
+                                            &status,
+                                            &events_tx,
+                                            ControlRunState::Running,
+                                            queue.len(),
+                                            Some(mission_id),
+                                        ).await;
                                         let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), queued: false, mission_id: Some(mission_id) });
                                         let cfg = config.clone();
                                         let agent = Arc::clone(&root_agent);
@@ -2755,13 +3027,23 @@ async fn control_actor_loop(
                                                 {
                                                     tracing::warn!("Failed to auto-complete mission: {}", e);
                                                 } else {
+                                                    // Send status change event - the actual completion content
+                                                    // is already in the assistant_message event, so we just provide
+                                                    // a clean summary based on how the mission ended
+                                                    let summary = match agent_result.terminal_reason {
+                                                        Some(TerminalReason::Completed) => None, // Normal completion, no extra explanation needed
+                                                        Some(TerminalReason::MaxIterations) => Some("Reached iteration limit".to_string()),
+                                                        Some(TerminalReason::Cancelled) => Some("Cancelled by user".to_string()),
+                                                        Some(TerminalReason::Stalled) => Some("No progress detected".to_string()),
+                                                        Some(TerminalReason::InfiniteLoop) => Some("Detected repetitive behavior".to_string()),
+                                                        Some(TerminalReason::LlmError) => Some("Model error".to_string()),
+                                                        None if agent_result.success => None,
+                                                        None => Some("Unexpected termination".to_string()),
+                                                    };
                                                     let _ = events_tx.send(AgentEvent::MissionStatusChanged {
                                                         mission_id,
                                                         status: new_status,
-                                                        summary: Some(format!(
-                                                            "Auto-completed: {}",
-                                                            agent_result.output.chars().take(100).collect::<String>()
-                                                        )),
+                                                        summary,
                                                     });
                                                 }
                                             } else {
@@ -2797,6 +3079,14 @@ async fn control_actor_loop(
                                 shared_files: None,
                                 resumable,
                             });
+                            if let Some(mission_id) = completed_mission_id {
+                                close_mission_desktop_sessions(
+                                    &mission_store,
+                                    mission_id,
+                                    &config.working_dir,
+                                )
+                                .await;
+                            }
                         }
                         Err(e) => {
                             let _ = events_tx.send(AgentEvent::Error {
@@ -2804,14 +3094,28 @@ async fn control_actor_loop(
                                 mission_id: completed_mission_id,
                                 resumable: completed_mission_id.is_some(), // Can resume if mission exists
                             });
+                            if let Some(mission_id) = completed_mission_id {
+                                close_mission_desktop_sessions(
+                                    &mission_store,
+                                    mission_id,
+                                    &config.working_dir,
+                                )
+                                .await;
+                            }
                         }
                     }
                 }
 
                 // Start next queued message, if any.
                 if let Some((mid, msg, per_msg_agent)) = queue.pop_front() {
-                    set_and_emit_status(&status, &events_tx, ControlRunState::Running, queue.len()).await;
                     let current_mid = current_mission.read().await.clone();
+                    set_and_emit_status(
+                        &status,
+                        &events_tx,
+                        ControlRunState::Running,
+                        queue.len(),
+                        current_mid,
+                    ).await;
                     let _ = events_tx.send(AgentEvent::UserMessage { id: mid, content: msg.clone(), queued: false, mission_id: current_mid });
 
                     // Immediately persist user message so it's visible when loading mission
@@ -2894,7 +3198,7 @@ async fn control_actor_loop(
                         (mid, msg, result)
                     }));
                 } else {
-                    set_and_emit_status(&status, &events_tx, ControlRunState::Idle, 0).await;
+                    set_and_emit_status(&status, &events_tx, ControlRunState::Idle, 0, None).await;
                 }
             }
             // Poll parallel runners for completion

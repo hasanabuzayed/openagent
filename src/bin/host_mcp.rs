@@ -131,6 +131,43 @@ fn container_root_from_path(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Check if we're running inside a container by detecting the presence of
+/// container-relative paths and absence of HOST container paths.
+fn is_inside_container() -> bool {
+    // If /workspaces exists but the typical HOST container path doesn't,
+    // we're likely inside a container
+    Path::new("/workspaces").exists() && !Path::new("/root/.openagent/containers").exists()
+}
+
+/// Translate a HOST path to a container-relative path.
+/// HOST path: /root/.openagent/containers/<name>/workspaces/mission-xxx
+/// Container path: /workspaces/mission-xxx
+fn translate_host_path_for_container(host_path: &str, workspace_root: Option<&str>) -> String {
+    // If we have the workspace_root (container root on host), strip it from the path
+    if let Some(root) = workspace_root {
+        if host_path.starts_with(root) {
+            let relative = &host_path[root.len()..];
+            // Ensure it starts with /
+            if relative.starts_with('/') {
+                return relative.to_string();
+            } else {
+                return format!("/{}", relative);
+            }
+        }
+    }
+
+    // Fallback: try to detect and strip container path patterns
+    // Pattern: /root/.openagent/containers/<name>/...
+    if let Some(idx) = host_path.find("/containers/") {
+        let after_containers = &host_path[idx + "/containers/".len()..];
+        if let Some(slash_idx) = after_containers.find('/') {
+            return after_containers[slash_idx..].to_string();
+        }
+    }
+
+    host_path.to_string()
+}
+
 fn hydrate_workspace_env(override_path: Option<PathBuf>) -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let workspace = override_path.unwrap_or_else(|| {
@@ -204,46 +241,106 @@ fn runtime_workspace_path() -> PathBuf {
 }
 
 fn load_runtime_workspace() -> Option<RuntimeWorkspace> {
-    let path = runtime_workspace_path();
-    let contents = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&contents).ok()
+    // First, try to load from the global runtime file to get workspace_root
+    let global_path = runtime_workspace_path();
+    let global_state: Option<RuntimeWorkspace> = std::fs::read_to_string(&global_path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok());
+
+    // Check for a local context file in the workspace root
+    // This is more specific and avoids race conditions with parallel missions
+    // We use workspace_root (host path) instead of working_dir (which may be container-relative)
+    if let Some(ref state) = global_state {
+        if let Some(ref workspace_root) = state.workspace_root {
+            let local_context = PathBuf::from(workspace_root).join(".openagent_context.json");
+            if local_context.exists() {
+                if let Ok(contents) = std::fs::read_to_string(&local_context) {
+                    if let Ok(local_state) = serde_json::from_str::<RuntimeWorkspace>(&contents) {
+                        // Use the local context which is specific to this workspace
+                        return Some(local_state);
+                    }
+                }
+            }
+        }
+    }
+
+    global_state
 }
 
 fn apply_runtime_workspace(working_dir: &Arc<RwLock<PathBuf>>) {
+    // CRITICAL: Do NOT overwrite OPEN_AGENT_WORKSPACE_ROOT and OPEN_AGENT_WORKSPACE_TYPE
+    // These are set correctly at MCP spawn time from opencode.json and determine which
+    // container commands run in. Overwriting them from a shared file causes race conditions
+    // when multiple missions run in parallel.
+    //
+    // We only load from the file to get auxiliary context (mission_id, context paths) that
+    // may be useful for some tools, but we preserve the core workspace identity.
+
     let Some(state) = load_runtime_workspace() else {
         debug_log("runtime_workspace", &json!({"status": "missing"}));
         return;
     };
+
+    // Check if we're running inside a container and need to translate paths
+    let inside_container = is_inside_container();
+
+    // Use workspace_root from spawn env, NOT from the (potentially stale) file
+    let workspace_root = std::env::var("OPEN_AGENT_WORKSPACE_ROOT").ok();
+    let workspace_root_ref = workspace_root.as_deref();
+
     debug_log(
         "runtime_workspace",
         &json!({
             "working_dir": state.working_dir,
-            "workspace_root": state.workspace_root,
+            "workspace_root_from_env": workspace_root,
+            "workspace_root_from_file": state.workspace_root,
             "workspace_type": state.workspace_type,
+            "inside_container": inside_container,
         }),
     );
 
-    if let Some(dir) = state.working_dir.as_ref() {
-        std::env::set_var("OPEN_AGENT_WORKSPACE", dir);
-        if let Ok(mut guard) = working_dir.write() {
-            *guard = PathBuf::from(dir);
+    // Only update working_dir if not already set from spawn env
+    if std::env::var("OPEN_AGENT_WORKSPACE").is_err() {
+        if let Some(dir) = state.working_dir.as_ref() {
+            let effective_dir = if inside_container {
+                translate_host_path_for_container(dir, workspace_root_ref)
+            } else {
+                dir.clone()
+            };
+            std::env::set_var("OPEN_AGENT_WORKSPACE", &effective_dir);
+            if let Ok(mut guard) = working_dir.write() {
+                *guard = PathBuf::from(&effective_dir);
+            }
         }
     }
 
-    if let Some(name) = state.workspace_name.as_ref() {
-        std::env::set_var("OPEN_AGENT_WORKSPACE_NAME", name);
+    // Only update workspace name if not already set
+    if std::env::var("OPEN_AGENT_WORKSPACE_NAME").is_err() {
+        if let Some(name) = state.workspace_name.as_ref() {
+            std::env::set_var("OPEN_AGENT_WORKSPACE_NAME", name);
+        }
     }
 
-    if let Some(root) = state.workspace_root.as_ref() {
-        std::env::set_var("OPEN_AGENT_WORKSPACE_ROOT", root);
+    // IMPORTANT: Do NOT modify OPEN_AGENT_WORKSPACE_ROOT or OPEN_AGENT_WORKSPACE_TYPE here!
+    // These are set at spawn time and must remain stable for the lifetime of the MCP process.
+    // The code below handles the special case of running INSIDE a container.
+    if inside_container {
+        // When running inside a container, clear these variables so RunCommand
+        // executes directly (we're already in the container, no need to nspawn again)
+        std::env::remove_var("OPEN_AGENT_WORKSPACE_ROOT");
+        std::env::set_var("OPEN_AGENT_WORKSPACE_TYPE", "host");
     }
-
-    if let Some(kind) = state.workspace_type.as_ref() {
-        std::env::set_var("OPEN_AGENT_WORKSPACE_TYPE", kind);
-    }
+    // NOTE: We intentionally do NOT set OPEN_AGENT_WORKSPACE_ROOT or OPEN_AGENT_WORKSPACE_TYPE
+    // from the file when not inside a container. These must come from spawn env only.
 
     if let Some(context_root) = state.context_root.as_ref() {
-        std::env::set_var("OPEN_AGENT_CONTEXT_ROOT", context_root);
+        // Also translate context_root for container environments
+        let effective_context = if inside_container {
+            translate_host_path_for_container(context_root, workspace_root_ref)
+        } else {
+            context_root.clone()
+        };
+        std::env::set_var("OPEN_AGENT_CONTEXT_ROOT", &effective_context);
     }
 
     if let Some(mission_id) = state.mission_id.as_ref() {
@@ -251,7 +348,13 @@ fn apply_runtime_workspace(working_dir: &Arc<RwLock<PathBuf>>) {
     }
 
     if let Some(mission_context) = state.mission_context.as_ref() {
-        std::env::set_var("OPEN_AGENT_MISSION_CONTEXT", mission_context);
+        // Also translate mission_context for container environments
+        let effective_mission_context = if inside_container {
+            translate_host_path_for_container(mission_context, workspace_root_ref)
+        } else {
+            mission_context.clone()
+        };
+        std::env::set_var("OPEN_AGENT_MISSION_CONTEXT", &effective_mission_context);
     }
 
     if let Some(context_dir_name) = state.context_dir_name.as_ref() {
@@ -300,6 +403,113 @@ impl Tool for BashTool {
     }
 }
 
+/// Tool for updating skill content in the library.
+///
+/// Updates the skill file directly in the library directory and triggers
+/// workspace syncing via the backend API.
+struct UpdateSkillTool;
+
+#[async_trait]
+impl Tool for UpdateSkillTool {
+    fn name(&self) -> &str {
+        "update_skill"
+    }
+
+    fn description(&self) -> &str {
+        "Update skill content in the library. Writes to SKILL.md or additional reference files. \
+         Changes are synced to all workspaces that use this skill. Use this to keep skill \
+         data (like reference materials, examples, or instructions) up to date."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "Name of the skill to update (folder name in library/skill/)"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The new content for SKILL.md (the main skill file)"
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Optional: path to a reference file within the skill (e.g., 'references/examples.md'). If provided, updates this file instead of SKILL.md"
+                }
+            },
+            "required": ["skill_name", "content"]
+        })
+    }
+
+    async fn execute(&self, args: Value, _working_dir: &Path) -> anyhow::Result<String> {
+        let skill_name = args["skill_name"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'skill_name' argument"))?;
+
+        let content = args["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
+
+        let file_path = args["file_path"].as_str();
+
+        // Validate skill name (prevent path traversal)
+        if skill_name.contains("..") || skill_name.contains('/') || skill_name.contains('\\') {
+            return Err(anyhow::anyhow!("Invalid skill name: contains path separators or '..'"));
+        }
+
+        // Get backend API URL (defaults to localhost in dev)
+        let api_base = std::env::var("OPEN_AGENT_API_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
+
+        // Get auth token if set
+        let auth_token = std::env::var("OPEN_AGENT_API_TOKEN").ok();
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+
+        // Build the request URL
+        let url = if let Some(ref_path) = file_path {
+            // Validate reference path
+            if ref_path.contains("..") {
+                return Err(anyhow::anyhow!("Invalid file_path: contains '..'"));
+            }
+            format!("{}/api/library/skill/{}/files/{}", api_base, skill_name, ref_path)
+        } else {
+            format!("{}/api/library/skill/{}", api_base, skill_name)
+        };
+
+        // Build request with optional auth
+        let mut request = client
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "content": content }));
+
+        if let Some(token) = auth_token {
+            request = request.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let response = request.send().await?;
+        let status = response.status();
+
+        if status.is_success() {
+            let target = file_path.unwrap_or("SKILL.md");
+            Ok(format!(
+                "Successfully updated skill '{}' (file: {}). Changes will sync to workspaces.",
+                skill_name, target
+            ))
+        } else {
+            let error_text = response.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "Failed to update skill: {} - {}",
+                status,
+                error_text
+            ))
+        }
+    }
+}
+
 fn tool_set() -> HashMap<String, Arc<dyn Tool>> {
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
@@ -316,6 +526,7 @@ fn tool_set() -> HashMap<String, Arc<dyn Tool>> {
         }),
     );
     tools.insert("fetch_url".to_string(), Arc::new(tools::FetchUrl));
+    tools.insert("update_skill".to_string(), Arc::new(UpdateSkillTool));
 
     tools
 }
