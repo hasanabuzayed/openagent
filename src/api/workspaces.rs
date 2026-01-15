@@ -1253,16 +1253,29 @@ async fn rerun_init_script(
     config.env = workspace.env_vars.clone();
 
     let command = vec![shell.to_string(), "/openagent-init.sh".to_string()];
-    let output = crate::nspawn::execute_in_container(&workspace.path, &command, &config)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to execute init script: {}", e),
-            )
-        })?;
+    let output_result =
+        crate::nspawn::execute_in_container(&workspace.path, &command, &config).await;
 
     let duration_secs = start_time.elapsed().as_secs_f64();
+
+    // Clean up the script file regardless of success/failure
+    let _ = tokio::fs::remove_file(&script_path).await;
+
+    // Handle container execution failure - revert status and return error
+    let output = match output_result {
+        Ok(out) => out,
+        Err(e) => {
+            // Revert workspace status to Error so it's not stuck in Building
+            workspace.status = WorkspaceStatus::Error;
+            workspace.error_message = Some(format!("Failed to execute init script: {}", e));
+            state.workspaces.update(workspace).await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to execute init script: {}", e),
+            ));
+        }
+    };
+
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -1289,9 +1302,6 @@ async fn rerun_init_script(
         }
         workspace.error_message = Some(format!("Init script failed: {}", error_msg));
     }
-
-    // Clean up the script file
-    let _ = tokio::fs::remove_file(&script_path).await;
 
     state.workspaces.update(workspace).await;
 
