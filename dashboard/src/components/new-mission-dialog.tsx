@@ -85,8 +85,11 @@ export function NewMissionDialog({
   }, [open]);
 
   // Set default agent when dialog opens (only once per open)
+  // Wait for both agents AND config to load before setting defaults
   useEffect(() => {
     if (!open || defaultSet || opencodeAgents.length === 0) return;
+    // Wait for config to finish loading (undefined = still loading, null/object = loaded)
+    if (config === undefined) return;
 
     if (config?.default_agent && opencodeAgents.includes(config.default_agent)) {
       setNewMissionAgent(config.default_agent);

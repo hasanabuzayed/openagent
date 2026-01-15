@@ -268,6 +268,10 @@ export default function WorkspacesPage() {
         template: newWorkspaceTemplate || undefined,
       });
 
+      // Refresh workspace list immediately after creation so it appears in the UI
+      // even if the build step fails later
+      await mutateWorkspaces();
+
       // For chroot workspaces, trigger build BEFORE showing the modal
       // This prevents the flicker where status briefly shows as non-building
       let workspaceToShow = created;
@@ -277,12 +281,15 @@ export default function WorkspacesPage() {
         } catch (buildErr) {
           showError(buildErr instanceof Error ? buildErr.message : 'Failed to start build');
           // Refresh workspace to get error status
-          workspaceToShow = await getWorkspace(created.id);
+          try {
+            workspaceToShow = await getWorkspace(created.id);
+          } catch {
+            // If getWorkspace also fails, use created workspace
+          }
+          // Refresh list again to show error status
+          await mutateWorkspaces();
         }
       }
-
-      // Now close dialog and show the workspace with correct status
-      await mutateWorkspaces();
       setShowNewWorkspaceDialog(false);
       setNewWorkspaceName('');
       setNewWorkspaceTemplate('');
@@ -847,7 +854,7 @@ export default function WorkspacesPage() {
                   <EnvVarsEditor
                     rows={envRows}
                     onChange={setEnvRows}
-                    description="Injected into workspace shells and MCP tool runs. Sensitive values (keys, tokens, passwords) are encrypted at rest."
+                    description="Injected into workspace shells and MCP tool runs. Use workspace templates to configure encryption for sensitive values."
                   />
                   <p className="text-xs text-white/35">
                     Applied to new missions automatically. Running missions keep their original values.
