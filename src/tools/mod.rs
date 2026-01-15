@@ -19,7 +19,6 @@ mod file_ops;
 mod index;
 pub mod mission;
 mod search;
-mod storage;
 mod terminal;
 mod ui;
 mod web;
@@ -213,9 +212,6 @@ impl ToolRegistry {
         // Frontend Tool UI (schemas for rich rendering in the dashboard)
         tools.insert("ui_optionList".to_string(), Arc::new(ui::UiOptionList));
         tools.insert("ui_dataTable".to_string(), Arc::new(ui::UiDataTable));
-
-        // Storage (file sharing - requires Supabase)
-        tools.insert("share_file".to_string(), Arc::new(storage::ShareFile));
 
         // Composite tools (higher-level workflow operations)
         tools.insert(

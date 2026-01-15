@@ -643,7 +643,7 @@ pub struct ControlState {
     pub running_missions: Arc<RwLock<Vec<super::mission_runner::RunningMissionInfo>>>,
     /// Max parallel missions allowed
     pub max_parallel: usize,
-    /// Mission persistence (in-memory or Supabase-backed)
+    /// Mission persistence (SQLite-backed)
     pub mission_store: Arc<dyn MissionStore>,
 }
 

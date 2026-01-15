@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
+import useSWR from 'swr';
 import { toast } from '@/components/toast';
 import {
   getSystemComponents,
@@ -61,27 +62,20 @@ export function ServerConnectionCard({
   testingConnection,
   testApiConnection,
 }: ServerConnectionCardProps) {
-  const [components, setComponents] = useState<ComponentInfo[]>([]);
-  const [loading, setLoading] = useState(true);
   const [componentsExpanded, setComponentsExpanded] = useState(true);
   const [updatingComponent, setUpdatingComponent] = useState<string | null>(null);
   const [updateLogs, setUpdateLogs] = useState<UpdateLog[]>([]);
 
-  const loadComponents = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await getSystemComponents();
-      setComponents(data.components);
-    } catch (err) {
-      console.error('Failed to load system components:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadComponents();
-  }, [loadComponents]);
+  // SWR: fetch system components
+  const { data, isLoading: loading, mutate } = useSWR(
+    'system-components',
+    async () => {
+      const result = await getSystemComponents();
+      return result.components;
+    },
+    { revalidateOnFocus: false }
+  );
+  const components = data ?? [];
 
   const handleUpdate = async (component: ComponentInfo) => {
     if (updatingComponent) return;
@@ -110,7 +104,7 @@ export function ServerConnectionCard({
           `${componentNames[component.name] || component.name} updated successfully!`
         );
         setUpdatingComponent(null);
-        loadComponents();
+        mutate(); // Revalidate components list
       },
       (error: string) => {
         toast.error(`Update failed: ${error}`);
@@ -224,7 +218,7 @@ export function ServerConnectionCard({
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={loadComponents}
+              onClick={() => mutate()}
               disabled={loading}
               className="flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 text-xs text-white/70 hover:bg-white/[0.04] transition-colors cursor-pointer disabled:opacity-50"
             >

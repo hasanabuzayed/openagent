@@ -312,7 +312,7 @@ These are installed on the production server:
 |------|-------------|
 | `desktop_start_session` | Start Xvfb + i3 + optional Chromium |
 | `desktop_stop_session` | Stop the desktop session |
-| `desktop_screenshot` | Take screenshot (auto-uploads to Supabase) |
+| `desktop_screenshot` | Take screenshot (saves locally) |
 | `desktop_type` | Send keyboard input (text or keys) |
 | `desktop_click` | Mouse click at coordinates |
 | `desktop_mouse_move` | Move mouse cursor |

@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import useSWR from 'swr';
 import { Loader, Wrench } from 'lucide-react';
 import { listTools, type ToolInfo } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { useToast } from '@/components/toast';
 
 function formatToolSource(source: ToolInfo['source']): string {
   if (source === 'builtin') return 'Built-in';
@@ -20,24 +20,12 @@ function formatToolSource(source: ToolInfo['source']): string {
 }
 
 export default function ToolsPage() {
-  const [tools, setTools] = useState<ToolInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const { showError } = useToast();
-
-  useEffect(() => {
-    const loadTools = async () => {
-      try {
-        setLoading(true);
-        const data = await listTools();
-        setTools(data);
-      } catch (err) {
-        showError(err instanceof Error ? err.message : 'Failed to load tools');
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadTools();
-  }, [showError]);
+  // SWR: fetch tools list
+  const { data: tools = [], isLoading: loading } = useSWR(
+    'tools',
+    listTools,
+    { revalidateOnFocus: false }
+  );
 
   const sortedTools = useMemo(() => {
     return [...tools].sort((a, b) => a.name.localeCompare(b.name));

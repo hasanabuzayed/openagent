@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
+import useSWR from "swr";
 import { cn } from "@/lib/utils";
-import { isNetworkError, listMissions, Mission } from "@/lib/api";
+import { listMissions, Mission } from "@/lib/api";
 import {
   ArrowRight,
   CheckCircle,
@@ -11,7 +11,6 @@ import {
   Loader,
   Clock,
   Ban,
-  Target,
 } from "lucide-react";
 
 const statusIcons: Record<string, typeof Clock> = {
@@ -38,30 +37,18 @@ const statusColors: Record<string, string> = {
   not_feasible: "text-rose-400",
 };
 
+// Sort missions by updated_at descending
+const sortMissions = (data: Mission[]): Mission[] =>
+  [...data].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+
 export function RecentTasks() {
-  const [missions, setMissions] = useState<Mission[]>([]);
-  const [loading, setLoading] = useState(true);
+  // SWR: poll missions every 5 seconds (shared key with history page)
+  const { data: missions = [], isLoading } = useSWR('missions', listMissions, {
+    refreshInterval: 5000,
+    revalidateOnFocus: false,
+  });
 
-  useEffect(() => {
-    const fetchMissions = async () => {
-      try {
-        const data = await listMissions();
-        // Sort by updated_at descending
-        const sorted = data
-          .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-        setMissions(sorted);
-      } catch (error) {
-        if (isNetworkError(error)) return;
-        console.error("Failed to fetch missions:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchMissions();
-    const interval = setInterval(fetchMissions, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  const sortedMissions = sortMissions(missions);
 
   return (
     <div className="flex flex-col h-full">
@@ -73,13 +60,13 @@ export function RecentTasks() {
         </span>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <p className="text-xs text-white/40">Loading...</p>
-      ) : missions.length === 0 ? (
+      ) : sortedMissions.length === 0 ? (
         <p className="text-xs text-white/40">No missions yet</p>
       ) : (
         <div className="flex-1 overflow-y-auto space-y-2 min-h-0">
-          {missions.map((mission) => {
+          {sortedMissions.map((mission) => {
             const Icon = statusIcons[mission.status] || Clock;
             const color = statusColors[mission.status] || "text-white/40";
             const title = mission.title || "Untitled Mission";

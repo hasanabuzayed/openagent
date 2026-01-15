@@ -170,7 +170,7 @@ pub struct ServerInfo {
 pub struct McpServerConfig {
     /// Unique identifier
     pub id: Uuid,
-    /// Human-readable name (e.g., "Supabase", "Browser Extension")
+    /// Human-readable name (e.g., "GitHub", "Browser Extension")
     pub name: String,
     /// Transport configuration (HTTP or stdio)
     pub transport: McpTransport,

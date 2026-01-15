@@ -289,6 +289,7 @@ pub struct SaveWorkspaceTemplateRequest {
     pub distro: Option<String>,
     pub skills: Option<Vec<String>>,
     pub env_vars: Option<HashMap<String, String>>,
+    pub encrypted_keys: Option<Vec<String>>,
     pub init_script: Option<String>,
 }
 
@@ -943,6 +944,7 @@ async fn save_workspace_template(
         distro: req.distro.clone(),
         skills: sanitize_skill_list(req.skills.unwrap_or_default()),
         env_vars: req.env_vars.unwrap_or_default(),
+        encrypted_keys: req.encrypted_keys.unwrap_or_default(),
         init_script: req.init_script.unwrap_or_default(),
     };
 

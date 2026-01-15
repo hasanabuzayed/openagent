@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import useSWR from 'swr';
 import {
   listWorkspaces,
   getWorkspace,
@@ -41,7 +42,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useToast } from '@/components/toast';
 import { ConfigCodeEditor } from '@/components/config-code-editor';
-import { EnvVarsEditor, type EnvRow, toEnvRows, envRowsToMap } from '@/components/env-vars-editor';
+import { EnvVarsEditor, type EnvRow, toEnvRows, envRowsToMap, getEncryptedKeys } from '@/components/env-vars-editor';
 
 // The nil UUID represents the default "host" workspace which cannot be deleted
 const DEFAULT_WORKSPACE_ID = '00000000-0000-0000-0000-000000000000';
@@ -61,9 +62,7 @@ function formatBytes(bytes: number): string {
 
 export default function WorkspacesPage() {
   const router = useRouter();
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState<Workspace | null>(null);
-  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const { showError, showInfo } = useToast();
 
@@ -71,10 +70,6 @@ export default function WorkspacesPage() {
   const [newWorkspaceName, setNewWorkspaceName] = useState('');
   const [newWorkspaceType, setNewWorkspaceType] = useState<'host' | 'chroot'>('chroot');
   const [newWorkspaceTemplate, setNewWorkspaceTemplate] = useState('');
-  const [templates, setTemplates] = useState<WorkspaceTemplateSummary[]>([]);
-  const [templatesError, setTemplatesError] = useState<string | null>(null);
-  const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
-  const [skillsError, setSkillsError] = useState<string | null>(null);
   const [skillsFilter, setSkillsFilter] = useState('');
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [workspaceTab, setWorkspaceTab] = useState<'overview' | 'skills' | 'environment' | 'template' | 'build'>('overview');
@@ -87,46 +82,33 @@ export default function WorkspacesPage() {
   const buildLogRef = useRef<HTMLPreElement>(null);
 
   // Workspace settings state
-  const [envRows, setEnvRows] = useState<{ id: string; key: string; value: string; secret: boolean; visible: boolean }[]>([]);
+  const [envRows, setEnvRows] = useState<EnvRow[]>([]);
   const [initScript, setInitScript] = useState('');
   const [savingWorkspace, setSavingWorkspace] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
   const [templateDescription, setTemplateDescription] = useState('');
 
-  const loadData = async () => {
-    try {
-      setLoading(true);
-      const workspacesData = await listWorkspaces();
-      setWorkspaces(workspacesData);
-    } catch (err) {
-      showError(err instanceof Error ? err.message : 'Failed to load workspaces');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // SWR: fetch workspaces (shared key with overview page)
+  const { data: workspaces = [], isLoading: loading, mutate: mutateWorkspaces } = useSWR(
+    'workspaces',
+    listWorkspaces,
+    { revalidateOnFocus: false }
+  );
 
-  const loadTemplates = async () => {
-    try {
-      setTemplatesError(null);
-      const templateData = await listWorkspaceTemplates();
-      setTemplates(templateData);
-    } catch (err) {
-      setTemplates([]);
-      setTemplatesError(err instanceof Error ? err.message : 'Failed to load templates');
-    }
-  };
+  // SWR: fetch templates
+  const { data: templates = [], error: templatesError, mutate: mutateTemplates } = useSWR(
+    'workspace-templates',
+    listWorkspaceTemplates,
+    { revalidateOnFocus: false }
+  );
 
-  const loadSkills = async () => {
-    try {
-      setSkillsError(null);
-      const skills = await listLibrarySkills();
-      setAvailableSkills(skills);
-    } catch (err) {
-      setAvailableSkills([]);
-      setSkillsError(err instanceof Error ? err.message : 'Failed to load skills');
-    }
-  };
+  // SWR: fetch skills (shared key with library)
+  const { data: availableSkills = [], error: skillsError } = useSWR(
+    'library-skills',
+    listLibrarySkills,
+    { revalidateOnFocus: false }
+  );
 
   // Dynamic tabs based on workspace state - Build tab only shows for chroot workspaces
   const getWorkspaceTabs = (workspace: Workspace | null) => {
@@ -144,11 +126,6 @@ export default function WorkspacesPage() {
   };
   const workspaceTabs = getWorkspaceTabs(selectedWorkspace);
 
-  useEffect(() => {
-    loadData();
-    loadTemplates();
-    loadSkills();
-  }, []);
 
   // Handle Escape key for modals
   useEffect(() => {
@@ -239,7 +216,7 @@ export default function WorkspacesPage() {
           if (cancelled) return;
           if (updated.status !== selectedWorkspace.status) {
             setSelectedWorkspace(updated);
-            await loadData();
+            await mutateWorkspaces();
           }
         }
       } catch {
@@ -305,7 +282,7 @@ export default function WorkspacesPage() {
       }
 
       // Now close dialog and show the workspace with correct status
-      await loadData();
+      await mutateWorkspaces();
       setShowNewWorkspaceDialog(false);
       setNewWorkspaceName('');
       setNewWorkspaceTemplate('');
@@ -322,7 +299,7 @@ export default function WorkspacesPage() {
     try {
       await deleteWorkspace(id);
       setSelectedWorkspace(null);
-      await loadData();
+      await mutateWorkspaces();
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Failed to delete workspace');
     }
@@ -334,11 +311,11 @@ export default function WorkspacesPage() {
       setBuilding(true);
       const updated = await buildWorkspace(selectedWorkspace.id, selectedDistro, rebuild);
       setSelectedWorkspace(updated);
-      await loadData();
+      await mutateWorkspaces();
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Failed to build workspace');
       // Refresh to get latest status
-      await loadData();
+      await mutateWorkspaces();
       if (selectedWorkspace) {
         const refreshed = await getWorkspace(selectedWorkspace.id);
         setSelectedWorkspace(refreshed);
@@ -359,7 +336,7 @@ export default function WorkspacesPage() {
         skills: selectedSkills,
       });
       setSelectedWorkspace(updated);
-      await loadData();
+      await mutateWorkspaces();
       showInfo('Changes will apply to new missions', 'Saved');
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Failed to save workspace settings');
@@ -378,14 +355,16 @@ export default function WorkspacesPage() {
     try {
       setSavingTemplate(true);
       const env_vars = envRowsToMap(envRows);
+      const encrypted_keys = getEncryptedKeys(envRows);
       await saveWorkspaceTemplate(trimmedName, {
         description: templateDescription.trim() || undefined,
         distro: selectedDistro,
         skills: selectedSkills,
         env_vars,
+        encrypted_keys,
         init_script: initScript,
       });
-      await loadTemplates();
+      await mutateTemplates();
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Failed to save workspace template');
     } finally {
@@ -811,7 +790,7 @@ export default function WorkspacesPage() {
                       />
 
                       {skillsError ? (
-                        <p className="text-xs text-red-400 py-4 text-center">{skillsError}</p>
+                        <p className="text-xs text-red-400 py-4 text-center">{skillsError instanceof Error ? skillsError.message : 'Failed to load skills'}</p>
                       ) : availableSkills.length === 0 ? (
                         <div className="py-8 text-center">
                           <Sparkles className="h-8 w-8 text-white/10 mx-auto mb-2" />
@@ -1048,7 +1027,7 @@ export default function WorkspacesPage() {
                   ))}
                 </select>
                 {templatesError && (
-                  <p className="text-xs text-red-400 mt-1.5">{templatesError}</p>
+                  <p className="text-xs text-red-400 mt-1.5">{templatesError instanceof Error ? templatesError.message : 'Failed to load templates'}</p>
                 )}
               </div>
 

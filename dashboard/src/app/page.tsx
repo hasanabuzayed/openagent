@@ -1,13 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import useSWR from 'swr';
 import { toast } from '@/components/toast';
 import { StatsCard } from '@/components/stats-card';
 import { ConnectionStatus } from '@/components/connection-status';
 import { RecentTasks } from '@/components/recent-tasks';
 import { ShimmerStat } from '@/components/ui/shimmer';
-import { createMission, getStats, isNetworkError, listWorkspaces, type StatsResponse, type Workspace } from '@/lib/api';
+import { createMission, getStats, listWorkspaces } from '@/lib/api';
 import { Activity, CheckCircle, DollarSign, Zap } from 'lucide-react';
 import { formatCents } from '@/lib/utils';
 import { SystemMonitor } from '@/components/system-monitor';
@@ -15,56 +16,34 @@ import { NewMissionDialog } from '@/components/new-mission-dialog';
 
 export default function OverviewPage() {
   const router = useRouter();
-  const [stats, setStats] = useState<StatsResponse | null>(null);
-  const [isActive, setIsActive] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [creatingMission, setCreatingMission] = useState(false);
+  const hasShownErrorRef = useRef(false);
 
-  useEffect(() => {
-    let mounted = true;
-    let hasShownError = false;
-
-    const fetchStats = async () => {
-      try {
-        const data = await getStats();
-        if (!mounted) return;
-        setStats(data);
-        setIsActive(data.active_tasks > 0);
-        setError(null);
-        setLoading(false);
-        hasShownError = false;
-      } catch (err) {
-        if (!mounted) return;
-        const message = err instanceof Error ? err.message : 'Failed to fetch stats';
-        setError(message);
-        setLoading(false);
-        if (!hasShownError) {
+  // SWR: poll stats every 3 seconds
+  const { data: stats, isLoading: statsLoading, error: statsError } = useSWR(
+    'stats',
+    getStats,
+    {
+      refreshInterval: 3000,
+      revalidateOnFocus: false,
+      onSuccess: () => {
+        hasShownErrorRef.current = false;
+      },
+      onError: () => {
+        if (!hasShownErrorRef.current) {
           toast.error('Failed to connect to agent server');
-          hasShownError = true;
+          hasShownErrorRef.current = true;
         }
-      }
-    };
+      },
+    }
+  );
 
-    fetchStats();
-    const interval = setInterval(fetchStats, 3000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, []);
+  // SWR: fetch workspaces (shared key with workspaces page)
+  const { data: workspaces = [] } = useSWR('workspaces', listWorkspaces, {
+    revalidateOnFocus: false,
+  });
 
-  useEffect(() => {
-    listWorkspaces()
-      .then((data) => {
-        setWorkspaces(data);
-      })
-      .catch((err) => {
-        if (isNetworkError(err)) return;
-        console.error('Failed to fetch workspaces:', err);
-      });
-  }, []);
+  const isActive = (stats?.active_tasks ?? 0) > 0;
 
   const handleNewMission = useCallback(
     async (options?: { workspaceId?: string; agent?: string }) => {
@@ -124,7 +103,7 @@ export default function OverviewPage() {
 
         {/* Stats grid - at bottom */}
         <div className="grid grid-cols-4 gap-4">
-          {loading ? (
+          {statsLoading ? (
             <>
               <ShimmerStat />
               <ShimmerStat />

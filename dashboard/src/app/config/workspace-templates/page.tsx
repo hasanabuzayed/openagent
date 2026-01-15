@@ -32,7 +32,7 @@ import {
 import { cn } from '@/lib/utils';
 import { LibraryUnavailable } from '@/components/library-unavailable';
 import { useLibrary } from '@/contexts/library-context';
-import { EnvVarsEditor, type EnvRow, toEnvRows, envRowsToMap } from '@/components/env-vars-editor';
+import { EnvVarsEditor, type EnvRow, toEnvRows, envRowsToMap, getEncryptedKeys } from '@/components/env-vars-editor';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs';
 import 'prismjs/components/prism-bash';
@@ -57,7 +57,7 @@ const buildSnapshot = (data: {
     description: data.description,
     distro: data.distro,
     skills: data.skills,
-    env: data.envRows.map((row) => ({ key: row.key, value: row.value })),
+    env: data.envRows.map((row) => ({ key: row.key, value: row.value, encrypted: row.encrypted })),
     initScript: data.initScript,
   });
 
@@ -183,13 +183,14 @@ export default function WorkspaceTemplatesPage() {
       setDescription(template.description || '');
       setDistro(template.distro || '');
       setSelectedSkills(template.skills || []);
-      setEnvRows(toEnvRows(template.env_vars || {}));
+      const rows = toEnvRows(template.env_vars || {}, template.encrypted_keys || []);
+      setEnvRows(rows);
       setInitScript(template.init_script || '');
       baselineRef.current = buildSnapshot({
         description: template.description || '',
         distro: template.distro || '',
         skills: template.skills || [],
-        envRows: toEnvRows(template.env_vars || {}),
+        envRows: rows,
         initScript: template.init_script || '',
       });
       setDirty(false);
@@ -207,6 +208,7 @@ export default function WorkspaceTemplatesPage() {
         distro: distro || undefined,
         skills: selectedSkills,
         env_vars: envRowsToMap(envRows),
+        encrypted_keys: getEncryptedKeys(envRows),
         init_script: initScript,
       });
       baselineRef.current = snapshot;

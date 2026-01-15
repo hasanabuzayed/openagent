@@ -10,8 +10,6 @@
 //! - `OPENCODE_AGENT` - Optional. OpenCode agent name (e.g., `build`, `plan`).
 //! - `OPENCODE_PERMISSIVE` - Optional. If true, auto-allows all permissions for OpenCode sessions (default: true).
 //! - `OPEN_AGENT_USERS` - Optional. JSON array of user accounts for multi-user auth.
-//! - `SUPABASE_URL` - Optional. Supabase project URL (used by tools for file sharing/screenshots).
-//! - `SUPABASE_SERVICE_ROLE_KEY` - Optional. Service role key for Supabase.
 //! - `LIBRARY_GIT_SSH_KEY` - Optional. SSH key path for library git operations. If set to a path, uses that key.
 //!   If set to empty string, ignores ~/.ssh/config (useful when the config specifies a non-existent key).
 //!   If unset, uses default SSH behavior.

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
+import useSWR from 'swr';
 import { getVisibleAgents, getOpenAgentConfig } from '@/lib/api';
 import type { Provider, Workspace } from '@/lib/api';
 
@@ -16,6 +17,30 @@ interface NewMissionDialogProps {
   }) => Promise<void> | void;
 }
 
+// Parse agent names from API response
+const parseAgentNames = (payload: unknown): string[] => {
+  const normalizeEntry = (entry: unknown): string | null => {
+    if (typeof entry === 'string') return entry;
+    if (entry && typeof entry === 'object') {
+      const name = (entry as { name?: unknown }).name;
+      if (typeof name === 'string') return name;
+      const id = (entry as { id?: unknown }).id;
+      if (typeof id === 'string') return id;
+    }
+    return null;
+  };
+
+  const raw = Array.isArray(payload)
+    ? payload
+    : (payload as { agents?: unknown })?.agents;
+  if (!Array.isArray(raw)) return [];
+
+  const names = raw
+    .map(normalizeEntry)
+    .filter((name): name is string => Boolean(name));
+  return Array.from(new Set(names));
+};
+
 export function NewMissionDialog({
   workspaces,
   providers = [],
@@ -26,36 +51,26 @@ export function NewMissionDialog({
   const [newMissionWorkspace, setNewMissionWorkspace] = useState('');
   const [newMissionAgent, setNewMissionAgent] = useState('');
   const [newMissionModelOverride, setNewMissionModelOverride] = useState('');
-  const [opencodeAgents, setOpencodeAgents] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [defaultSet, setDefaultSet] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  const parseAgentNames = (payload: unknown): string[] => {
-    const normalizeEntry = (entry: unknown): string | null => {
-      if (typeof entry === 'string') return entry;
-      if (entry && typeof entry === 'object') {
-        const name = (entry as { name?: unknown }).name;
-        if (typeof name === 'string') return name;
-        const id = (entry as { id?: unknown }).id;
-        if (typeof id === 'string') return id;
-      }
-      return null;
-    };
+  // SWR: fetch once, cache globally, revalidate in background
+  const { data: agentsPayload } = useSWR('opencode-agents', getVisibleAgents, {
+    revalidateOnFocus: false,
+    dedupingInterval: 30000,
+  });
+  const { data: config } = useSWR('openagent-config', getOpenAgentConfig, {
+    revalidateOnFocus: false,
+    dedupingInterval: 30000,
+  });
 
-    const raw = Array.isArray(payload)
-      ? payload
-      : (payload as { agents?: unknown })?.agents;
-    if (!Array.isArray(raw)) return [];
-
-    const names = raw
-      .map(normalizeEntry)
-      .filter((name): name is string => Boolean(name));
-    return Array.from(new Set(names));
-  };
+  const opencodeAgents = agentsPayload ? parseAgentNames(agentsPayload) : [];
 
   const formatWorkspaceType = (type: Workspace['workspace_type']) =>
     type === 'host' ? 'host' : 'isolated';
 
+  // Click outside handler
   useEffect(() => {
     if (!open) return;
 
@@ -69,45 +84,23 @@ export function NewMissionDialog({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [open]);
 
+  // Set default agent when dialog opens (only once per open)
   useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
+    if (!open || defaultSet || opencodeAgents.length === 0) return;
 
-    const loadAgentsAndConfig = async () => {
-      try {
-        // Load visible agents (pre-filtered by OpenAgent config)
-        const payload = await getVisibleAgents();
-        if (cancelled) return;
-        const agents = parseAgentNames(payload);
-        setOpencodeAgents(agents);
-
-        // Load OpenAgent config for default agent
-        const config = await getOpenAgentConfig();
-        if (cancelled) return;
-
-        // Set default agent from config, or fallback to Sisyphus if available
-        if (config.default_agent && agents.includes(config.default_agent)) {
-          setNewMissionAgent(config.default_agent);
-        } else if (agents.includes("Sisyphus")) {
-          setNewMissionAgent("Sisyphus");
-        }
-      } catch {
-        if (!cancelled) {
-          setOpencodeAgents([]);
-        }
-      }
-    };
-
-    void loadAgentsAndConfig();
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
+    if (config?.default_agent && opencodeAgents.includes(config.default_agent)) {
+      setNewMissionAgent(config.default_agent);
+    } else if (opencodeAgents.includes('Sisyphus')) {
+      setNewMissionAgent('Sisyphus');
+    }
+    setDefaultSet(true);
+  }, [open, defaultSet, opencodeAgents, config]);
 
   const resetForm = () => {
     setNewMissionWorkspace('');
     setNewMissionAgent('');
     setNewMissionModelOverride('');
+    setDefaultSet(false);
   };
 
   const handleCancel = () => {

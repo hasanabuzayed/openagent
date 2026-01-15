@@ -1749,6 +1749,7 @@ export interface WorkspaceTemplate {
   distro?: string;
   skills: string[];
   env_vars: Record<string, string>;
+  encrypted_keys: string[];
   init_script: string;
 }
 
@@ -1771,6 +1772,7 @@ export async function saveWorkspaceTemplate(
     distro?: string;
     skills?: string[];
     env_vars?: Record<string, string>;
+    encrypted_keys?: string[];
     init_script?: string;
   }
 ): Promise<void> {
@@ -1798,6 +1800,7 @@ export async function renameWorkspaceTemplate(oldName: string, newName: string):
     distro: template.distro,
     skills: template.skills,
     env_vars: template.env_vars,
+    encrypted_keys: template.encrypted_keys,
     init_script: template.init_script,
   });
   // Delete old template

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import Link from "next/link";
+import useSWR from "swr";
 import { toast } from "@/components/toast";
 import { cn } from "@/lib/utils";
 import { listMissions, getMissionTree, deleteMission, cleanupEmptyMissions, Mission } from "@/lib/api";
@@ -107,13 +108,17 @@ function convertTreeNode(node: Record<string, unknown>): AgentNode {
 }
 
 export default function HistoryPage() {
-  const [missions, setMissions] = useState<Mission[]>([]);
-  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState<SortField>("date");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
-  const fetchedRef = useRef(false);
+
+  // SWR: fetch missions (shared key with recent-tasks sidebar)
+  const { data: missions = [], isLoading: loading, mutate: mutateMissions } = useSWR(
+    'missions',
+    listMissions,
+    { revalidateOnFocus: false }
+  );
 
   // Tree preview state
   const [previewMissionId, setPreviewMissionId] = useState<string | null>(null);
@@ -126,25 +131,6 @@ export default function HistoryPage() {
   // Delete state
   const [deletingMissionId, setDeletingMissionId] = useState<string | null>(null);
   const [cleaningUp, setCleaningUp] = useState(false);
-
-  useEffect(() => {
-    if (fetchedRef.current) return;
-    fetchedRef.current = true;
-
-    const fetchData = async () => {
-      try {
-        const missionsData = await listMissions().catch(() => []);
-        setMissions(missionsData);
-      } catch (error) {
-        console.error("Failed to fetch data:", error);
-        toast.error("Failed to load history");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, []);
 
   // Handle Escape key for modal
   useEffect(() => {
@@ -227,7 +213,8 @@ export default function HistoryPage() {
     setDeletingMissionId(missionId);
     try {
       await deleteMission(missionId);
-      setMissions(prev => prev.filter(m => m.id !== missionId));
+      // Optimistic update: filter out deleted mission from cache
+      mutateMissions(missions.filter(m => m.id !== missionId), false);
       toast.success("Mission deleted");
     } catch (error) {
       console.error("Failed to delete mission:", error);
@@ -235,16 +222,15 @@ export default function HistoryPage() {
     } finally {
       setDeletingMissionId(null);
     }
-  }, [missions]);
+  }, [missions, mutateMissions]);
 
   const handleCleanupEmpty = useCallback(async () => {
     setCleaningUp(true);
     try {
       const result = await cleanupEmptyMissions();
       if (result.deleted_count > 0) {
-        // Refresh the missions list
-        const missionsData = await listMissions().catch(() => []);
-        setMissions(missionsData);
+        // Refresh the missions list from server
+        await mutateMissions();
         toast.success(`Cleaned up ${result.deleted_count} empty mission${result.deleted_count === 1 ? '' : 's'}`);
       } else {
         toast.info("No empty missions to clean up");
@@ -255,7 +241,7 @@ export default function HistoryPage() {
     } finally {
       setCleaningUp(false);
     }
-  }, []);
+  }, [mutateMissions]);
 
   const filteredMissions = useMemo(() => {
     const filtered = missions.filter((mission) => {

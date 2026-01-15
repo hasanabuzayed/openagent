@@ -1038,7 +1038,7 @@ function McpFormModal({
                 type="text"
                 value={form.name}
                 onChange={(e) => updateForm({ name: e.target.value })}
-                placeholder="e.g., Supabase MCP"
+                placeholder="e.g., My Custom MCP"
                 className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-sm text-white placeholder-white/30 focus:border-indigo-500/50 focus:outline-none transition-colors"
                 required
               />

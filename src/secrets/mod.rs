@@ -31,10 +31,10 @@
 //! store.unlock("my-secret-passphrase").await?;
 //!
 //! // Set a secret
-//! store.set_secret("mcp-tokens", "supabase/access_token", "eyJ...", None).await?;
+//! store.set_secret("mcp-tokens", "my-service/api_key", "sk-...", None).await?;
 //!
 //! // Get a secret
-//! let token = store.get_secret("mcp-tokens", "supabase/access_token").await?;
+//! let token = store.get_secret("mcp-tokens", "my-service/api_key").await?;
 //!
 //! // Export to workspace
 //! store.export_to_workspace(&workspace_path, "mcp-tokens", None).await?;

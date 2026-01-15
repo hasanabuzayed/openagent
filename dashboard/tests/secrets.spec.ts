@@ -258,7 +258,7 @@ test.describe('Library - Secrets Unlocked State', () => {
 
       // Should have form fields
       await expect(page.getByPlaceholder(/mcp-tokens/i)).toBeVisible();
-      await expect(page.getByPlaceholder(/supabase\/access_token/i)).toBeVisible();
+      await expect(page.getByPlaceholder(/service\/api_key/i)).toBeVisible();
       await expect(page.getByPlaceholder(/Secret value/i)).toBeVisible();
 
       // Should have type selector
@@ -289,13 +289,13 @@ test.describe('Library - Secrets Unlocked State', () => {
 
       // Clear all fields
       await page.getByPlaceholder(/mcp-tokens/i).fill('');
-      await page.getByPlaceholder(/supabase\/access_token/i).fill('');
+      await page.getByPlaceholder(/service\/api_key/i).fill('');
 
       await expect(dialogAddBtn).toBeDisabled();
 
       // Fill all fields
       await page.getByPlaceholder(/mcp-tokens/i).fill('test-registry');
-      await page.getByPlaceholder(/supabase\/access_token/i).fill('test-key');
+      await page.getByPlaceholder(/service\/api_key/i).fill('test-key');
       await page.getByPlaceholder(/Secret value/i).fill('test-value');
 
       // Button should now be enabled
@@ -624,7 +624,7 @@ test.describe('Library - Secrets Integration', () => {
 
       // Fill in the form
       await page.getByPlaceholder(/mcp-tokens/i).fill('test-registry');
-      await page.getByPlaceholder(/supabase\/access_token/i).fill(testKey);
+      await page.getByPlaceholder(/service\/api_key/i).fill(testKey);
       await page.getByPlaceholder(/Secret value/i).fill('test-secret-value-12345');
 
       // Select API Key type

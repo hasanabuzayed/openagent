@@ -80,19 +80,27 @@ Works great with [**oh-my-opencode**](https://github.com/code-yeongyu/oh-my-open
 
 ## Getting Started
 
-### Prerequisites
-- Rust 1.75+
-- Bun 1.0+
-- [OpenCode](https://github.com/anomalyco/opencode) server
-- Linux host (Ubuntu/Debian for container workspaces)
+### Production Setup (the easy way)
 
-### Backend
+1. Get a dedicated server (e.g., [Hetzner](https://www.hetzner.com/), Ubuntu 24.04)
+2. Point a domain to your server IP
+3. Clone this repo locally
+4. Ask Claude to set it up:
+   > "Please deploy Open Agent on my server at `<IP>` with domain `agent.example.com`"
+
+That's it. Claude will handle nginx, SSL, systemd services, and everything else.
+
+If you feel smarter than the AI, check out **[INSTALL.md](./INSTALL.md)**.
+
+### Local Development
+
+**Backend**:
 ```bash
 export OPENCODE_BASE_URL="http://127.0.0.1:4096"
-cargo run --release
+cargo run
 ```
 
-### Dashboard
+**Dashboard**:
 ```bash
 cd dashboard
 bun install

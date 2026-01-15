@@ -84,6 +84,78 @@ curl "http://localhost:3000/api/control/missions/<mission_id>/events?types=tool_
 
 **Code entry points**: `src/api/mission_store/` handles persistence; `src/api/control.rs` exposes the events endpoint.
 
+## Dashboard Data Fetching (SWR)
+
+The dashboard uses [SWR](https://swr.vercel.app/) for data fetching with stale-while-revalidate caching. This provides instant UI updates from cache while revalidating in the background.
+
+### Common SWR Keys
+
+Use consistent keys to enable cache sharing across components:
+
+| Key | Fetcher | Used In |
+|-----|---------|---------|
+| `'stats'` | `getStats` | Overview page (3s polling) |
+| `'workspaces'` | `listWorkspaces` | Overview, Workspaces page |
+| `'missions'` | `listMissions` | Recent tasks sidebar, History page |
+| `'workspace-templates'` | `listWorkspaceTemplates` | Workspaces page |
+| `'library-skills'` | `listLibrarySkills` | Workspaces page |
+| `'ai-providers'` | `listAIProviders` | Settings page |
+| `'health'` | `getHealth` | Settings page |
+| `'system-components'` | `getSystemComponents` | Server connection card |
+| `'opencode-agents'` | `getVisibleAgents` | New mission dialog |
+| `'openagent-config'` | `getOpenAgentConfig` | New mission dialog |
+| `'tools'` | `listTools` | Tools page |
+
+### Usage Patterns
+
+**Basic fetch (no polling):**
+```tsx
+const { data, isLoading, error } = useSWR('workspaces', listWorkspaces, {
+  revalidateOnFocus: false,
+});
+```
+
+**With polling:**
+```tsx
+const { data } = useSWR('stats', getStats, {
+  refreshInterval: 3000,
+  revalidateOnFocus: false,
+});
+```
+
+**After mutations (revalidate cache):**
+```tsx
+const { mutate } = useSWR('missions', listMissions);
+// After deleting a mission:
+await deleteMission(id);
+mutate(); // Revalidates from server
+```
+
+**Optimistic updates:**
+```tsx
+mutate(missions.filter(m => m.id !== deletedId), false); // Update cache without revalidation
+```
+
+### Guidelines
+
+- Always use `revalidateOnFocus: false` unless you need tab-focus refresh
+- Use the same SWR key when multiple components need the same data
+- Prefer `mutate()` after mutations instead of manual state updates
+- SWR returns `undefined` (not `null`) when data hasn't loaded - use `?? null` or `?? []` as needed
+
+## Production Deployment
+
+For deploying Open Agent on a VPS or dedicated server, see **[INSTALL.md](../INSTALL.md)**.
+
+This covers:
+- systemd services for OpenCode and Open Agent
+- nginx/Caddy reverse proxy with SSL (Let's Encrypt)
+- DNS setup and domain configuration
+- Authentication configuration
+- Library git repo setup
+
+**If asked to deploy Open Agent**: Read INSTALL.md first. It contains an "AI Agents" section at the top listing prerequisites to collect from the user (server IP, domain, SSH access, Library repo URL).
+
 ## Notes
 
 - OpenCode config files are generated per workspace; do not keep static `opencode.json` in the repo.

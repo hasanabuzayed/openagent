@@ -317,13 +317,11 @@ impl Tool for Screenshot {
     }
 
     fn description(&self) -> &str {
-        "Take a screenshot of the virtual desktop. Automatically uploads and returns markdown to embed the image.
+        "Take a screenshot of the virtual desktop and save it locally.
 
 IMPORTANT: After launching applications with i3 exec commands, use wait_seconds (3-5s recommended) to let them render before capturing. Otherwise the screenshot may be black.
 
-Set return_image=true to SEE the screenshot yourself (vision). This lets you verify the layout is correct before responding.
-
-You MUST copy the returned markdown (e.g., '![screenshot](https://...)') directly into your response text for the user to see the image."
+Set return_image=true to SEE the screenshot yourself (vision). This lets you verify the layout is correct before responding."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -342,13 +340,9 @@ You MUST copy the returned markdown (e.g., '![screenshot](https://...)') directl
                     "type": "boolean",
                     "description": "If true, the screenshot image will be included in your context so you can SEE it (requires vision model). Use this to verify the desktop layout is correct. Default: false"
                 },
-                "upload": {
-                    "type": "boolean",
-                    "description": "Whether to upload the screenshot and return a public URL (default: true). Set to false to only save locally."
-                },
                 "description": {
                     "type": "string",
-                    "description": "Description for the image alt text (default: 'screenshot')"
+                    "description": "Description for the image (default: 'screenshot')"
                 },
                 "filename": {
                     "type": "string",
@@ -446,96 +440,22 @@ You MUST copy the returned markdown (e.g., '![screenshot](https://...)') directl
         }
 
         let metadata = std::fs::metadata(&filepath)?;
-        let should_upload = args["upload"].as_bool().unwrap_or(true);
         let return_image = args["return_image"].as_bool().unwrap_or(false);
-        let description = args["description"].as_str().unwrap_or("screenshot");
 
-        // Auto-upload to Supabase if enabled and configured
-        if should_upload {
-            if let Some((url, markdown)) =
-                upload_screenshot_to_supabase(&filepath, description).await
-            {
-                // Include vision marker if return_image is true
-                // Format: [VISION_IMAGE:url] - this will be parsed by the executor to add the image to context
-                let vision_marker = if return_image {
-                    format!("\n\n[VISION_IMAGE:{}]", url)
-                } else {
-                    String::new()
-                };
+        // Include vision marker if return_image is true
+        let vision_marker = if return_image {
+            format!("\n\n[VISION_IMAGE:file://{}]", filepath.display())
+        } else {
+            String::new()
+        };
 
-                // Return format that strongly encourages the LLM to include the markdown
-                return Ok(format!(
-                    "Screenshot captured and uploaded successfully.\n\n\
-                    INCLUDE THIS IN YOUR RESPONSE TO SHOW THE IMAGE:\n{}\n\n\
-                    Details: path={}, size={} bytes, url={}{}",
-                    markdown,
-                    filepath.display(),
-                    metadata.len(),
-                    url,
-                    vision_marker
-                ));
-            }
-            // Fall through to local-only if upload fails
-        }
-
-        Ok(json!({
-            "success": true,
-            "path": filepath.display().to_string(),
-            "size_bytes": metadata.len()
-        })
-        .to_string())
+        Ok(format!(
+            "{{\"success\": true, \"path\": \"{}\", \"size_bytes\": {}}}{}",
+            filepath.display(),
+            metadata.len(),
+            vision_marker
+        ))
     }
-}
-
-/// Helper to upload a screenshot to Supabase Storage
-async fn upload_screenshot_to_supabase(
-    filepath: &std::path::PathBuf,
-    description: &str,
-) -> Option<(String, String)> {
-    let supabase_url = std::env::var("SUPABASE_URL").ok()?;
-    let service_role_key = std::env::var("SUPABASE_SERVICE_ROLE_KEY").ok()?;
-
-    if supabase_url.is_empty() || service_role_key.is_empty() {
-        return None;
-    }
-
-    let content = std::fs::read(filepath).ok()?;
-    let file_id = uuid::Uuid::new_v4();
-    let upload_path = format!("{}.png", file_id);
-
-    let storage_url = format!(
-        "{}/storage/v1/object/images/{}",
-        supabase_url.trim_end_matches('/'),
-        upload_path
-    );
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&storage_url)
-        .header("apikey", &service_role_key)
-        .header("Authorization", format!("Bearer {}", service_role_key))
-        .header("Content-Type", "image/png")
-        .header("x-upsert", "true")
-        .body(content)
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() {
-        return None;
-    }
-
-    let public_url = format!(
-        "{}/storage/v1/object/public/images/{}",
-        supabase_url.trim_end_matches('/'),
-        upload_path
-    );
-
-    let markdown = format!("![{}]({})", description, public_url);
-
-    tracing::info!(url = %public_url, "Screenshot auto-uploaded to Supabase");
-
-    Some((public_url, markdown))
 }
 
 /// Send keyboard input to the desktop.

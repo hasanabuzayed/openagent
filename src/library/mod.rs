@@ -36,6 +36,9 @@ struct WorkspaceTemplateConfig {
     skills: Vec<String>,
     #[serde(default)]
     env_vars: HashMap<String, String>,
+    /// Keys of env vars that should be encrypted at rest (stored alongside encrypted values)
+    #[serde(default)]
+    encrypted_keys: Vec<String>,
     #[serde(default)]
     init_script: String,
 }
@@ -1194,8 +1197,22 @@ impl LibraryStore {
                         name
                     );
                 }
-                config.env_vars
+                config.env_vars.clone()
             }
+        };
+
+        // Determine encrypted_keys: use stored list if available, otherwise detect from values
+        // (for backwards compatibility with old templates where all vars were encrypted)
+        let encrypted_keys = if !config.encrypted_keys.is_empty() {
+            config.encrypted_keys
+        } else {
+            // Legacy: detect which keys have encrypted values
+            config
+                .env_vars
+                .iter()
+                .filter(|(_, v)| env_crypto::is_encrypted(v))
+                .map(|(k, _)| k.clone())
+                .collect()
         };
 
         Ok(WorkspaceTemplate {
@@ -1205,12 +1222,13 @@ impl LibraryStore {
             distro: config.distro,
             skills: config.skills,
             env_vars,
+            encrypted_keys,
             init_script: config.init_script,
         })
     }
 
     /// Save a workspace template.
-    /// Env vars are encrypted if a PRIVATE_KEY is configured.
+    /// Only env vars with keys in `encrypted_keys` are encrypted (if PRIVATE_KEY is configured).
     pub async fn save_workspace_template(
         &self,
         name: &str,
@@ -1222,12 +1240,27 @@ impl LibraryStore {
 
         fs::create_dir_all(&templates_dir).await?;
 
-        // Encrypt env vars if we have a key configured
+        // Selectively encrypt only keys in encrypted_keys
+        let encrypted_set: std::collections::HashSet<_> =
+            template.encrypted_keys.iter().cloned().collect();
         let env_vars = match env_crypto::load_private_key_from_env()? {
-            Some(key) => env_crypto::encrypt_env_vars(&key, &template.env_vars)
-                .context("Failed to encrypt template env vars")?,
+            Some(key) => {
+                let mut result = HashMap::with_capacity(template.env_vars.len());
+                for (k, v) in &template.env_vars {
+                    if encrypted_set.contains(k) {
+                        result.insert(
+                            k.clone(),
+                            env_crypto::encrypt_value(&key, v)
+                                .context("Failed to encrypt env var")?,
+                        );
+                    } else {
+                        result.insert(k.clone(), v.clone());
+                    }
+                }
+                result
+            }
             None => {
-                if !template.env_vars.is_empty() {
+                if !encrypted_set.is_empty() {
                     tracing::warn!(
                         "Saving template '{}' with plaintext env vars (PRIVATE_KEY not configured)",
                         name
@@ -1243,6 +1276,7 @@ impl LibraryStore {
             distro: template.distro.clone(),
             skills: template.skills.clone(),
             env_vars,
+            encrypted_keys: template.encrypted_keys.clone(),
             init_script: template.init_script.clone(),
         };
 

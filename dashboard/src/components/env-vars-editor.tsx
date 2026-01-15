@@ -1,6 +1,6 @@
 'use client';
 
-import { Eye, EyeOff, FileText, X } from 'lucide-react';
+import { Eye, EyeOff, FileText, X, Lock, Unlock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type EnvRow = {
@@ -9,6 +9,7 @@ export type EnvRow = {
   value: string;
   secret: boolean;
   visible: boolean;
+  encrypted: boolean;
 };
 
 const SENSITIVE_PATTERNS = [
@@ -21,15 +22,17 @@ export const isSensitiveKey = (key: string): boolean => {
   return SENSITIVE_PATTERNS.some(pattern => upperKey.includes(pattern));
 };
 
-export const toEnvRows = (env: Record<string, string>): EnvRow[] =>
+export const toEnvRows = (env: Record<string, string>, encryptedKeys?: string[]): EnvRow[] =>
   Object.entries(env).map(([key, value]) => {
     const secret = isSensitiveKey(key);
+    const encrypted = encryptedKeys?.includes(key) ?? secret;
     return {
       id: `${key}-${Math.random().toString(36).slice(2, 8)}`,
       key,
       value,
       secret,
-      visible: !secret,
+      visible: !(secret || encrypted), // Hide if secret OR encrypted
+      encrypted,
     };
   });
 
@@ -43,12 +46,16 @@ export const envRowsToMap = (rows: EnvRow[]): Record<string, string> => {
   return env;
 };
 
+export const getEncryptedKeys = (rows: EnvRow[]): string[] =>
+  rows.filter((row) => row.encrypted && row.key.trim()).map((row) => row.key.trim());
+
 export const createEmptyEnvRow = (): EnvRow => ({
   id: Math.random().toString(36).slice(2),
   key: '',
   value: '',
   secret: false,
   visible: true,
+  encrypted: false,
 });
 
 interface EnvVarsEditorProps {
@@ -70,12 +77,22 @@ export function EnvVarsEditor({ rows, onChange, className, description }: EnvVar
   const handleKeyChange = (id: string, newKey: string) => {
     const newSecret = isSensitiveKey(newKey);
     onChange(
-      rows.map((r) =>
-        r.id === id
-          ? { ...r, key: newKey, secret: newSecret, visible: newSecret ? r.visible : true }
-          : r
-      )
+      rows.map((r) => {
+        if (r.id !== id) return r;
+        // When key changes and becomes sensitive, auto-enable encryption
+        const newEncrypted = newSecret ? true : r.encrypted;
+        return { ...r, key: newKey, secret: newSecret, visible: newSecret ? r.visible : true, encrypted: newEncrypted };
+      })
     );
+  };
+
+  const handleToggleEncrypted = (id: string) => {
+    onChange(rows.map((r) => {
+      if (r.id !== id) return r;
+      const newEncrypted = !r.encrypted;
+      // When enabling encryption, hide the value
+      return { ...r, encrypted: newEncrypted, visible: newEncrypted ? false : r.visible };
+    }));
   };
 
   const handleValueChange = (id: string, newValue: string) => {
@@ -115,6 +132,23 @@ export function EnvVarsEditor({ rows, onChange, className, description }: EnvVar
           <div className="space-y-2 flex-1 overflow-y-auto min-h-[200px]">
             {rows.map((row) => (
               <div key={row.id} className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleToggleEncrypted(row.id)}
+                  className={cn(
+                    "p-2 rounded-lg transition-colors",
+                    row.encrypted
+                      ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+                      : "text-white/30 hover:text-white/50 hover:bg-white/[0.06]"
+                  )}
+                  title={row.encrypted ? "Encrypted at rest (click to disable)" : "Not encrypted (click to enable)"}
+                >
+                  {row.encrypted ? (
+                    <Lock className="h-3.5 w-3.5" />
+                  ) : (
+                    <Unlock className="h-3.5 w-3.5" />
+                  )}
+                </button>
                 <input
                   value={row.key}
                   onChange={(e) => handleKeyChange(row.id, e.target.value)}
@@ -124,16 +158,16 @@ export function EnvVarsEditor({ rows, onChange, className, description }: EnvVar
                 <span className="text-white/20">=</span>
                 <div className="flex-1 relative">
                   <input
-                    type={row.secret && !row.visible ? 'password' : 'text'}
+                    type={(row.encrypted || row.secret) && !row.visible ? 'password' : 'text'}
                     value={row.value}
                     onChange={(e) => handleValueChange(row.id, e.target.value)}
                     placeholder="value"
                     className={cn(
                       "w-full px-3 py-2 rounded-lg bg-black/20 border border-white/[0.06] text-xs text-white placeholder:text-white/30 focus:outline-none focus:border-indigo-500/50",
-                      row.secret && "pr-8"
+                      (row.encrypted || row.secret) && "pr-8"
                     )}
                   />
-                  {row.secret && (
+                  {(row.encrypted || row.secret) && (
                     <button
                       type="button"
                       onClick={() => handleToggleVisibility(row.id)}

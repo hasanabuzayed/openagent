@@ -4,6 +4,14 @@ This is the installation approach currently used on a **dedicated Ubuntu 24.04 s
 
 Open Agent is the orchestrator/UI backend. **It does not run model inference**; it delegates execution to an **OpenCode server** running locally (default `http://127.0.0.1:4096`).
 
+> **For AI Agents**: Before starting this installation, ask the user to provide:
+> 1. **Server IP address** (e.g., `95.216.112.253`)
+> 2. **Domain name** pointing to that IP (e.g., `agent.example.com`)
+> 3. **SSH access** credentials or key path for the server
+> 4. **Library git repo URL** (or confirm using the template)
+>
+> Verify you have SSH access before proceeding: `ssh root@<server-ip> "hostname"`
+
 ---
 
 ## 0) Assumptions
@@ -14,6 +22,74 @@ Open Agent is the orchestrator/UI backend. **It does not run model inference**; 
   - OpenCode server bound to localhost: `127.0.0.1:4096`
   - Open Agent bound to: `0.0.0.0:3000`
 - You have a Git repo for your **Library** (skills/tools/agents/rules/MCP configs)
+
+> **Recommendation**: Unless you know exactly what you need, install **all components** in this guide:
+> - **Bun** (required for OpenCode plugins and Playwright MCP)
+> - **systemd-container + debootstrap** (for isolated container workspaces)
+> - **Desktop automation tools** (Xvfb, i3, Chromium, xdotool, etc.)
+> - **Reverse proxy with SSL** (Caddy or Nginx + Certbot)
+>
+> Skipping components may limit functionality. The full installation uses ~2-3 GB of disk space.
+
+---
+
+## 0.5) DNS & Domain Setup (before you begin)
+
+Before starting the installation, ensure your domain is configured:
+
+### 0.5.1 Point your domain to the server
+
+Add an A record in your DNS provider:
+
+```
+agent.yourdomain.com → A → YOUR_SERVER_IP
+```
+
+Example with common providers:
+- **Cloudflare**: DNS → Add Record → Type: A, Name: `agent`, IPv4: `YOUR_SERVER_IP`
+- **Namecheap**: Advanced DNS → Add New Record → A Record
+- **Route53**: Create Record → Simple routing → A record
+
+### 0.5.2 Verify DNS propagation
+
+Wait for DNS to propagate (usually 1-15 minutes), then verify:
+
+```bash
+# From your local machine
+dig +short agent.yourdomain.com
+# Should return your server IP
+
+# Or use an online checker
+curl -s "https://dns.google/resolve?name=agent.yourdomain.com&type=A" | jq .
+```
+
+### 0.5.3 SSH key for Library repo (if private)
+
+If your Library repo is private, set up an SSH deploy key on the server:
+
+```bash
+# On the server
+ssh-keygen -t ed25519 -C "openagent-server" -f /root/.ssh/openagent -N ""
+cat /root/.ssh/openagent.pub
+# Copy this public key
+```
+
+Add the public key as a **deploy key** in your git provider:
+- **GitHub**: Repository → Settings → Deploy keys → Add deploy key
+- **GitLab**: Repository → Settings → Repository → Deploy keys
+
+Configure SSH to use the key:
+
+```bash
+cat >> /root/.ssh/config <<'EOF'
+Host github.com
+    IdentityFile /root/.ssh/openagent
+    IdentitiesOnly yes
+EOF
+
+# Test the connection
+ssh -T git@github.com
+```
 
 ---
 
@@ -26,19 +102,19 @@ apt install -y \
   build-essential pkg-config libssl-dev
 ```
 
-If you plan to use container workspaces (systemd-nspawn), also install:
+**Container workspaces** (systemd-nspawn) — recommended for isolated environments:
 
 ```bash
 apt install -y systemd-container debootstrap
 ```
 
-If you plan to use **desktop automation** tools (Xvfb/i3/Chromium screenshots/OCR), install:
+**Desktop automation** (Xvfb/i3/Chromium screenshots/OCR) — recommended for browser control:
 
 ```bash
 apt install -y xvfb i3 x11-utils xdotool scrot imagemagick chromium chromium-sandbox tesseract-ocr
 ```
 
-See `docs/DESKTOP_SETUP.md` for a full checklist and i3 config recommendations.
+See `docs/DESKTOP_SETUP.md` for i3 config and additional setup after installation.
 
 ---
 

@@ -10,12 +10,16 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Default timeout for OpenCode HTTP requests (10 minutes).
-/// This is intentionally long to allow for extended tool executions.
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+/// Default timeout for OpenCode HTTP requests (5 minutes).
+/// Reduced from 10 minutes since we now have SSE inactivity detection.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Interval for logging heartbeat while waiting for SSE events (30 seconds).
 const HEARTBEAT_LOG_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Maximum time to wait for SSE activity before considering the connection stale.
+/// This prevents infinite hangs when OpenCode stops sending events mid-stream.
+const SSE_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(180); // 3 minutes
 
 /// Number of retries for transient network failures.
 const NETWORK_RETRY_COUNT: u32 = 3;
@@ -219,14 +223,45 @@ impl OpenCodeClient {
 
             tracing::warn!(session_id = %session_id_clone, "SSE curl process started, reading lines");
 
+            let mut last_activity = std::time::Instant::now();
+
             loop {
                 line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => {
+
+                // Apply inactivity timeout to prevent infinite hangs when OpenCode stops responding
+                let read_result = tokio::time::timeout(
+                    SSE_INACTIVITY_TIMEOUT,
+                    reader.read_line(&mut line),
+                )
+                .await;
+
+                match read_result {
+                    Err(_timeout) => {
+                        let idle_secs = last_activity.elapsed().as_secs();
+                        tracing::error!(
+                            session_id = %session_id_clone,
+                            idle_secs = idle_secs,
+                            event_count = event_count,
+                            "SSE inactivity timeout - OpenCode stopped sending events"
+                        );
+                        // Send a timeout error event so the caller knows what happened
+                        let _ = event_tx
+                            .send(OpenCodeEvent::Error {
+                                message: format!(
+                                    "OpenCode SSE stream inactive for {} seconds - possible internal timeout or crash",
+                                    idle_secs
+                                ),
+                            })
+                            .await;
+                        let _ = child.kill().await;
+                        return;
+                    }
+                    Ok(Ok(0)) => {
                         tracing::debug!(session_id = %session_id_clone, "SSE curl stdout closed");
                         break;
                     }
-                    Ok(_) => {
+                    Ok(Ok(_)) => {
+                        last_activity = std::time::Instant::now();
                         let trimmed = line.trim_end();
 
                         if trimmed.is_empty() {
@@ -286,7 +321,7 @@ impl OpenCodeClient {
                             continue;
                         }
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         tracing::warn!(session_id = %session_id_clone, error = %e, "SSE read error");
                         break;
                     }
@@ -432,8 +467,11 @@ impl OpenCodeClient {
     /// Parse a message response from OpenCode, handling various response shapes.
     fn parse_message_response(&self, text: &str) -> anyhow::Result<OpenCodeMessageResponse> {
         if text.trim().is_empty() {
-            // Newer OpenCode servers may return an empty body for message POSTs.
-            return Ok(OpenCodeMessageResponse::empty());
+            // Empty body indicates the model was never invoked - treat as error
+            anyhow::bail!(
+                "OpenCode returned an empty response. This usually means the request failed silently \
+                (e.g., provider auth issue, rate limit, or session problem). Check OpenCode logs for details."
+            );
         }
 
         // Try the legacy response shape first.
@@ -1329,14 +1367,6 @@ impl Default for OpenCodeAssistantInfo {
     }
 }
 
-impl OpenCodeMessageResponse {
-    pub fn empty() -> Self {
-        Self {
-            info: OpenCodeAssistantInfo::default(),
-            parts: Vec::new(),
-        }
-    }
-}
 
 pub fn extract_text(parts: &[serde_json::Value]) -> String {
     let mut out = Vec::new();

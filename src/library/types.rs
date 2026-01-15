@@ -214,6 +214,9 @@ pub struct WorkspaceTemplate {
     /// Environment variables for the workspace
     #[serde(default)]
     pub env_vars: HashMap<String, String>,
+    /// Keys of env vars that should be encrypted at rest
+    #[serde(default)]
+    pub encrypted_keys: Vec<String>,
     /// Init script to run on build
     #[serde(default)]
     pub init_script: String,
