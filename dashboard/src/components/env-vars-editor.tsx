@@ -25,7 +25,12 @@ export const isSensitiveKey = (key: string): boolean => {
 export const toEnvRows = (env: Record<string, string>, encryptedKeys?: string[]): EnvRow[] =>
   Object.entries(env).map(([key, value]) => {
     const secret = isSensitiveKey(key);
-    const encrypted = encryptedKeys?.includes(key) ?? secret;
+    // If encryptedKeys is provided and non-empty, use it as the source of truth.
+    // Otherwise fall back to auto-detection based on key name patterns (secret).
+    // This ensures sensitive keys show as "will be encrypted" by default.
+    const encrypted = (encryptedKeys && encryptedKeys.length > 0)
+      ? encryptedKeys.includes(key)
+      : secret;
     return {
       id: `${key}-${Math.random().toString(36).slice(2, 8)}`,
       key,
@@ -63,9 +68,11 @@ interface EnvVarsEditorProps {
   onChange: (rows: EnvRow[]) => void;
   className?: string;
   description?: string;
+  /** Show encryption toggle per row. Only enable for templates which persist encrypted_keys. */
+  showEncryptionToggle?: boolean;
 }
 
-export function EnvVarsEditor({ rows, onChange, className, description }: EnvVarsEditorProps) {
+export function EnvVarsEditor({ rows, onChange, className, description, showEncryptionToggle = false }: EnvVarsEditorProps) {
   const handleAddRow = () => {
     onChange([...rows, createEmptyEnvRow()]);
   };
@@ -132,23 +139,25 @@ export function EnvVarsEditor({ rows, onChange, className, description }: EnvVar
           <div className="space-y-2 flex-1 overflow-y-auto min-h-[200px]">
             {rows.map((row) => (
               <div key={row.id} className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleToggleEncrypted(row.id)}
-                  className={cn(
-                    "p-2 rounded-lg transition-colors",
-                    row.encrypted
-                      ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
-                      : "text-white/30 hover:text-white/50 hover:bg-white/[0.06]"
-                  )}
-                  title={row.encrypted ? "Encrypted at rest (click to disable)" : "Not encrypted (click to enable)"}
-                >
-                  {row.encrypted ? (
-                    <Lock className="h-3.5 w-3.5" />
-                  ) : (
-                    <Unlock className="h-3.5 w-3.5" />
-                  )}
-                </button>
+                {showEncryptionToggle && (
+                  <button
+                    type="button"
+                    onClick={() => handleToggleEncrypted(row.id)}
+                    className={cn(
+                      "p-2 rounded-lg transition-colors",
+                      row.encrypted
+                        ? "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10"
+                        : "text-white/30 hover:text-white/50 hover:bg-white/[0.06]"
+                    )}
+                    title={row.encrypted ? "Encrypted at rest (click to disable)" : "Not encrypted (click to enable)"}
+                  >
+                    {row.encrypted ? (
+                      <Lock className="h-3.5 w-3.5" />
+                    ) : (
+                      <Unlock className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                )}
                 <input
                   value={row.key}
                   onChange={(e) => handleKeyChange(row.id, e.target.value)}

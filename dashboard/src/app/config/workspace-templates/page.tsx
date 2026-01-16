@@ -670,6 +670,7 @@ export default function WorkspaceTemplatesPage() {
                     onChange={setEnvRows}
                     className="flex-1"
                     description="Injected into workspace shells and MCP tool runs. Sensitive values (keys, tokens, passwords) are encrypted at rest."
+                    showEncryptionToggle
                   />
                 )}
 

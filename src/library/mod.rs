@@ -213,6 +213,8 @@ impl LibraryStore {
     }
 
     /// Get a skill by name with full content.
+    /// Encrypted values in <encrypted v="N">...</encrypted> tags are decrypted
+    /// to <encrypted>...</encrypted> format for display/editing.
     pub async fn get_skill(&self, name: &str) -> Result<Skill> {
         Self::validate_name(name)?;
         let skill_dir = self.skills_dir().join(name);
@@ -222,9 +224,16 @@ impl LibraryStore {
             anyhow::bail!("Skill not found: {}", name);
         }
 
-        let content = fs::read_to_string(&skill_md)
+        let raw_content = fs::read_to_string(&skill_md)
             .await
             .context("Failed to read SKILL.md")?;
+
+        // Decrypt any encrypted tags for display
+        let content = if let Some(key) = env_crypto::load_private_key_from_env()? {
+            env_crypto::decrypt_content_tags(&key, &raw_content)?
+        } else {
+            raw_content
+        };
 
         let (frontmatter, _body) = parse_frontmatter(&content);
         let description = extract_description(&frontmatter);
@@ -322,8 +331,14 @@ impl LibraryStore {
                 if file_name.ends_with(".md") {
                     // Skip SKILL.md from the files list (it's in the content field)
                     if file_name != "SKILL.md" {
-                        let file_content =
+                        let raw_content =
                             fs::read_to_string(&entry_path).await.unwrap_or_default();
+                        // Decrypt any encrypted tags for display
+                        let file_content = if let Ok(Some(key)) = env_crypto::load_private_key_from_env() {
+                            env_crypto::decrypt_content_tags(&key, &raw_content).unwrap_or(raw_content)
+                        } else {
+                            raw_content
+                        };
                         md_files.push(SkillFile {
                             name: file_name,
                             path: relative_path,
@@ -340,7 +355,9 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Save a skill's SKILL.md content.
+    /// Save a skill, encrypting any <encrypted>...</encrypted> tags.
+    /// Unversioned <encrypted>value</encrypted> tags are encrypted to
+    /// <encrypted v="1">ciphertext</encrypted> format.
     pub async fn save_skill(&self, name: &str, content: &str) -> Result<()> {
         Self::validate_name(name)?;
 
@@ -350,7 +367,14 @@ impl LibraryStore {
         // Ensure directory exists
         fs::create_dir_all(&skill_dir).await?;
 
-        fs::write(&skill_md, content)
+        // Encrypt any unversioned encrypted tags
+        let encrypted_content = if let Some(key) = env_crypto::load_private_key_from_env()? {
+            env_crypto::encrypt_content_tags(&key, content)?
+        } else {
+            content.to_string()
+        };
+
+        fs::write(&skill_md, encrypted_content)
             .await
             .context("Failed to write SKILL.md")?;
 
@@ -431,6 +455,7 @@ impl LibraryStore {
     }
 
     /// Get a reference file from a skill.
+    /// For .md files, encrypted tags are decrypted for display.
     pub async fn get_skill_reference(&self, skill_name: &str, ref_path: &str) -> Result<String> {
         Self::validate_name(skill_name)?;
         let skill_dir = self.skills_dir().join(skill_name);
@@ -443,12 +468,22 @@ impl LibraryStore {
             anyhow::bail!("Reference file not found: {}/{}", skill_name, ref_path);
         }
 
-        fs::read_to_string(&file_path)
+        let raw_content = fs::read_to_string(&file_path)
             .await
-            .context("Failed to read reference file")
+            .context("Failed to read reference file")?;
+
+        // Decrypt encrypted tags in .md files
+        if ref_path.ends_with(".md") {
+            if let Some(key) = env_crypto::load_private_key_from_env()? {
+                return env_crypto::decrypt_content_tags(&key, &raw_content);
+            }
+        }
+
+        Ok(raw_content)
     }
 
     /// Save a reference file for a skill.
+    /// For .md files, encrypted tags are encrypted before saving.
     pub async fn save_skill_reference(
         &self,
         skill_name: &str,
@@ -467,7 +502,18 @@ impl LibraryStore {
             fs::create_dir_all(parent).await?;
         }
 
-        fs::write(&file_path, content)
+        // Encrypt tags in .md files
+        let content_to_write = if ref_path.ends_with(".md") {
+            if let Some(key) = env_crypto::load_private_key_from_env()? {
+                env_crypto::encrypt_content_tags(&key, content)?
+            } else {
+                content.to_string()
+            }
+        } else {
+            content.to_string()
+        };
+
+        fs::write(&file_path, content_to_write)
             .await
             .context("Failed to write reference file")?;
 

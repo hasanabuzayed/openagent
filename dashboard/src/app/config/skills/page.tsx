@@ -934,7 +934,7 @@ Describe what this skill does.
   }
 
   return (
-    <div className="min-h-screen flex flex-col p-6 max-w-7xl mx-auto space-y-4">
+    <div className="h-screen flex flex-col p-6 gap-4 overflow-hidden">
       {/* Git Status Bar */}
       {status && (
         <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
@@ -1093,7 +1093,7 @@ Describe what this skill does.
         )}
 
         {/* Editor */}
-        <div className="flex-1 min-h-0 flex flex-col">
+        <div className="flex-1 min-h-0 min-w-0 flex flex-col">
           {selectedSkill && selectedFile ? (
             <>
               <div className="p-3 border-b border-white/[0.06] flex items-center justify-between">
@@ -1128,13 +1128,13 @@ Describe what this skill does.
                 </div>
               </div>
 
-              <div className="flex-1 min-h-0 p-3 overflow-hidden flex flex-col gap-3">
+              <div className="flex-1 min-h-0 p-3 overflow-y-auto">
                 {loadingFile ? (
                   <div className="flex items-center justify-center h-full">
                     <Loader className="h-5 w-5 animate-spin text-white/40" />
                   </div>
                 ) : (
-                  <>
+                  <div className="flex flex-col gap-3">
                     {selectedFile === 'SKILL.md' && (
                       <FrontmatterEditor
                         frontmatter={frontmatter}
@@ -1142,7 +1142,7 @@ Describe what this skill does.
                         disabled={saving}
                       />
                     )}
-                    <div className="flex-1 min-h-0 flex flex-col">
+                    <div>
                       <label className="block text-xs text-white/40 mb-1.5">
                         {selectedFile === 'SKILL.md' ? 'Body Content' : 'Content'}
                       </label>
@@ -1150,6 +1150,7 @@ Describe what this skill does.
                         value={bodyContent}
                         onChange={handleBodyChange}
                         disabled={saving}
+                        scrollable={false}
                         language={
                           selectedFile === 'SKILL.md' ||
                           selectedFile?.toLowerCase().endsWith('.md') ||
@@ -1158,10 +1159,15 @@ Describe what this skill does.
                             ? 'markdown'
                             : 'text'
                         }
-                        className="flex-1 min-h-0"
+                        highlightEncrypted={
+                          selectedFile === 'SKILL.md' ||
+                          selectedFile?.toLowerCase().endsWith('.md') ||
+                          selectedFile?.toLowerCase().endsWith('.mdx') ||
+                          selectedFile?.toLowerCase().endsWith('.markdown')
+                        }
                       />
                     </div>
-                  </>
+                  </div>
                 )}
               </div>
             </>

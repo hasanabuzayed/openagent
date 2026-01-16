@@ -187,7 +187,7 @@ Describe what this rule does.
   }
 
   return (
-    <div className="min-h-screen flex flex-col p-6 max-w-7xl mx-auto space-y-4">
+    <div className="h-screen flex flex-col p-6 gap-4 overflow-hidden">
       {libraryUnavailable ? (
         <LibraryUnavailable message={libraryUnavailableMessage} onConfigured={refresh} />
       ) : (

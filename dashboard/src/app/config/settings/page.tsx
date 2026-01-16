@@ -11,9 +11,10 @@ import {
   listOpenCodeAgents,
   OpenAgentConfig,
 } from '@/lib/api';
-import { Save, Loader, AlertCircle, Check, RefreshCw, RotateCcw, Eye, EyeOff, AlertTriangle, X } from 'lucide-react';
+import { Save, Loader, AlertCircle, Check, RefreshCw, RotateCcw, Eye, EyeOff, AlertTriangle, X, GitBranch, Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ConfigCodeEditor } from '@/components/config-code-editor';
+import { useLibrary } from '@/contexts/library-context';
 
 // Parse agents from OpenCode response (handles both object and array formats)
 function parseAgentNames(agents: unknown): string[] {
@@ -27,6 +28,17 @@ function parseAgentNames(agents: unknown): string[] {
 }
 
 export default function SettingsPage() {
+  const {
+    status,
+    sync,
+    commit,
+    push,
+    syncing,
+    committing,
+    pushing,
+    refreshStatus,
+  } = useLibrary();
+
   // OpenCode settings state
   const [settings, setSettings] = useState<string>('');
   const [originalSettings, setOriginalSettings] = useState<string>('');
@@ -53,6 +65,9 @@ export default function SettingsPage() {
   const [allAgents, setAllAgents] = useState<string[]>([]);
   const [savingOpenAgent, setSavingOpenAgent] = useState(false);
   const [openAgentSaveSuccess, setOpenAgentSaveSuccess] = useState(false);
+
+  const [showCommitDialog, setShowCommitDialog] = useState(false);
+  const [commitMessage, setCommitMessage] = useState('');
 
   const isDirty = settings !== originalSettings;
   const isOpenAgentDirty =
@@ -127,10 +142,13 @@ export default function SettingsPage() {
           handleSave();
         }
       }
+      if (e.key === 'Escape') {
+        if (showCommitDialog) setShowCommitDialog(false);
+      }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isDirty, parseError, settings]);
+  }, [isDirty, parseError, settings, showCommitDialog]);
 
   const handleSave = async () => {
     if (parseError) return;
@@ -145,6 +163,7 @@ export default function SettingsPage() {
       setSaveSuccess(true);
       setShowRestartModal(true); // Show modal asking to restart
       setTimeout(() => setSaveSuccess(false), 2000);
+      await refreshStatus(); // Update git status bar
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save settings');
     } finally {
@@ -170,6 +189,7 @@ export default function SettingsPage() {
       setOriginalOpenAgentConfig({ ...openAgentConfig });
       setOpenAgentSaveSuccess(true);
       setTimeout(() => setOpenAgentSaveSuccess(false), 2000);
+      await refreshStatus(); // Update git status bar
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save OpenAgent config');
     } finally {
@@ -197,6 +217,34 @@ export default function SettingsPage() {
     setParseError(null);
   };
 
+  const handleSync = async () => {
+    try {
+      await sync();
+      await loadSettings();
+    } catch {
+      // Error handled by context
+    }
+  };
+
+  const handleCommit = async () => {
+    if (!commitMessage.trim()) return;
+    try {
+      await commit(commitMessage);
+      setCommitMessage('');
+      setShowCommitDialog(false);
+    } catch {
+      // Error handled by context
+    }
+  };
+
+  const handlePush = async () => {
+    try {
+      await push();
+    } catch {
+      // Error handled by context
+    }
+  };
+
   const toggleHiddenAgent = (agentName: string) => {
     setOpenAgentConfig((prev) => {
       const hidden = prev.hidden_agents.includes(agentName)
@@ -218,6 +266,68 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-screen flex flex-col p-6 max-w-5xl mx-auto space-y-6">
+      {/* Git Status Bar */}
+      {status && (
+        <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <GitBranch className="h-4 w-4 text-white/40" />
+                <span className="text-sm font-medium text-white">{status.branch}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {status.clean ? (
+                  <span className="flex items-center gap-1 text-xs text-emerald-400">
+                    <Check className="h-3 w-3" />
+                    Clean
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-xs text-amber-400">
+                    <AlertCircle className="h-3 w-3" />
+                    {status.modified_files.length} modified
+                  </span>
+                )}
+              </div>
+              {(status.ahead > 0 || status.behind > 0) && (
+                <div className="text-xs text-white/40">
+                  {status.ahead > 0 && <span className="text-emerald-400">+{status.ahead}</span>}
+                  {status.ahead > 0 && status.behind > 0 && ' / '}
+                  {status.behind > 0 && <span className="text-amber-400">-{status.behind}</span>}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-white/70 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] rounded-lg transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={cn('h-3 w-3', syncing && 'animate-spin')} />
+                Sync
+              </button>
+              {!status.clean && (
+                <button
+                  onClick={() => setShowCommitDialog(true)}
+                  disabled={committing}
+                  className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-white/70 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] rounded-lg transition-colors disabled:opacity-50"
+                >
+                  <Save className="h-3 w-3" />
+                  Commit
+                </button>
+              )}
+              <button
+                onClick={handlePush}
+                disabled={pushing || status.ahead === 0}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-white/70 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] rounded-lg transition-colors disabled:opacity-50"
+              >
+                <Upload className="h-3 w-3" />
+                Push
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -492,6 +602,50 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      {/* Commit Dialog */}
+      {showCommitDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md px-4">
+          <div className="w-full max-w-md rounded-2xl bg-[#161618] border border-white/[0.06] shadow-[0_25px_100px_rgba(0,0,0,0.7)] overflow-hidden">
+            <div className="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-white">Commit Changes</p>
+                <p className="text-xs text-white/40">Describe your configuration changes.</p>
+              </div>
+              <button
+                onClick={() => setShowCommitDialog(false)}
+                className="p-2 rounded-lg text-white/40 hover:text-white/70 hover:bg-white/[0.06]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-5">
+              <label className="text-xs text-white/40 block mb-2">Commit Message</label>
+              <input
+                value={commitMessage}
+                onChange={(e) => setCommitMessage(e.target.value)}
+                placeholder="Update configuration settings"
+                className="w-full px-3 py-2 rounded-lg bg-black/20 border border-white/[0.06] text-xs text-white placeholder:text-white/25 focus:outline-none focus:border-indigo-500/50"
+              />
+            </div>
+            <div className="px-5 pb-5 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setShowCommitDialog(false)}
+                className="px-4 py-2 text-xs text-white/60 hover:text-white/80"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCommit}
+                disabled={!commitMessage.trim() || committing}
+                className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-indigo-500 hover:bg-indigo-600 rounded-lg disabled:opacity-50"
+              >
+                {committing ? <Loader className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                Commit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

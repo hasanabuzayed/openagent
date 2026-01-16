@@ -210,6 +210,92 @@ pub fn generate_private_key() -> [u8; KEY_LENGTH] {
     key
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Content encryption (for skill markdown files)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Regex to match unversioned <encrypted>value</encrypted> tags (user input format).
+const UNVERSIONED_TAG_REGEX: &str = r"<encrypted>([^<]*)</encrypted>";
+
+/// Regex to match versioned <encrypted v="N">value</encrypted> tags (storage format).
+const VERSIONED_TAG_REGEX: &str = r#"<encrypted v="(\d+)">([^<]*)</encrypted>"#;
+
+/// Check if a value is an unversioned encrypted tag (user input format).
+pub fn is_unversioned_encrypted(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("<encrypted>") && trimmed.ends_with("</encrypted>") && !trimmed.contains(" v=\"")
+}
+
+/// Encrypt all unversioned <encrypted>value</encrypted> tags in content.
+/// Transforms <encrypted>plaintext</encrypted> to <encrypted v="1">ciphertext</encrypted>.
+pub fn encrypt_content_tags(key: &[u8; KEY_LENGTH], content: &str) -> Result<String> {
+    let re = regex::Regex::new(UNVERSIONED_TAG_REGEX)
+        .map_err(|e| anyhow!("Invalid regex: {}", e))?;
+
+    let mut result = content.to_string();
+    let mut offset: i64 = 0;
+
+    for cap in re.captures_iter(content) {
+        let full_match = cap.get(0).unwrap();
+        let plaintext = cap.get(1).unwrap().as_str();
+
+        // Skip if already versioned (shouldn't happen with this regex, but be safe)
+        if full_match.as_str().contains(" v=\"") {
+            continue;
+        }
+
+        // Encrypt the plaintext value
+        let encrypted = encrypt_value(key, plaintext)?;
+
+        // Calculate adjusted position with offset
+        let start = (full_match.start() as i64 + offset) as usize;
+        let end = (full_match.end() as i64 + offset) as usize;
+
+        // Update offset for next replacement
+        offset += encrypted.len() as i64 - full_match.len() as i64;
+
+        // Replace in result
+        result = format!("{}{}{}", &result[..start], encrypted, &result[end..]);
+    }
+
+    Ok(result)
+}
+
+/// Decrypt all versioned <encrypted v="N">ciphertext</encrypted> tags in content.
+/// Transforms <encrypted v="1">ciphertext</encrypted> to <encrypted>plaintext</encrypted>.
+pub fn decrypt_content_tags(key: &[u8; KEY_LENGTH], content: &str) -> Result<String> {
+    let re = regex::Regex::new(VERSIONED_TAG_REGEX)
+        .map_err(|e| anyhow!("Invalid regex: {}", e))?;
+
+    let mut result = content.to_string();
+    let mut offset: i64 = 0;
+
+    for cap in re.captures_iter(content) {
+        let full_match = cap.get(0).unwrap();
+        let _version = cap.get(1).unwrap().as_str();
+        let _ciphertext_b64 = cap.get(2).unwrap().as_str();
+
+        // Reconstruct the full encrypted value for decryption
+        let encrypted_value = full_match.as_str();
+        let plaintext = decrypt_value(key, encrypted_value)?;
+
+        // Format as unversioned tag for display
+        let display_tag = format!("<encrypted>{}</encrypted>", plaintext);
+
+        // Calculate adjusted position with offset
+        let start = (full_match.start() as i64 + offset) as usize;
+        let end = (full_match.end() as i64 + offset) as usize;
+
+        // Update offset for next replacement
+        offset += display_tag.len() as i64 - full_match.len() as i64;
+
+        // Replace in result
+        result = format!("{}{}{}", &result[..start], display_tag, &result[end..]);
+    }
+
+    Ok(result)
+}
+
 /// Load the encryption key from environment, generating one if missing.
 /// If a key is generated, it will be appended to the .env file at the given path.
 pub async fn load_or_create_private_key(env_file_path: &Path) -> Result<[u8; KEY_LENGTH]> {
@@ -411,5 +497,79 @@ mod tests {
         let decrypted = decrypt_value(&key, &encrypted).unwrap();
 
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_is_unversioned_encrypted() {
+        assert!(is_unversioned_encrypted("<encrypted>secret</encrypted>"));
+        assert!(is_unversioned_encrypted("  <encrypted>secret</encrypted>  "));
+        assert!(!is_unversioned_encrypted("<encrypted v=\"1\">secret</encrypted>"));
+        assert!(!is_unversioned_encrypted("plaintext"));
+    }
+
+    #[test]
+    fn test_encrypt_content_tags() {
+        let key = test_key();
+        let content = "Hello, here is my key: <encrypted>sk-12345</encrypted> and more text.";
+
+        let encrypted = encrypt_content_tags(&key, content).unwrap();
+
+        // Should have versioned tag now
+        assert!(encrypted.contains("<encrypted v=\"1\">"));
+        assert!(encrypted.contains("</encrypted>"));
+        assert!(!encrypted.contains("<encrypted>sk-12345</encrypted>"));
+        assert!(encrypted.starts_with("Hello, here is my key: "));
+        assert!(encrypted.ends_with(" and more text."));
+    }
+
+    #[test]
+    fn test_decrypt_content_tags() {
+        let key = test_key();
+        let content = "Hello, here is my key: <encrypted>sk-12345</encrypted> and more text.";
+
+        // First encrypt
+        let encrypted = encrypt_content_tags(&key, content).unwrap();
+
+        // Then decrypt
+        let decrypted = decrypt_content_tags(&key, &encrypted).unwrap();
+
+        // Should be back to unversioned format
+        assert_eq!(decrypted, content);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_multiple_tags() {
+        let key = test_key();
+        let content = r#"
+API keys:
+- OpenAI: <encrypted>sk-openai-key</encrypted>
+- Anthropic: <encrypted>sk-ant-key</encrypted>
+
+Use them wisely.
+"#;
+
+        let encrypted = encrypt_content_tags(&key, content).unwrap();
+
+        // Both should be encrypted
+        assert!(!encrypted.contains("<encrypted>sk-openai-key</encrypted>"));
+        assert!(!encrypted.contains("<encrypted>sk-ant-key</encrypted>"));
+
+        // Count versioned tags
+        let count = encrypted.matches("<encrypted v=\"1\">").count();
+        assert_eq!(count, 2);
+
+        // Decrypt should restore original
+        let decrypted = decrypt_content_tags(&key, &encrypted).unwrap();
+        assert_eq!(decrypted, content);
+    }
+
+    #[test]
+    fn test_already_encrypted_passthrough() {
+        let key = test_key();
+        let content = "Already encrypted: <encrypted v=\"1\">abc123</encrypted>";
+
+        // Encrypting again should not double-encrypt
+        let result = encrypt_content_tags(&key, content).unwrap();
+        assert_eq!(result, content);
     }
 }
