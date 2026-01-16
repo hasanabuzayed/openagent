@@ -273,6 +273,19 @@ pub struct Skill {
 // Command Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// A single command parameter definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandParam {
+    /// Parameter name (e.g., "repo-path")
+    pub name: String,
+    /// Whether this parameter is required
+    #[serde(default)]
+    pub required: bool,
+    /// Description of the parameter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// Command summary for listing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandSummary {
@@ -283,6 +296,9 @@ pub struct CommandSummary {
     pub description: Option<String>,
     /// Path relative to library root (e.g., "command/review-pr.md")
     pub path: String,
+    /// Parameters this command accepts (from frontmatter)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<CommandParam>,
 }
 
 /// Full command with content.
@@ -297,6 +313,9 @@ pub struct Command {
     pub path: String,
     /// Full markdown content
     pub content: String,
+    /// Parameters this command accepts (from frontmatter)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<CommandParam>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -518,6 +537,58 @@ pub fn extract_string_array(frontmatter: &Option<serde_yaml::Value>, field: &str
         .map(|seq| {
             seq.iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Extract command params from YAML frontmatter.
+/// Supports two formats:
+/// 1. Simple list: `params: [repo-path, pr-number]`
+/// 2. Detailed objects: `params: [{name: repo-path, required: true, description: "..."}]`
+pub fn extract_params(frontmatter: &Option<serde_yaml::Value>) -> Vec<CommandParam> {
+    frontmatter
+        .as_ref()
+        .and_then(|fm| fm.get("params"))
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|item| {
+                    // Format 1: Simple string
+                    if let Some(name) = item.as_str() {
+                        return Some(CommandParam {
+                            name: name.to_string(),
+                            required: true, // Default to required for simple format
+                            description: None,
+                        });
+                    }
+
+                    // Format 2: Object with name, required, description
+                    if let Some(mapping) = item.as_mapping() {
+                        let name = mapping
+                            .get(serde_yaml::Value::String("name".to_string()))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())?;
+
+                        let required = mapping
+                            .get(serde_yaml::Value::String("required".to_string()))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+
+                        let description = mapping
+                            .get(serde_yaml::Value::String("description".to_string()))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
+                        return Some(CommandParam {
+                            name,
+                            required,
+                            description,
+                        });
+                    }
+
+                    None
+                })
                 .collect()
         })
         .unwrap_or_default()

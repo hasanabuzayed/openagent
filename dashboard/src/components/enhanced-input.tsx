@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
-import { listLibraryCommands, getVisibleAgents, type CommandSummary } from '@/lib/api';
+import { listLibraryCommands, getVisibleAgents, type CommandSummary, type CommandParam } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 // Built-in oh-my-opencode commands
@@ -38,6 +38,7 @@ interface AutocompleteItem {
   name: string;
   description: string | null;
   source?: string;
+  params?: CommandParam[];
 }
 
 export const EnhancedInput = forwardRef<EnhancedInputHandle, EnhancedInputProps>(function EnhancedInput({
@@ -173,6 +174,7 @@ export const EnhancedInput = forwardRef<EnhancedInputHandle, EnhancedInputProps>
         name: cmd.name,
         description: cmd.description,
         source: cmd.path === 'builtin' ? 'oh-my-opencode' : 'library',
+        params: cmd.params,
       })));
       setAutocompleteType('command');
       setTriggerPosition(cursorPos - commandMatch[1].length);
@@ -431,10 +433,15 @@ export const EnhancedInput = forwardRef<EnhancedInputHandle, EnhancedInputProps>
                 {item.type === 'command' ? '/' : '@'}
               </span>
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium text-white text-sm">
                     {item.name}
                   </span>
+                  {item.params && item.params.length > 0 && (
+                    <span className="text-xs text-white/40 font-mono">
+                      {item.params.map(p => p.required ? `<${p.name}>` : `[${p.name}]`).join(' ')}
+                    </span>
+                  )}
                   {item.source && (
                     <span className="text-xs text-white/30 px-1.5 py-0.5 rounded bg-white/[0.05]">
                       {item.source}

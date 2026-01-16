@@ -700,11 +700,13 @@ impl LibraryStore {
                 .unwrap_or((None, ""));
 
             let description = extract_description(&frontmatter);
+            let params = extract_params(&frontmatter);
 
             commands.push(CommandSummary {
                 name,
                 description,
                 path: format!("{}/{}", COMMAND_DIR, file_name),
+                params,
             });
         }
 
@@ -729,12 +731,14 @@ impl LibraryStore {
 
         let (frontmatter, _body) = parse_frontmatter(&content);
         let description = extract_description(&frontmatter);
+        let params = extract_params(&frontmatter);
 
         Ok(Command {
             name: name.to_string(),
             description,
             path: format!("{}/{}.md", COMMAND_DIR, name),
             content,
+            params,
         })
     }
 

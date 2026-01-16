@@ -1381,10 +1381,17 @@ export interface MigrationReport {
   success: boolean;
 }
 
+export interface CommandParam {
+  name: string;
+  required: boolean;
+  description: string | null;
+}
+
 export interface CommandSummary {
   name: string;
   description: string | null;
   path: string;
+  params?: CommandParam[];
 }
 
 export interface Command {
@@ -1392,6 +1399,7 @@ export interface Command {
   description: string | null;
   path: string;
   content: string;
+  params?: CommandParam[];
 }
 
 // Git status
