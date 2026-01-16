@@ -1356,8 +1356,8 @@ impl LibraryStore {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Get oh-my-opencode settings from the Library.
-    /// If the Library file doesn't exist, attempts to read from the system location
-    /// (~/.config/opencode/oh-my-opencode.json) and returns that.
+    /// If the Library file doesn't exist but a system config exists
+    /// (~/.config/opencode/oh-my-opencode.json), copies it to the Library first.
     /// Returns an empty object if neither file exists.
     pub async fn get_opencode_settings(&self) -> Result<serde_json::Value> {
         let path = self.path.join(OPENCODE_DIR).join("oh-my-opencode.json");
@@ -1369,14 +1369,30 @@ impl LibraryStore {
             return serde_json::from_str(&content).context("Failed to parse oh-my-opencode.json");
         }
 
-        // Library file doesn't exist - try to read from system location
+        // Library file doesn't exist - try to copy from system location
         let system_path = Self::resolve_system_opencode_path();
         if system_path.exists() {
             let content = fs::read_to_string(&system_path)
                 .await
                 .context("Failed to read system oh-my-opencode.json")?;
-            return serde_json::from_str(&content)
-                .context("Failed to parse system oh-my-opencode.json");
+
+            // Parse first to validate it's valid JSON
+            let settings: serde_json::Value = serde_json::from_str(&content)
+                .context("Failed to parse system oh-my-opencode.json")?;
+
+            // Copy to Library so it's versioned and editable via dashboard
+            let opencode_dir = self.path.join(OPENCODE_DIR);
+            if let Err(e) = fs::create_dir_all(&opencode_dir).await {
+                tracing::warn!("Failed to create opencode directory in Library: {}", e);
+            } else if let Err(e) = fs::write(&path, &content).await {
+                tracing::warn!("Failed to copy oh-my-opencode.json to Library: {}", e);
+            } else {
+                tracing::info!(
+                    "Copied oh-my-opencode.json from system to Library for versioning"
+                );
+            }
+
+            return Ok(settings);
         }
 
         // Neither file exists
