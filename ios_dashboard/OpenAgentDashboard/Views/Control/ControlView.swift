@@ -309,6 +309,12 @@ struct ControlView: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
+        .onChange(of: showDesktopStream) { _, isShowing in
+            // Auto-hide keyboard when opening the desktop stream
+            if isShowing {
+                isInputFocused = false
+            }
+        }
         .sheet(isPresented: $showNewMissionSheet) {
             NewMissionSheet(
                 workspaces: workspaceState.workspaces,
@@ -324,7 +330,7 @@ struct ControlView: View {
                     showNewMissionSheet = false
                 }
             )
-            .presentationDetents([.medium])
+            .presentationDetents([.fraction(0.9)])
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showSettings) {
@@ -1686,6 +1692,8 @@ private struct PhaseBubble: View {
                             Text(agent)
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(Theme.textMuted)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Theme.backgroundTertiary)
