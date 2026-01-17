@@ -68,6 +68,16 @@ nav.nextra-nav-container {
 
 main.nextra-content {
   background-color: rgb(var(--background));
+  border-radius: 0 !important;
+}
+
+/* Ensure no rounded corners on any layout containers */
+main.nextra-content,
+.nextra-main-content,
+[class*="main-content"],
+article {
+  border-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
 }
 
 .nextra-toc {
@@ -822,6 +832,54 @@ aside a:hover,
 .dark aside a:hover,
 .dark [class*="sidebar"] a:hover {
   background-color: rgba(255, 248, 240, 0.04);
+}
+
+/* ============================================
+   SIDEBAR BOTTOM-LEFT CORNER FIX
+   ============================================ */
+
+/* Fix the rounded corner artifact in the bottom-left of the sidebar */
+.nextra-sidebar-container,
+aside.nextra-sidebar-container,
+[class*="sidebar-container"],
+aside[class*="nextra"] {
+  border-radius: 0 !important;
+}
+
+/* Target the theme switcher container at the bottom of the sidebar */
+.nextra-sidebar-container > div:last-child,
+aside > div:last-child,
+aside > div:last-of-type {
+  border-radius: 0 !important;
+}
+
+/* Ensure the sidebar footer area has no rounded corners */
+[class*="sidebar"] [class*="footer"],
+[class*="sidebar"] > :last-child,
+aside [class*="theme"],
+aside [class*="toggle"] {
+  border-radius: 0 !important;
+}
+
+/* Target any nested containers that might have rounded corners */
+.nextra-sidebar-container *,
+aside.nextra-sidebar-container * {
+  border-bottom-left-radius: 0 !important;
+}
+
+/* Specifically remove the bottom-left radius from the sidebar wrapper */
+.nextra-sidebar-container > div,
+aside > div {
+  border-bottom-left-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+
+/* Fix any pseudo-elements that might create the corner effect */
+.nextra-sidebar-container::after,
+.nextra-sidebar-container::before,
+aside::after,
+aside::before {
+  border-radius: 0 !important;
 }
 
 /* ============================================

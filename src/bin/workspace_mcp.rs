@@ -366,11 +366,11 @@ fn debug_log(tag: &str, payload: &Value) {
     if std::env::var("OPEN_AGENT_MCP_DEBUG").ok().as_deref() != Some("1") {
         return;
     }
-    let line = format!("[host-mcp] {} {}\n", tag, payload);
+    let line = format!("[workspace-mcp] {} {}\n", tag, payload);
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("/tmp/host-mcp-debug.log")
+        .open("/tmp/workspace-mcp-debug.log")
     {
         let _ = file.write_all(line.as_bytes());
     }
@@ -596,7 +596,7 @@ fn handle_request(
                 json!({
                     "protocolVersion": "2024-11-05",
                     "serverInfo": {
-                        "name": "host-mcp",
+                        "name": "workspace-mcp",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
                     "capabilities": {
@@ -644,7 +644,7 @@ fn handle_request(
 }
 
 fn main() {
-    eprintln!("[host-mcp] Starting MCP server for host tools...");
+    eprintln!("[workspace-mcp] Starting MCP server for workspace tools...");
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -351,7 +351,7 @@ pub async fn ensure_global_config(mcp: &McpRegistry) -> anyhow::Result<()> {
     tools_obj.insert("desktop_*".to_string(), json!(true));
     tools_obj.insert("playwright_*".to_string(), json!(true));
     tools_obj.insert("browser_*".to_string(), json!(true));
-    tools_obj.insert("host_*".to_string(), json!(true));
+    tools_obj.insert("workspace_*".to_string(), json!(true));
 
     let payload = serde_json::to_string_pretty(&root)?;
     tokio::fs::write(&config_path, payload).await?;

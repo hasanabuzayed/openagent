@@ -301,6 +301,9 @@ function RuntimeMcpCard({
           <div className="flex items-center gap-2">
             <h3 className="font-medium text-white truncate">{mcp.name}</h3>
             <span className="tag bg-cyan-500/10 text-cyan-400 border-cyan-500/20">Runtime</span>
+            {(mcp.name === 'workspace' || mcp.name === 'desktop') && (
+              <span className="tag bg-violet-500/10 text-violet-400 border-violet-500/20">Builtin</span>
+            )}
             <span
               className={cn(
                 'tag',
@@ -527,6 +530,9 @@ function RuntimeMcpDetailPanel({
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold text-white">{mcp.name}</h2>
               <span className="tag bg-cyan-500/10 text-cyan-400 border-cyan-500/20">Runtime</span>
+              {(mcp.name === 'workspace' || mcp.name === 'desktop') && (
+                <span className="tag bg-violet-500/10 text-violet-400 border-violet-500/20">Builtin</span>
+              )}
               <span
                 className={cn(
                   'tag',

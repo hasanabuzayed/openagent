@@ -349,15 +349,15 @@ cd /opt/open_agent/vaduz-v1
 source /root/.cargo/env
 
 # Debug build (fast) - recommended for rapid iteration
-cargo build --bin open_agent --bin host-mcp --bin desktop-mcp
+cargo build --bin open_agent --bin workspace-mcp --bin desktop-mcp
 install -m 0755 target/debug/open_agent /usr/local/bin/open_agent
-install -m 0755 target/debug/host-mcp /usr/local/bin/host-mcp
+install -m 0755 target/debug/workspace-mcp /usr/local/bin/workspace-mcp
 install -m 0755 target/debug/desktop-mcp /usr/local/bin/desktop-mcp
 
 # Or: Release build (slower compile, faster runtime)
-# cargo build --release --bin open_agent --bin host-mcp --bin desktop-mcp
+# cargo build --release --bin open_agent --bin workspace-mcp --bin desktop-mcp
 # install -m 0755 target/release/open_agent /usr/local/bin/open_agent
-# install -m 0755 target/release/host-mcp /usr/local/bin/host-mcp
+# install -m 0755 target/release/workspace-mcp /usr/local/bin/workspace-mcp
 # install -m 0755 target/release/desktop-mcp /usr/local/bin/desktop-mcp
 ```
 
@@ -611,9 +611,9 @@ cd /opt/open_agent/vaduz-v1
 git fetch --tags origin
 git checkout <version-tag>  # e.g., v0.2.1
 source /root/.cargo/env
-cargo build --bin open_agent --bin host-mcp --bin desktop-mcp
+cargo build --bin open_agent --bin workspace-mcp --bin desktop-mcp
 install -m 0755 target/debug/open_agent /usr/local/bin/open_agent
-install -m 0755 target/debug/host-mcp /usr/local/bin/host-mcp
+install -m 0755 target/debug/workspace-mcp /usr/local/bin/workspace-mcp
 install -m 0755 target/debug/desktop-mcp /usr/local/bin/desktop-mcp
 systemctl restart open_agent.service
 ```

@@ -22,6 +22,21 @@ Open Agent is a managed control plane for OpenCode-based agents. The backend **d
 
 MCPs can be global because and run as child processes on the host or workspace (run inside the container). It depends on the kind of MCP.
 
+## Container Execution Model (Important!)
+
+When a **mission runs in a container workspace**, bash commands execute **inside the container**, not on the host. Here's why:
+
+1. OpenCode's built-in Bash tool is **disabled** for container workspaces
+2. Agents use `workspace_bash` from the "workspace MCP" instead
+3. The "workspace MCP" command is **wrapped in systemd-nspawn** at startup
+4. Therefore all `workspace_bash` commands run inside the container with container networking
+
+The "workspace MCP" is named this way because it runs in the **workspace's execution context** - for container workspaces, that means inside the container.
+
+See `src/workspace.rs` lines 590-640 (nspawn wrapping) and 714-720 (tool configuration).
+
+**Contrast with workspace exec API**: The `/api/workspaces/:id/exec` endpoint also runs commands inside containers (via nspawn), but is subject to HTTP timeouts. The mission system uses SSE streaming with no timeout.
+
 ## Design Guardrails
 
 - Do **not** reintroduce autonomous agent logic (budgeting, task splitting, verification, model selection). OpenCode handles execution.

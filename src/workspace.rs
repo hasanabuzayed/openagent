@@ -711,19 +711,22 @@ async fn write_opencode_config(
         }
     }
 
-    // Disable OpenCode's builtin bash tools so agents must use the host MCP's bash.
-    // For container (nspawn) workspaces, the host MCP runs INSIDE the container via
-    // systemd-nspawn wrapping, so its bash tool has container networking (Tailscale, etc).
+    // Disable OpenCode's builtin bash tools so agents must use the workspace MCP's bash.
+    //
+    // The "workspace MCP" is the MCP provided by Open Agent that runs in the workspace's
+    // execution context. For container (nspawn) workspaces, this MCP runs INSIDE the
+    // container via systemd-nspawn wrapping (see lines 590-640), so its bash tool executes
+    // commands inside the container with container networking (Tailscale, etc).
     // For host workspaces, disable bash entirely (security: no host shell access).
     let mut tools = serde_json::Map::new();
     match workspace_type {
         WorkspaceType::Chroot => {
-            // Disable OpenCode built-in bash - agents must use host MCP's bash
+            // Disable OpenCode built-in bash - agents must use workspace MCP's bash
             // which runs inside the container with container networking
             tools.insert("Bash".to_string(), json!(false)); // Claude Code built-in
             tools.insert("bash".to_string(), json!(false)); // lowercase variant
-                                                            // Enable MCP-provided tools (host MCP runs inside container via nspawn)
-            tools.insert("host_*".to_string(), json!(true));
+            // Enable MCP-provided tools (workspace MCP runs inside container via nspawn)
+            tools.insert("workspace_*".to_string(), json!(true));
             tools.insert("desktop_*".to_string(), json!(true));
             tools.insert("playwright_*".to_string(), json!(true));
             tools.insert("browser_*".to_string(), json!(true));
@@ -735,8 +738,8 @@ async fn write_opencode_config(
             tools.insert("desktop_*".to_string(), json!(false));
             tools.insert("playwright_*".to_string(), json!(false));
             tools.insert("browser_*".to_string(), json!(false));
-            // Only allow host MCP tools (files, etc)
-            tools.insert("host_*".to_string(), json!(true));
+            // Only allow workspace MCP tools (files, etc)
+            tools.insert("workspace_*".to_string(), json!(true));
         }
     }
     config_json.insert("tools".to_string(), serde_json::Value::Object(tools));
@@ -1648,7 +1651,7 @@ async fn sync_workspace_mcp_binaries(
     working_dir: &Path,
     container_root: &Path,
 ) -> anyhow::Result<()> {
-    for binary in ["host-mcp", "desktop-mcp"] {
+    for binary in ["workspace-mcp", "desktop-mcp"] {
         copy_binary_into_container(working_dir, container_root, binary).await?;
     }
     Ok(())

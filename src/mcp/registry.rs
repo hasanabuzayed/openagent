@@ -158,24 +158,24 @@ impl McpRegistry {
         );
         desktop.scope = McpScope::Workspace;
 
-        let host_command = {
-            let release = working_dir.join("target").join("release").join("host-mcp");
-            let debug = working_dir.join("target").join("debug").join("host-mcp");
+        let workspace_command = {
+            let release = working_dir.join("target").join("release").join("workspace-mcp");
+            let debug = working_dir.join("target").join("debug").join("workspace-mcp");
             if release.exists() {
                 release.to_string_lossy().to_string()
             } else if debug.exists() {
                 debug.to_string_lossy().to_string()
             } else {
-                "host-mcp".to_string()
+                "workspace-mcp".to_string()
             }
         };
-        let mut host = McpServerConfig::new_stdio(
-            "host".to_string(),
-            host_command,
+        let mut workspace = McpServerConfig::new_stdio(
+            "workspace".to_string(),
+            workspace_command,
             Vec::new(),
             HashMap::new(),
         );
-        host.scope = McpScope::Workspace;
+        workspace.scope = McpScope::Workspace;
         // Prefer bunx (Bun) when present, but fall back to npx for compatibility.
         let js_runner = if command_exists("bunx") {
             "bunx"
@@ -194,7 +194,7 @@ impl McpRegistry {
         );
         playwright.scope = McpScope::Workspace;
 
-        vec![host, desktop, playwright]
+        vec![workspace, desktop, playwright]
     }
 
     async fn ensure_defaults(
@@ -274,11 +274,11 @@ impl McpRegistry {
                 .await;
         }
 
-        // Prefer repo-local MCP binaries for host/desktop (debug or release),
+        // Prefer repo-local MCP binaries for workspace/desktop (debug or release),
         // so default configs work without installing to PATH.
         for config in configs.iter_mut() {
             let binary_name = match config.name.as_str() {
-                "host" => Some("host-mcp"),
+                "workspace" => Some("workspace-mcp"),
                 "desktop" => Some("desktop-mcp"),
                 _ => None,
             };

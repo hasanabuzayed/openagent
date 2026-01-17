@@ -576,7 +576,7 @@ fn stream_open_agent_update() -> impl Stream<Item = Result<Event, std::convert::
 
         // Source cargo env and build
         let build_result = Command::new("bash")
-            .args(["-c", "source /root/.cargo/env && cargo build --bin open_agent --bin host-mcp --bin desktop-mcp"])
+            .args(["-c", "source /root/.cargo/env && cargo build --bin open_agent --bin workspace-mcp --bin desktop-mcp"])
             .current_dir(OPEN_AGENT_REPO_PATH)
             .output()
             .await;
@@ -620,7 +620,7 @@ fn stream_open_agent_update() -> impl Stream<Item = Result<Event, std::convert::
 
         let binaries = [
             ("open_agent", "/usr/local/bin/open_agent"),
-            ("host-mcp", "/usr/local/bin/host-mcp"),
+            ("workspace-mcp", "/usr/local/bin/workspace-mcp"),
             ("desktop-mcp", "/usr/local/bin/desktop-mcp"),
         ];
 
