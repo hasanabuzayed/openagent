@@ -38,6 +38,7 @@ use super::mcp as mcp_api;
 use super::monitoring;
 use super::opencode as opencode_api;
 use super::secrets as secrets_api;
+use super::settings as settings_api;
 use super::system as system_api;
 use super::types::*;
 use super::workspaces as workspaces_api;
@@ -69,6 +70,8 @@ pub struct AppState {
     pub secrets: Option<Arc<crate::secrets::SecretsStore>>,
     /// Console session pool for WebSocket reconnection
     pub console_pool: Arc<console::SessionPool>,
+    /// Global settings store
+    pub settings: Arc<crate::settings::SettingsStore>,
 }
 
 /// Start the HTTP server.
@@ -130,6 +133,9 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let console_pool = Arc::new(console::SessionPool::new());
     Arc::clone(&console_pool).start_cleanup_task();
 
+    // Initialize global settings store
+    let settings = Arc::new(crate::settings::SettingsStore::new(&config.working_dir).await);
+
     // Start background OpenCode session cleanup task
     {
         let opencode_base_url = std::env::var("OPENCODE_BASE_URL")
@@ -142,7 +148,9 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     // Initialize configuration library (optional - can also be configured at runtime)
     // Must be created before ControlHub so it can be passed to control sessions
     let library: library_api::SharedLibrary = Arc::new(RwLock::new(None));
-    if let Some(library_remote) = config.library_remote.clone() {
+    // Read library_remote from settings (which falls back to env var if not configured)
+    let library_remote = settings.get_library_remote().await;
+    if let Some(library_remote) = library_remote {
         let library_clone = Arc::clone(&library);
         let library_path = config.library_path.clone();
         let workspaces_clone = Arc::clone(&workspaces);
@@ -220,6 +228,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         pending_oauth,
         secrets,
         console_pool,
+        settings,
     });
 
     // Start background desktop session cleanup task
@@ -388,6 +397,8 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         .nest("/api/ai/providers", ai_providers_api::routes())
         // Secrets management endpoints
         .nest("/api/secrets", secrets_api::routes())
+        // Global settings endpoints
+        .nest("/api/settings", settings_api::routes())
         // Desktop session management endpoints
         .nest("/api/desktop", desktop::routes())
         // System component management endpoints
@@ -495,6 +506,8 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
         AuthMode::SingleTenant => "single_tenant",
         AuthMode::MultiUser => "multi_user",
     };
+    // Read library_remote from settings store (persisted to disk)
+    let library_remote = state.settings.get_library_remote().await;
     Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -502,7 +515,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
         auth_required: state.config.auth.auth_required(state.config.dev_mode),
         auth_mode: auth_mode.to_string(),
         max_iterations: state.config.max_iterations,
-        library_remote: state.config.library_remote.clone(),
+        library_remote,
     })
 }
 

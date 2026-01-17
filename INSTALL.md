@@ -391,8 +391,15 @@ git push -u origin HEAD:main
 
 ### 5.2 Configure Open Agent to use it
 
+**Option A: Via Dashboard Settings (recommended)**
+
+After starting Open Agent, go to **Settings** in the dashboard and set the Library Remote URL.
+This is the preferred method as it persists the setting to disk and allows runtime updates without restart.
+
+**Option B: Via environment variable (initial default)**
+
 Set in `/etc/open_agent/open_agent.env`:
-- `LIBRARY_REMOTE=git@github.com:<your-org>/<your-library-repo>.git`
+- `LIBRARY_REMOTE=git@github.com:<your-org>/<your-library-repo>.git` (used as initial default if not configured in Settings)
 - optional: `LIBRARY_PATH=/root/.openagent/library`
 
 ---
@@ -424,6 +431,7 @@ PORT=3000
 # Default filesystem root for Open Agent (agent still has full system access)
 WORKING_DIR=/root
 LIBRARY_PATH=/root/.openagent/library
+# Library remote (optional, can also be set via dashboard Settings page)
 LIBRARY_REMOTE=git@github.com:<your-org>/<your-library-repo>.git
 
 # Auth (set DEV_MODE=false on real deployments)

@@ -13,6 +13,8 @@
 //! - `LIBRARY_GIT_SSH_KEY` - Optional. SSH key path for library git operations. If set to a path, uses that key.
 //!   If set to empty string, ignores ~/.ssh/config (useful when the config specifies a non-existent key).
 //!   If unset, uses default SSH behavior.
+//! - `LIBRARY_REMOTE` - Optional. Initial library remote URL (can be changed via Settings in the dashboard).
+//!   This environment variable is used as the initial default when no settings file exists.
 //!
 //! Note: The agent has **full system access**. It can read/write any file, execute any command,
 //! and search anywhere on the machine. The `WORKING_DIR` is just the default for relative paths.
@@ -221,10 +223,6 @@ pub struct Config {
     /// Path to the configuration library git repo.
     /// Default: {working_dir}/.openagent/library
     pub library_path: PathBuf,
-
-    /// Git remote URL for the configuration library.
-    /// Set via LIBRARY_REMOTE env var. Runtime settings can override this.
-    pub library_remote: Option<String>,
 }
 
 /// API auth configuration.
@@ -446,11 +444,10 @@ impl Config {
         let context = ContextConfig::from_env();
 
         // Library configuration
+        // Note: library_remote is now managed via the settings module (persisted to disk)
         let library_path = std::env::var("LIBRARY_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| working_dir.join(".openagent/library"));
-
-        let library_remote = std::env::var("LIBRARY_REMOTE").ok();
 
         Ok(Self {
             default_model,
@@ -467,7 +464,6 @@ impl Config {
             opencode_agent,
             opencode_permissive,
             library_path,
-            library_remote,
         })
     }
 
@@ -489,7 +485,6 @@ impl Config {
             opencode_agent: None,
             opencode_permissive: true,
             library_path,
-            library_remote: None,
         }
     }
 }

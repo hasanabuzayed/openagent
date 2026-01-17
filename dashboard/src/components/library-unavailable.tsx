@@ -1,6 +1,7 @@
 'use client';
 
-import { GitBranch, AlertTriangle, ExternalLink, Terminal } from 'lucide-react';
+import Link from 'next/link';
+import { GitBranch, AlertTriangle, ExternalLink, Settings } from 'lucide-react';
 
 type LibraryUnavailableProps = {
   message?: string | null;
@@ -22,22 +23,26 @@ export function LibraryUnavailable({ message }: LibraryUnavailableProps) {
 
         <h2 className="text-lg font-semibold text-white mb-2">Library Not Configured</h2>
         <p className="text-sm text-white/50 mb-6">
-          The configuration library is not set up on the server. Configure it to enable skills, commands, and templates.
+          The configuration library is not set up. Configure it to enable skills, commands, and templates.
         </p>
 
         <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-5 text-left space-y-4">
           <div className="flex items-start gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/10 flex-shrink-0">
-              <Terminal className="h-4 w-4 text-indigo-400" />
+              <Settings className="h-4 w-4 text-indigo-400" />
             </div>
             <div>
-              <h3 className="text-sm font-medium text-white mb-1">Server Configuration</h3>
+              <h3 className="text-sm font-medium text-white mb-1">Configure Library Remote</h3>
               <p className="text-xs text-white/40 mb-2">
-                Set the <code className="text-white/60 bg-white/[0.05] px-1 py-0.5 rounded">LIBRARY_REMOTE</code> environment variable on your server:
+                Set the library remote URL in Settings to connect to your configuration repository.
               </p>
-              <div className="rounded-lg bg-black/30 border border-white/[0.06] px-3 py-2 font-mono text-xs text-white/70 overflow-x-auto">
-                LIBRARY_REMOTE=git@github.com:your/library.git
-              </div>
+              <Link
+                href="/settings"
+                className="inline-flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+              >
+                Go to Settings
+                <ExternalLink className="h-3 w-3" />
+              </Link>
             </div>
           </div>
 
@@ -62,10 +67,6 @@ export function LibraryUnavailable({ message }: LibraryUnavailableProps) {
             </div>
           </div>
         </div>
-
-        <p className="mt-6 text-xs text-white/30">
-          After configuring, restart the Open Agent server for changes to take effect.
-        </p>
 
         {showDetails && (
           <p className="mt-4 text-[11px] text-white/20">Details: {details}</p>

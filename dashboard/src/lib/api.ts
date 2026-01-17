@@ -2778,3 +2778,40 @@ export async function updateSystemComponent(
     onError(e instanceof Error ? e.message : 'Unknown error');
   }
 }
+
+// ============================================
+// Global Settings API
+// ============================================
+
+export interface SettingsResponse {
+  library_remote: string | null;
+}
+
+export interface UpdateLibraryRemoteResponse {
+  library_remote: string | null;
+  library_reinitialized: boolean;
+  library_error?: string;
+}
+
+// Get all settings
+export async function getSettings(): Promise<SettingsResponse> {
+  const res = await apiFetch('/api/settings');
+  if (!res.ok) throw new Error('Failed to get settings');
+  return res.json();
+}
+
+// Update the library remote URL
+export async function updateLibraryRemote(
+  libraryRemote: string | null
+): Promise<UpdateLibraryRemoteResponse> {
+  const res = await apiFetch('/api/settings/library-remote', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ library_remote: libraryRemote }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || 'Failed to update library remote');
+  }
+  return res.json();
+}

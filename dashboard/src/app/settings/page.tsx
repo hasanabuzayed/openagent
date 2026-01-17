@@ -14,6 +14,8 @@ import {
   setDefaultAIProvider,
   AIProvider,
   AIProviderTypeInfo,
+  getSettings,
+  updateLibraryRemote,
 } from '@/lib/api';
 import {
   Server,
@@ -28,6 +30,8 @@ import {
   ExternalLink,
   Loader,
   Key,
+  Check,
+  X,
 } from 'lucide-react';
 import { readSavedSettings, writeSavedSettings } from '@/lib/settings';
 import { cn } from '@/lib/utils';
@@ -92,6 +96,11 @@ export default function SettingsPage() {
     enabled?: boolean;
   }>({});
 
+  // Library remote edit state
+  const [editingLibraryRemote, setEditingLibraryRemote] = useState(false);
+  const [libraryRemoteValue, setLibraryRemoteValue] = useState('');
+  const [savingLibraryRemote, setSavingLibraryRemote] = useState(false);
+
   // SWR: fetch health status
   const { data: health, isLoading: healthLoading, mutate: mutateHealth } = useSWR(
     'health',
@@ -111,6 +120,13 @@ export default function SettingsPage() {
     'ai-provider-types',
     listAIProviderTypes,
     { revalidateOnFocus: false, fallbackData: defaultProviderTypes }
+  );
+
+  // SWR: fetch server settings
+  const { data: serverSettings, mutate: mutateSettings } = useSWR(
+    'settings',
+    getSettings,
+    { revalidateOnFocus: false }
   );
 
   // Check if there are unsaved changes
@@ -276,6 +292,49 @@ export default function SettingsPage() {
   const handleCancelEdit = () => {
     setEditingProvider(null);
     setEditForm({});
+  };
+
+  // Library remote handlers
+  const handleStartEditLibraryRemote = () => {
+    setLibraryRemoteValue(serverSettings?.library_remote || '');
+    setEditingLibraryRemote(true);
+  };
+
+  const handleCancelEditLibraryRemote = () => {
+    setEditingLibraryRemote(false);
+    setLibraryRemoteValue('');
+  };
+
+  const handleSaveLibraryRemote = async () => {
+    setSavingLibraryRemote(true);
+    try {
+      const trimmed = libraryRemoteValue.trim();
+      const result = await updateLibraryRemote(trimmed || null);
+
+      // Revalidate both settings and health (which also exposes library_remote)
+      mutateSettings();
+      mutateHealth();
+
+      setEditingLibraryRemote(false);
+
+      if (result.library_reinitialized) {
+        if (result.library_error) {
+          toast.error(`Library saved but failed to initialize: ${result.library_error}`);
+        } else if (result.library_remote) {
+          toast.success('Library remote updated and reinitialized');
+        } else {
+          toast.success('Library remote cleared');
+        }
+      } else {
+        toast.success('Library remote saved (no change)');
+      }
+    } catch (err) {
+      toast.error(
+        `Failed to save: ${err instanceof Error ? err.message : 'Unknown error'}`
+      );
+    } finally {
+      setSavingLibraryRemote(false);
+    }
   };
 
   return (
@@ -515,7 +574,7 @@ export default function SettingsPage() {
               <div>
                 <h2 className="text-sm font-medium text-white">Library</h2>
                 <p className="text-xs text-white/40">
-                  Configuration library (server-managed)
+                  Git-based configuration library for skills, tools, and agents
                 </p>
               </div>
             </div>
@@ -529,17 +588,59 @@ export default function SettingsPage() {
                   <Loader className="h-4 w-4 animate-spin text-white/40" />
                   <span className="text-sm text-white/40">Loading...</span>
                 </div>
-              ) : health?.library_remote ? (
-                <div className="w-full rounded-lg border border-white/[0.06] bg-white/[0.01] px-3 py-2.5 text-sm text-white/70 font-mono">
-                  {health.library_remote}
+              ) : editingLibraryRemote ? (
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    value={libraryRemoteValue}
+                    onChange={(e) => setLibraryRemoteValue(e.target.value)}
+                    placeholder="git@github.com:your-org/agent-library.git"
+                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-indigo-500/50"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveLibraryRemote();
+                      if (e.key === 'Escape') handleCancelEditLibraryRemote();
+                    }}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleSaveLibraryRemote}
+                      disabled={savingLibraryRemote}
+                      className="flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3 py-1.5 text-xs text-white hover:bg-indigo-600 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {savingLibraryRemote ? (
+                        <Loader className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Check className="h-3 w-3" />
+                      )}
+                      Save
+                    </button>
+                    <button
+                      onClick={handleCancelEditLibraryRemote}
+                      disabled={savingLibraryRemote}
+                      className="flex items-center gap-1.5 rounded-lg border border-white/[0.06] px-3 py-1.5 text-xs text-white/60 hover:bg-white/[0.04] transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <X className="h-3 w-3" />
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               ) : (
-                <div className="w-full rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-sm text-amber-400/80">
-                  Not configured
+                <div
+                  onClick={handleStartEditLibraryRemote}
+                  className={cn(
+                    'w-full rounded-lg border px-3 py-2.5 text-sm font-mono cursor-pointer transition-colors',
+                    serverSettings?.library_remote
+                      ? 'border-white/[0.06] bg-white/[0.01] text-white/70 hover:border-indigo-500/30 hover:bg-white/[0.02]'
+                      : 'border-amber-500/20 bg-amber-500/5 text-amber-400/80 hover:border-amber-500/30 hover:bg-amber-500/10'
+                  )}
+                  title="Click to edit"
+                >
+                  {serverSettings?.library_remote || 'Not configured'}
                 </div>
               )}
               <p className="mt-1.5 text-xs text-white/30">
-                Set via <code className="text-white/50">LIBRARY_REMOTE</code> environment variable on the server.
+                Git remote URL for skills, tools, agents, and rules. Click to edit.
               </p>
             </div>
           </div>

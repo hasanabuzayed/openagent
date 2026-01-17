@@ -142,7 +142,11 @@ async fn ensure_library(
     state: &super::routes::AppState,
     headers: &HeaderMap,
 ) -> Result<Arc<LibraryStore>, (StatusCode, String)> {
-    let remote = extract_library_remote(headers).or_else(|| state.config.library_remote.clone());
+    // Check HTTP header override first, then fall back to settings store
+    let remote = match extract_library_remote(headers) {
+        Some(r) => Some(r),
+        None => state.settings.get_library_remote().await,
+    };
     let remote = remote.ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
