@@ -502,6 +502,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
         auth_required: state.config.auth.auth_required(state.config.dev_mode),
         auth_mode: auth_mode.to_string(),
         max_iterations: state.config.max_iterations,
+        library_remote: state.config.library_remote.clone(),
     })
 }
 

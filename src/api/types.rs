@@ -151,6 +151,10 @@ pub struct HealthResponse {
 
     /// Maximum iterations per agent (from MAX_ITERATIONS env var)
     pub max_iterations: usize,
+
+    /// Configured library remote URL (from LIBRARY_REMOTE env var)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub library_remote: Option<String>,
 }
 
 /// Login request for dashboard auth.
