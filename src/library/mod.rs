@@ -57,6 +57,7 @@ const PLUGINS_FILE: &str = "plugins.json";
 const WORKSPACE_TEMPLATE_DIR: &str = "workspace-template";
 const OPENCODE_DIR: &str = "opencode";
 const OPENAGENT_DIR: &str = "openagent";
+const CLAUDECODE_DIR: &str = "claudecode";
 
 /// Store for managing the configuration library.
 pub struct LibraryStore {
@@ -1473,6 +1474,42 @@ impl LibraryStore {
         fs::write(&path, content)
             .await
             .context("Failed to write openagent/config.json")?;
+
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Claude Code Config (claudecode/config.json)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get Claude Code configuration from the Library.
+    /// Returns default config if the file doesn't exist.
+    pub async fn get_claudecode_config(&self) -> Result<ClaudeCodeConfig> {
+        let path = self.path.join(CLAUDECODE_DIR).join("config.json");
+
+        if !path.exists() {
+            return Ok(ClaudeCodeConfig::default());
+        }
+
+        let content = fs::read_to_string(&path)
+            .await
+            .context("Failed to read claudecode/config.json")?;
+
+        serde_json::from_str(&content).context("Failed to parse claudecode/config.json")
+    }
+
+    /// Save Claude Code configuration to the Library.
+    pub async fn save_claudecode_config(&self, config: &ClaudeCodeConfig) -> Result<()> {
+        let claudecode_dir = self.path.join(CLAUDECODE_DIR);
+        let path = claudecode_dir.join("config.json");
+
+        // Ensure directory exists
+        fs::create_dir_all(&claudecode_dir).await?;
+
+        let content = serde_json::to_string_pretty(config)?;
+        fs::write(&path, content)
+            .await
+            .context("Failed to write claudecode/config.json")?;
 
         Ok(())
     }

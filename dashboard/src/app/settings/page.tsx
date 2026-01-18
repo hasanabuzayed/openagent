@@ -117,7 +117,6 @@ export default function SettingsPage() {
   });
   const [claudeForm, setClaudeForm] = useState({
     api_key: '',
-    default_model: '',
     cli_path: '',
     api_key_configured: false,
     enabled: true,
@@ -240,7 +239,6 @@ export default function SettingsPage() {
     const settings = claudecodeBackendConfig.settings as Record<string, unknown>;
     setClaudeForm((prev) => ({
       ...prev,
-      default_model: typeof settings.default_model === 'string' ? settings.default_model : '',
       cli_path: typeof settings.cli_path === 'string' ? settings.cli_path : '',
       api_key_configured: Boolean(settings.api_key_configured),
       enabled: claudecodeBackendConfig.enabled,
@@ -360,7 +358,6 @@ export default function SettingsPage() {
     setSavingBackend(true);
     try {
       const settings: Record<string, unknown> = {
-        default_model: claudeForm.default_model || null,
         cli_path: claudeForm.cli_path || null,
       };
 
@@ -737,20 +734,17 @@ export default function SettingsPage() {
 
             {activeBackendTab === 'opencode' ? (
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-white/60">Enabled</span>
-                  <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={opencodeForm.enabled}
-                      onChange={(e) =>
-                        setOpencodeForm((prev) => ({ ...prev, enabled: e.target.checked }))
-                      }
-                      className="rounded border-white/20 cursor-pointer"
-                    />
-                    Enabled
-                  </label>
-                </div>
+                <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={opencodeForm.enabled}
+                    onChange={(e) =>
+                      setOpencodeForm((prev) => ({ ...prev, enabled: e.target.checked }))
+                    }
+                    className="rounded border-white/20 cursor-pointer"
+                  />
+                  Enabled
+                </label>
                 <div>
                   <label className="block text-xs text-white/60 mb-1.5">Base URL</label>
                   <input
@@ -804,83 +798,47 @@ export default function SettingsPage() {
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-white/60">Enabled</span>
-                  <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={claudeForm.enabled}
-                      onChange={(e) =>
-                        setClaudeForm((prev) => ({ ...prev, enabled: e.target.checked }))
-                      }
-                      className="rounded border-white/20 cursor-pointer"
-                    />
-                    Enabled
-                  </label>
-                </div>
-                {/* Anthropic Provider Status */}
-                <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xl">🧠</span>
-                      <div>
-                        <div className="text-sm text-white">
-                          {claudecodeProvider?.configured
-                            ? claudecodeProvider.provider_name || 'Anthropic'
-                            : 'Anthropic Provider'}
-                        </div>
-                        <div className="text-xs text-white/40">
-                          {claudecodeProvider?.configured
-                            ? claudecodeProvider.oauth
-                              ? 'Connected via OAuth'
-                              : claudecodeProvider.api_key
-                              ? 'Using API key'
-                              : 'Configured'
-                            : 'Not configured for Claude Code'}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {claudecodeProvider?.configured && claudecodeProvider.has_credentials ? (
-                        <span className="flex items-center gap-1 text-xs text-emerald-400">
-                          <Check className="h-3.5 w-3.5" />
-                          Connected
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1 text-xs text-amber-400">
-                          <AlertTriangle className="h-3.5 w-3.5" />
-                          Not connected
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {!claudecodeProvider?.configured && (
-                    <p className="mt-2 text-xs text-white/50">
-                      Add an Anthropic provider in{' '}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          document.getElementById('ai-providers')?.scrollIntoView({ behavior: 'smooth' });
-                        }}
-                        className="text-indigo-400 hover:text-indigo-300 underline"
-                      >
-                        AI Providers
-                      </button>{' '}
-                      and select &quot;Claude Code&quot; as a target backend.
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-xs text-white/60 mb-1.5">Default Model</label>
+                <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
                   <input
-                    type="text"
-                    value={claudeForm.default_model}
+                    type="checkbox"
+                    checked={claudeForm.enabled}
                     onChange={(e) =>
-                      setClaudeForm((prev) => ({ ...prev, default_model: e.target.value }))
+                      setClaudeForm((prev) => ({ ...prev, enabled: e.target.checked }))
                     }
-                    placeholder="claude-sonnet-4-20250514"
-                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500/50"
+                    className="rounded border-white/20 cursor-pointer"
                   />
+                  Enabled
+                </label>
+                {/* Anthropic Provider Status */}
+                <div className="flex items-center justify-between py-2 px-3 rounded-lg border border-white/[0.06] bg-white/[0.02]">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🧠</span>
+                    <span className="text-sm text-white/70">
+                      {claudecodeProvider?.configured
+                        ? claudecodeProvider.oauth
+                          ? 'OAuth'
+                          : claudecodeProvider.api_key
+                          ? 'API Key'
+                          : 'Anthropic'
+                        : 'Anthropic'}
+                    </span>
+                  </div>
+                  {claudecodeProvider?.configured && claudecodeProvider.has_credentials ? (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <Check className="h-3.5 w-3.5" />
+                      Connected
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        document.getElementById('ai-providers')?.scrollIntoView({ behavior: 'smooth' });
+                      }}
+                      className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      Configure in AI Providers ↑
+                    </button>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs text-white/60 mb-1.5">CLI Path</label>

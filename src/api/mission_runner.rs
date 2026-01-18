@@ -557,8 +557,35 @@ async fn run_mission_turn(
     result
 }
 
+/// Read CLI path from backend config file if available.
+fn get_claudecode_cli_path_from_config(_app_working_dir: &std::path::Path) -> Option<String> {
+    // Backend configs are stored in ~/.openagent/data/backend_configs.json
+    let home = std::env::var("HOME").ok()?;
+    let config_path = std::path::PathBuf::from(&home)
+        .join(".openagent")
+        .join("data")
+        .join("backend_configs.json");
+
+    let contents = std::fs::read_to_string(&config_path).ok()?;
+    let configs: Vec<serde_json::Value> = serde_json::from_str(&contents).ok()?;
+
+    for config in configs {
+        if config.get("id")?.as_str()? == "claudecode" {
+            if let Some(settings) = config.get("settings") {
+                if let Some(cli_path) = settings.get("cli_path").and_then(|v| v.as_str()) {
+                    if !cli_path.is_empty() {
+                        tracing::info!("Using Claude Code CLI path from backend config: {}", cli_path);
+                        return Some(cli_path.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Execute a turn using Claude Code CLI backend.
-async fn run_claudecode_turn(
+pub async fn run_claudecode_turn(
     work_dir: &std::path::Path,
     message: &str,
     model: Option<&str>,
@@ -595,9 +622,10 @@ async fn run_claudecode_turn(
         }
     };
 
-    // Determine CLI path
-    let cli_path = std::env::var("CLAUDE_CLI_PATH")
-        .unwrap_or_else(|_| "claude".to_string());
+    // Determine CLI path: prefer backend config, then env var, then default
+    let cli_path = get_claudecode_cli_path_from_config(app_working_dir)
+        .or_else(|| std::env::var("CLAUDE_CLI_PATH").ok())
+        .unwrap_or_else(|| "claude".to_string());
 
     let config = ClaudeCodeConfig {
         cli_path,
@@ -652,8 +680,9 @@ async fn run_claudecode_turn(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                tracing::info!(mission_id = %mission_id, "Claude Code execution cancelled");
-                // Process will be dropped and killed
+                tracing::info!(mission_id = %mission_id, "Claude Code execution cancelled, killing process");
+                // Kill the process to stop consuming API resources
+                process_handle.kill().await;
                 return AgentResult::failure("Cancelled".to_string(), 0)
                     .with_terminal_reason(TerminalReason::Cancelled);
             }
@@ -787,8 +816,7 @@ async fn run_claudecode_turn(
         }
     }
 
-    // Wait for process to finish
-    let _ = process_handle.await;
+    // Process handle is dropped here, which will clean up the child process
 
     // Convert cost from USD to cents
     let cost_cents = (total_cost_usd * 100.0) as u64;

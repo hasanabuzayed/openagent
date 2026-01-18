@@ -13,6 +13,10 @@ import {
   OpenAgentConfig,
   listBackends,
   getBackendConfig,
+  getClaudeCodeConfig,
+  saveClaudeCodeConfig,
+  ClaudeCodeConfig,
+  listBackendAgents,
 } from '@/lib/api';
 import { Save, Loader, AlertCircle, Check, RefreshCw, RotateCcw, Eye, EyeOff, AlertTriangle, X, GitBranch, Upload, Info, FileCode, Terminal } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -94,12 +98,29 @@ export default function SettingsPage() {
   const [savingOpenAgent, setSavingOpenAgent] = useState(false);
   const [openAgentSaveSuccess, setOpenAgentSaveSuccess] = useState(false);
 
+  // Claude Code config state
+  const [claudeCodeConfig, setClaudeCodeConfig] = useState<ClaudeCodeConfig>({
+    default_model: null,
+    default_agent: null,
+    hidden_agents: [],
+  });
+  const [originalClaudeCodeConfig, setOriginalClaudeCodeConfig] = useState<ClaudeCodeConfig>({
+    default_model: null,
+    default_agent: null,
+    hidden_agents: [],
+  });
+  const [allClaudeCodeAgents, setAllClaudeCodeAgents] = useState<string[]>([]);
+  const [savingClaudeCode, setSavingClaudeCode] = useState(false);
+  const [claudeCodeSaveSuccess, setClaudeCodeSaveSuccess] = useState(false);
+
   const [showCommitDialog, setShowCommitDialog] = useState(false);
   const [commitMessage, setCommitMessage] = useState('');
 
   const isDirty = settings !== originalSettings;
   const isOpenAgentDirty =
     JSON.stringify(openAgentConfig) !== JSON.stringify(originalOpenAgentConfig);
+  const isClaudeCodeDirty =
+    JSON.stringify(claudeCodeConfig) !== JSON.stringify(originalClaudeCodeConfig);
 
   // Check if Library and System settings are in sync (ignoring whitespace differences)
   const normalizeJson = (s: string) => {
@@ -136,6 +157,30 @@ export default function SettingsPage() {
       // Load all agents for the checkbox list
       const agents = await listOpenCodeAgents();
       setAllAgents(parseAgentNames(agents));
+
+      // Load Claude Code config
+      try {
+        const claudeData = await getClaudeCodeConfig();
+        setClaudeCodeConfig({
+          ...claudeData,
+          hidden_agents: claudeData.hidden_agents || [],
+        });
+        setOriginalClaudeCodeConfig({
+          ...claudeData,
+          hidden_agents: claudeData.hidden_agents || [],
+        });
+      } catch {
+        // Claude Code config might not exist yet
+      }
+
+      // Load Claude Code agents for visibility settings
+      try {
+        const claudeAgents = await listBackendAgents('claudecode');
+        setAllClaudeCodeAgents(claudeAgents.map(a => a.name));
+      } catch {
+        // Claude Code agents might not be available
+        setAllClaudeCodeAgents([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -222,6 +267,22 @@ export default function SettingsPage() {
       setError(err instanceof Error ? err.message : 'Failed to save OpenAgent config');
     } finally {
       setSavingOpenAgent(false);
+    }
+  };
+
+  const handleSaveClaudeCode = async () => {
+    try {
+      setSavingClaudeCode(true);
+      setError(null);
+      await saveClaudeCodeConfig(claudeCodeConfig);
+      setOriginalClaudeCodeConfig({ ...claudeCodeConfig });
+      setClaudeCodeSaveSuccess(true);
+      setTimeout(() => setClaudeCodeSaveSuccess(false), 2000);
+      await refreshStatus(); // Update git status bar
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save Claude Code config');
+    } finally {
+      setSavingClaudeCode(false);
     }
   };
 
@@ -677,116 +738,173 @@ export default function SettingsPage() {
         </>
       ) : (
         /* Claude Code Section */
-        <div className="space-y-6">
-          {/* Claude Code Info Card */}
-          <div className="p-6 rounded-xl bg-white/[0.02] border border-white/[0.06]">
-            <div className="flex items-start gap-4">
-              <div className="p-3 rounded-xl bg-indigo-500/10">
-                <Terminal className="h-6 w-6 text-indigo-400" />
-              </div>
-              <div className="flex-1 space-y-3">
-                <div>
-                  <h2 className="text-lg font-medium text-white">Claude Code Configuration</h2>
-                  <p className="text-sm text-white/50 mt-1">
-                    Claude Code uses a workspace-centric configuration model that differs from OpenCode.
-                  </p>
-                </div>
-              </div>
+        <div className="space-y-4">
+          {/* Claude Code Settings Header */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-medium text-white">Claude Code Settings</h2>
+              <p className="text-sm text-white/50">Configure default model and agent for Claude Code missions</p>
             </div>
-          </div>
-
-          {/* How It Works */}
-          <div className="p-6 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-4">
             <div className="flex items-center gap-2">
-              <Info className="h-5 w-5 text-blue-400" />
-              <h3 className="text-sm font-medium text-white">How Configuration Works</h3>
-            </div>
-            <div className="space-y-4 text-sm text-white/60">
-              <p>
-                Unlike OpenCode which uses a centralized <code className="text-amber-400 bg-white/[0.04] px-1.5 py-0.5 rounded">oh-my-opencode.json</code> configuration,
-                Claude Code generates configuration per-workspace from your Library.
-              </p>
-              <div className="space-y-2">
-                <p className="text-white/80 font-medium">Generated files in each workspace:</p>
-                <ul className="list-disc list-inside space-y-1 pl-2">
-                  <li>
-                    <code className="text-emerald-400 bg-white/[0.04] px-1.5 py-0.5 rounded">CLAUDE.md</code> —
-                    System prompt and context from Library skills
-                  </li>
-                  <li>
-                    <code className="text-emerald-400 bg-white/[0.04] px-1.5 py-0.5 rounded">.claude/settings.local.json</code> —
-                    MCP servers and tool permissions
-                  </li>
-                </ul>
-              </div>
-              <div className="space-y-2">
-                <p className="text-white/80 font-medium">Configuration sources from Library:</p>
-                <ul className="list-disc list-inside space-y-1 pl-2">
-                  <li>
-                    <code className="text-violet-400 bg-white/[0.04] px-1.5 py-0.5 rounded">skills/</code> —
-                    Markdown files become context in CLAUDE.md
-                  </li>
-                  <li>
-                    <code className="text-violet-400 bg-white/[0.04] px-1.5 py-0.5 rounded">mcps/</code> —
-                    MCP server definitions for tool access
-                  </li>
-                  <li>
-                    <code className="text-violet-400 bg-white/[0.04] px-1.5 py-0.5 rounded">tools/</code> —
-                    Custom tool definitions
-                  </li>
-                </ul>
-              </div>
+              <button
+                onClick={handleSaveClaudeCode}
+                disabled={savingClaudeCode || !isClaudeCodeDirty}
+                className={cn(
+                  'flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-lg transition-colors',
+                  isClaudeCodeDirty
+                    ? 'text-white bg-indigo-500 hover:bg-indigo-600'
+                    : 'text-white/40 bg-white/[0.04] cursor-not-allowed'
+                )}
+              >
+                {savingClaudeCode ? (
+                  <Loader className="h-4 w-4 animate-spin" />
+                ) : claudeCodeSaveSuccess ? (
+                  <Check className="h-4 w-4 text-emerald-400" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                {savingClaudeCode ? 'Saving...' : claudeCodeSaveSuccess ? 'Saved!' : 'Save'}
+              </button>
+              <button
+                onClick={loadSettings}
+                disabled={loading}
+                title="Reloads the source from disk"
+                className="flex items-center gap-2 px-3 py-1.5 text-sm text-white/70 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] rounded-lg transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+                Reload
+              </button>
             </div>
           </div>
 
-          {/* Configuration Location */}
-          <div className="p-6 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-4">
+          {/* Default Model */}
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium text-white/80">Default Model</h3>
+            <p className="text-xs text-white/50">Model used for new Claude Code missions if not overridden.</p>
+            <input
+              type="text"
+              value={claudeCodeConfig.default_model || ''}
+              onChange={(e) =>
+                setClaudeCodeConfig((prev) => ({
+                  ...prev,
+                  default_model: e.target.value || null,
+                }))
+              }
+              placeholder="claude-sonnet-4-20250514"
+              className="w-full max-w-md px-3 py-2 text-sm text-white bg-white/[0.04] border border-white/[0.08] rounded-lg placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            />
+          </div>
+
+          {/* Default Agent */}
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium text-white/80">Default Agent</h3>
+            <p className="text-xs text-white/50">Pre-selected agent when creating a new Claude Code mission.</p>
+            <input
+              type="text"
+              value={claudeCodeConfig.default_agent || ''}
+              onChange={(e) =>
+                setClaudeCodeConfig((prev) => ({
+                  ...prev,
+                  default_agent: e.target.value || null,
+                }))
+              }
+              placeholder="e.g. code-reviewer"
+              className="w-full max-w-md px-3 py-2 text-sm text-white bg-white/[0.04] border border-white/[0.08] rounded-lg placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+            />
+          </div>
+
+          {/* Agent Visibility */}
+          {allClaudeCodeAgents.length > 0 && (
+            <div className="p-6 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-4 mt-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-white/80">Agent Visibility</h3>
+                <span className="text-xs text-white/40">
+                  {allClaudeCodeAgents.filter(a => !claudeCodeConfig.hidden_agents.includes(a)).length} visible, {claudeCodeConfig.hidden_agents.length} hidden
+                </span>
+              </div>
+              <p className="text-xs text-white/50">
+                Hidden agents will not appear in the mission dialog dropdown. They can still be used via API.
+              </p>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
+                {allClaudeCodeAgents.map((agent) => {
+                  const isHidden = claudeCodeConfig.hidden_agents.includes(agent);
+                  return (
+                    <button
+                      key={agent}
+                      onClick={() => {
+                        setClaudeCodeConfig((prev) => {
+                          const hidden = prev.hidden_agents.includes(agent)
+                            ? prev.hidden_agents.filter((a) => a !== agent)
+                            : [...prev.hidden_agents, agent];
+                          return { ...prev, hidden_agents: hidden };
+                        });
+                      }}
+                      className={cn(
+                        'flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-colors text-left',
+                        isHidden
+                          ? 'text-white/40 bg-white/[0.02] border-white/[0.04] hover:bg-white/[0.04]'
+                          : 'text-white/80 bg-white/[0.04] border-white/[0.08] hover:bg-white/[0.06]'
+                      )}
+                    >
+                      {isHidden ? (
+                        <EyeOff className="h-4 w-4 flex-shrink-0 text-white/30" />
+                      ) : (
+                        <Eye className="h-4 w-4 flex-shrink-0 text-emerald-400" />
+                      )}
+                      <span className="truncate">{agent}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Configuration Links */}
+          <div className="p-5 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-4 mt-6">
             <div className="flex items-center gap-2">
               <FileCode className="h-5 w-5 text-emerald-400" />
-              <h3 className="text-sm font-medium text-white">Where to Configure</h3>
+              <h3 className="text-sm font-medium text-white">Additional Configuration</h3>
             </div>
-            <div className="space-y-3 text-sm text-white/60">
-              <p>
-                To configure Claude Code behavior, edit your Library files:
-              </p>
-              <div className="grid gap-3">
-                <a
-                  href="/config/skills"
-                  className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.06] hover:bg-white/[0.04] hover:border-white/[0.08] transition-colors"
-                >
-                  <div className="p-2 rounded-lg bg-violet-500/10">
-                    <FileCode className="h-4 w-4 text-violet-400" />
-                  </div>
-                  <div>
-                    <p className="text-white/80 font-medium">Skills</p>
-                    <p className="text-xs text-white/40">System prompts and context for Claude</p>
-                  </div>
-                </a>
-                <a
-                  href="/config/mcps"
-                  className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.06] hover:bg-white/[0.04] hover:border-white/[0.08] transition-colors"
-                >
-                  <div className="p-2 rounded-lg bg-emerald-500/10">
-                    <Terminal className="h-4 w-4 text-emerald-400" />
-                  </div>
-                  <div>
-                    <p className="text-white/80 font-medium">MCP Servers</p>
-                    <p className="text-xs text-white/40">Tool servers Claude can access</p>
-                  </div>
-                </a>
-              </div>
+            <p className="text-sm text-white/50">
+              Claude Code generates <code className="text-emerald-400 bg-white/[0.04] px-1.5 py-0.5 rounded">CLAUDE.md</code> and <code className="text-emerald-400 bg-white/[0.04] px-1.5 py-0.5 rounded">.claude/settings.local.json</code> per-workspace from your Library.
+            </p>
+            <div className="grid gap-3">
+              <a
+                href="/config/skills"
+                className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.06] hover:bg-white/[0.04] hover:border-white/[0.08] transition-colors"
+              >
+                <div className="p-2 rounded-lg bg-violet-500/10">
+                  <FileCode className="h-4 w-4 text-violet-400" />
+                </div>
+                <div>
+                  <p className="text-white/80 font-medium">Skills</p>
+                  <p className="text-xs text-white/40">System prompts and context for Claude</p>
+                </div>
+              </a>
+              <a
+                href="/config/mcps"
+                className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.06] hover:bg-white/[0.04] hover:border-white/[0.08] transition-colors"
+              >
+                <div className="p-2 rounded-lg bg-emerald-500/10">
+                  <Terminal className="h-4 w-4 text-emerald-400" />
+                </div>
+                <div>
+                  <p className="text-white/80 font-medium">MCP Servers</p>
+                  <p className="text-xs text-white/40">Tool servers Claude can access</p>
+                </div>
+              </a>
             </div>
           </div>
 
           {/* Backend Settings Link */}
-          <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20">
+          <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20">
             <div className="flex items-start gap-3">
-              <AlertTriangle className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" />
-              <div className="text-sm text-amber-400/80">
-                <p className="font-medium text-amber-400">Backend Settings</p>
+              <Info className="h-5 w-5 text-blue-400 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-blue-400/80">
+                <p className="font-medium text-blue-400">Backend Settings</p>
                 <p className="mt-1">
-                  To configure Claude Code API key, default model, or CLI path, visit the{' '}
-                  <a href="/settings" className="underline hover:text-amber-300">Settings page</a> → Backends → Claude Code.
+                  To configure the Claude CLI path or enable/disable the backend, visit the{' '}
+                  <a href="/settings" className="underline hover:text-blue-300">Settings page</a> → Backends → Claude Code.
                 </p>
               </div>
             </div>

@@ -63,9 +63,14 @@ fn anthropic_client_id() -> String {
         .to_string()
 }
 
-fn anthropic_redirect_uri(mode: &str, client_id: &str) -> String {
+/// Default localhost port for Claude Max/Pro OAuth callback.
+/// This matches what Claude Code uses. Since there's no server listening,
+/// the user copies the redirect URL from their browser's address bar.
+const ANTHROPIC_MAX_REDIRECT_PORT: u16 = 9876;
+
+fn anthropic_redirect_uri(mode: &str, _client_id: &str) -> String {
     if mode == "max" {
-        format!("urn:uuid:{}", client_id)
+        format!("http://localhost:{}/callback", ANTHROPIC_MAX_REDIRECT_PORT)
     } else {
         ANTHROPIC_CONSOLE_REDIRECT_URI.to_string()
     }
@@ -1662,12 +1667,19 @@ async fn oauth_authorize(
             let client_id = anthropic_client_id();
             let redirect_uri = anthropic_redirect_uri(mode, &client_id);
 
+            // Claude Max/Pro requires additional scope for sessions
+            let scope = if mode == "max" {
+                "org:create_api_key user:profile user:inference user:sessions:claude_code"
+            } else {
+                "org:create_api_key user:profile user:inference"
+            };
+
             url.query_pairs_mut()
                 .append_pair("code", "true")
                 .append_pair("client_id", &client_id)
                 .append_pair("response_type", "code")
                 .append_pair("redirect_uri", &redirect_uri)
-                .append_pair("scope", "org:create_api_key user:profile user:inference")
+                .append_pair("scope", scope)
                 .append_pair("code_challenge", &challenge)
                 .append_pair("code_challenge_method", "S256")
                 .append_pair("state", &verifier);
@@ -1686,10 +1698,15 @@ async fn oauth_authorize(
                 );
             }
 
+            let instructions = if mode == "max" {
+                "1. Click 'Authorize' on the Claude page\n2. After authorization, your browser will redirect to a page that won't load (localhost)\n3. Copy the FULL URL from your browser's address bar\n4. Paste the URL here and click Connect"
+            } else {
+                "1. Click 'Authorize' on the Claude page\n2. Copy the authorization code shown\n3. Paste the code here and click Connect"
+            };
+
             Ok(Json(OAuthAuthorizeResponse {
                 url: url.to_string(),
-                instructions: "Visit the link above and paste the authorization code here"
-                    .to_string(),
+                instructions: instructions.to_string(),
                 method: "code".to_string(),
             }))
         }
@@ -1809,11 +1826,41 @@ async fn oauth_callback_inner(
         ProviderType::Anthropic => {
             let client_id = anthropic_client_id();
             let redirect_uri = anthropic_redirect_uri(&pending.mode, &client_id);
-            // Exchange code for tokens
-            let code = req.code.clone();
-            let splits: Vec<&str> = code.split('#').collect();
-            let code_part = splits.first().copied().unwrap_or(&code);
-            let state_part = splits.get(1).copied();
+
+            // Parse the authorization input - could be:
+            // 1. A full URL: http://localhost:9876/callback?code=...&state=...
+            // 2. The old format: code#state
+            // 3. Just the code
+            let input = req.code.trim();
+            let (code_string, state_string): (String, Option<String>) = if let Ok(url) = url::Url::parse(input) {
+                // Parse as URL
+                let code = url.query_pairs()
+                    .find(|(k, _)| k == "code")
+                    .map(|(_, v)| v.to_string());
+                let state = url.query_pairs()
+                    .find(|(k, _)| k == "state")
+                    .map(|(_, v)| v.to_string());
+                (code.unwrap_or_default(), state)
+            } else if input.contains('#') {
+                // Old format: code#state
+                let mut parts = input.splitn(2, '#');
+                let code = parts.next().unwrap_or(input).to_string();
+                let state = parts.next().map(|s| s.to_string());
+                (code, state)
+            } else {
+                // Just the code
+                (input.to_string(), None)
+            };
+
+            if code_string.is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Authorization code not found. Please paste the full URL from your browser's address bar.".to_string(),
+                ));
+            }
+
+            let code_part = code_string.as_str();
+            let state_part = state_string.as_deref();
 
             let client = reqwest::Client::new();
             let token_response = client

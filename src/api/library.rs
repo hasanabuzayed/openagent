@@ -26,9 +26,10 @@ use tokio::sync::RwLock;
 
 use crate::library::{
     rename::{ItemType, RenameResult},
-    Command, CommandSummary, GitAuthor, LibraryAgent, LibraryAgentSummary, LibraryStatus,
-    LibraryStore, LibraryTool, LibraryToolSummary, McpServer, MigrationReport, OpenAgentConfig,
-    Plugin, Rule, RuleSummary, Skill, SkillSummary, WorkspaceTemplate, WorkspaceTemplateSummary,
+    ClaudeCodeConfig, Command, CommandSummary, GitAuthor, LibraryAgent, LibraryAgentSummary,
+    LibraryStatus, LibraryStore, LibraryTool, LibraryToolSummary, McpServer, MigrationReport,
+    OpenAgentConfig, Plugin, Rule, RuleSummary, Skill, SkillSummary, WorkspaceTemplate,
+    WorkspaceTemplateSummary,
 };
 use crate::nspawn::NspawnDistro;
 use crate::workspace::{self, WorkspaceType, DEFAULT_WORKSPACE_ID};
@@ -264,6 +265,9 @@ pub fn routes() -> Router<Arc<super::routes::AppState>> {
         .route("/openagent/config", get(get_openagent_config))
         .route("/openagent/config", put(save_openagent_config))
         .route("/openagent/agents", get(get_visible_agents))
+        // Claude Code Config
+        .route("/claudecode/config", get(get_claudecode_config))
+        .route("/claudecode/config", put(save_claudecode_config))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1422,4 +1426,40 @@ async fn update_workspace_template_references(
             }
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Claude Code Config
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// GET /api/library/claudecode/config - Get Claude Code config from Library.
+async fn get_claudecode_config(
+    State(state): State<Arc<super::routes::AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ClaudeCodeConfig>, (StatusCode, String)> {
+    let library = ensure_library(&state, &headers).await?;
+    library
+        .get_claudecode_config()
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// PUT /api/library/claudecode/config - Save Claude Code config to Library.
+async fn save_claudecode_config(
+    State(state): State<Arc<super::routes::AppState>>,
+    headers: HeaderMap,
+    Json(config): Json<ClaudeCodeConfig>,
+) -> Result<(StatusCode, String), (StatusCode, String)> {
+    let library = ensure_library(&state, &headers).await?;
+
+    library
+        .save_claudecode_config(&config)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        "Claude Code config saved successfully".to_string(),
+    ))
 }

@@ -117,6 +117,10 @@ async fn get_components(State(state): State<Arc<AppState>>) -> Json<SystemCompon
     let opencode_info = get_opencode_info(&state.config).await;
     components.push(opencode_info);
 
+    // Claude Code
+    let claudecode_info = get_claude_code_info().await;
+    components.push(claudecode_info);
+
     // oh-my-opencode
     let omo_info = get_oh_my_opencode_info().await;
     components.push(omo_info);
@@ -193,6 +197,86 @@ async fn get_opencode_info(config: &crate::config::Config) -> ComponentInfo {
             path: None,
             status: ComponentStatus::NotInstalled,
         },
+    }
+}
+
+/// Get Claude Code version and status.
+async fn get_claude_code_info() -> ComponentInfo {
+    // Try to run claude --version to check if it's installed
+    match Command::new("claude").arg("--version").output().await {
+        Ok(output) if output.status.success() => {
+            let version_str = String::from_utf8_lossy(&output.stdout);
+            // Parse version from output like "claude 1.0.3"
+            let version = version_str
+                .lines()
+                .next()
+                .map(|l| l.trim().replace("claude ", "").replace("Claude ", ""));
+
+            let update_available = check_claude_code_update(version.as_deref()).await;
+            let status = if update_available.is_some() {
+                ComponentStatus::UpdateAvailable
+            } else {
+                ComponentStatus::Ok
+            };
+
+            ComponentInfo {
+                name: "claude_code".to_string(),
+                version,
+                installed: true,
+                update_available,
+                path: which_claude_code().await,
+                status,
+            }
+        }
+        _ => ComponentInfo {
+            name: "claude_code".to_string(),
+            version: None,
+            installed: false,
+            update_available: None,
+            path: None,
+            status: ComponentStatus::NotInstalled,
+        },
+    }
+}
+
+/// Find the path to the Claude Code binary.
+async fn which_claude_code() -> Option<String> {
+    let output = Command::new("which").arg("claude").output().await.ok()?;
+    if output.status.success() {
+        Some(
+            String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
+/// Check if there's a newer version of Claude Code available.
+async fn check_claude_code_update(current_version: Option<&str>) -> Option<String> {
+    let current = current_version?;
+
+    // Check npm registry for @anthropic-ai/claude-code
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://registry.npmjs.org/@anthropic-ai/claude-code/latest")
+        .header("User-Agent", "open-agent")
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let latest = json.get("version")?.as_str()?;
+
+    if latest != current && version_is_newer(latest, current) {
+        Some(latest.to_string())
+    } else {
+        None
     }
 }
 
@@ -427,6 +511,7 @@ async fn update_component(
     match name.as_str() {
         "open_agent" => Ok(Sse::new(Box::pin(stream_open_agent_update()))),
         "opencode" => Ok(Sse::new(Box::pin(stream_opencode_update()))),
+        "claude_code" => Ok(Sse::new(Box::pin(stream_claude_code_update()))),
         "oh_my_opencode" => Ok(Sse::new(Box::pin(stream_oh_my_opencode_update()))),
         _ => Err((
             StatusCode::BAD_REQUEST,
@@ -802,6 +887,94 @@ fn stream_opencode_update() -> impl Stream<Item = Result<Event, std::convert::In
                 yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
                     event_type: "error".to_string(),
                     message: format!("Failed to run install script: {}", e),
+                    progress: None,
+                }).unwrap()));
+            }
+        }
+    }
+}
+
+/// Stream the Claude Code install/update process.
+fn stream_claude_code_update() -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
+    async_stream::stream! {
+        yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+            event_type: "log".to_string(),
+            message: "Starting Claude Code installation/update...".to_string(),
+            progress: Some(0),
+        }).unwrap()));
+
+        // Check if npm is available
+        let npm_check = Command::new("npm").arg("--version").output().await;
+        if npm_check.is_err() || !npm_check.unwrap().status.success() {
+            yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                event_type: "error".to_string(),
+                message: "npm is required to install Claude Code. Please install Node.js first.".to_string(),
+                progress: None,
+            }).unwrap()));
+            return;
+        }
+
+        yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+            event_type: "log".to_string(),
+            message: "Installing @anthropic-ai/claude-code globally...".to_string(),
+            progress: Some(20),
+        }).unwrap()));
+
+        // Install Claude Code via npm
+        let install_result = Command::new("npm")
+            .args(["install", "-g", "@anthropic-ai/claude-code@latest"])
+            .output()
+            .await;
+
+        match install_result {
+            Ok(output) if output.status.success() => {
+                yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                    event_type: "log".to_string(),
+                    message: "Installation complete, verifying...".to_string(),
+                    progress: Some(80),
+                }).unwrap()));
+
+                // Verify installation
+                let verify_result = Command::new("claude")
+                    .arg("--version")
+                    .output()
+                    .await;
+
+                match verify_result {
+                    Ok(output) if output.status.success() => {
+                        let version = String::from_utf8_lossy(&output.stdout)
+                            .lines()
+                            .next()
+                            .map(|l| l.trim().to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                            event_type: "complete".to_string(),
+                            message: format!("Claude Code installed successfully! Version: {}", version),
+                            progress: Some(100),
+                        }).unwrap()));
+                    }
+                    _ => {
+                        yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                            event_type: "complete".to_string(),
+                            message: "Claude Code installed, but version check failed. You may need to restart your shell.".to_string(),
+                            progress: Some(100),
+                        }).unwrap()));
+                    }
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                    event_type: "error".to_string(),
+                    message: format!("Failed to install Claude Code: {}", stderr),
+                    progress: None,
+                }).unwrap()));
+            }
+            Err(e) => {
+                yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                    event_type: "error".to_string(),
+                    message: format!("Failed to run npm install: {}", e),
                     progress: None,
                 }).unwrap()));
             }

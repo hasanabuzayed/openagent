@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { Plus } from 'lucide-react';
 import useSWR from 'swr';
-import { getVisibleAgents, getOpenAgentConfig, listBackends, listBackendAgents, getBackendConfig, type Backend, type BackendAgent } from '@/lib/api';
+import { getVisibleAgents, getOpenAgentConfig, listBackends, listBackendAgents, getBackendConfig, getClaudeCodeConfig, type Backend, type BackendAgent } from '@/lib/api';
 import type { Provider, Workspace } from '@/lib/api';
 
 interface NewMissionDialogProps {
@@ -113,9 +113,17 @@ export function NewMissionDialog({
     dedupingInterval: 30000,
   });
 
+  // SWR: fetch Claude Code config for hidden agents
+  const { data: claudeCodeLibConfig } = useSWR(
+    enabledBackends.some(b => b.id === 'claudecode') ? 'claudecode-lib-config' : null,
+    getClaudeCodeConfig,
+    { revalidateOnFocus: false, dedupingInterval: 30000 }
+  );
+
   // Combine all agents from enabled backends
   const allAgents = useMemo((): CombinedAgent[] => {
     const result: CombinedAgent[] = [];
+    const claudeCodeHiddenAgents = claudeCodeLibConfig?.hidden_agents || [];
 
     for (const backend of enabledBackends) {
       let agentNames: string[] = [];
@@ -123,7 +131,9 @@ export function NewMissionDialog({
       if (backend.id === 'opencode') {
         agentNames = opencodeAgents?.map(a => a.name) || parseAgentNames(agentsPayload);
       } else if (backend.id === 'claudecode') {
-        agentNames = claudecodeAgents?.map(a => a.name) || [];
+        // Filter out hidden Claude Code agents
+        const allClaudeAgents = claudecodeAgents?.map(a => a.name) || [];
+        agentNames = allClaudeAgents.filter(name => !claudeCodeHiddenAgents.includes(name));
       }
 
       for (const agent of agentNames) {
@@ -137,7 +147,7 @@ export function NewMissionDialog({
     }
 
     return result;
-  }, [enabledBackends, opencodeAgents, claudecodeAgents, agentsPayload]);
+  }, [enabledBackends, opencodeAgents, claudecodeAgents, agentsPayload, claudeCodeLibConfig]);
 
   // Group agents by backend for display
   const agentsByBackend = useMemo(() => {

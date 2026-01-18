@@ -3690,30 +3690,56 @@ async fn run_single_control_turn(
     ctx.control_events = Some(events_tx.clone());
     ctx.frontend_tool_hub = Some(tool_hub);
     ctx.control_status = Some(status);
-    ctx.cancel_token = Some(cancel);
+    ctx.cancel_token = Some(cancel.clone());
     ctx.tree_snapshot = Some(tree_snapshot);
     ctx.progress_snapshot = Some(progress_snapshot);
     ctx.mission_id = mission_id;
     ctx.mcp = Some(mcp);
 
-    if let Some(ref backend) = backend_id {
-        if backend != "opencode" {
+    // Execute based on backend
+    let result = match backend_id.as_deref() {
+        Some("claudecode") => {
+            let mid = match mission_id {
+                Some(id) => id,
+                None => {
+                    let _ = events_tx.send(AgentEvent::Error {
+                        message: "Claude Code backend requires a mission ID".to_string(),
+                        mission_id: None,
+                        resumable: false,
+                    });
+                    return crate::agents::AgentResult::failure(
+                        "Claude Code backend requires a mission ID".to_string(),
+                        0,
+                    )
+                    .with_terminal_reason(TerminalReason::LlmError);
+                }
+            };
+            super::mission_runner::run_claudecode_turn(
+                &ctx.working_dir,
+                &user_message,
+                config.default_model.as_deref(),
+                config.opencode_agent.as_deref(),
+                mid,
+                events_tx.clone(),
+                cancel,
+                None, // secrets - not available in control context
+                &config.working_dir,
+            )
+            .await
+        }
+        Some(backend) if backend != "opencode" => {
             let _ = events_tx.send(AgentEvent::Error {
-                message: format!(
-                    "Backend '{}' is not supported for in-app execution yet. Please use OpenCode or run Claude Code locally.",
-                    backend
-                ),
+                message: format!("Unsupported backend: {}", backend),
                 mission_id,
                 resumable: mission_id.is_some(),
             });
-            return crate::agents::AgentResult::failure(
-                format!("Unsupported backend: {}", backend),
-                0,
-            )
-            .with_terminal_reason(TerminalReason::LlmError);
+            crate::agents::AgentResult::failure(format!("Unsupported backend: {}", backend), 0)
+                .with_terminal_reason(TerminalReason::LlmError)
         }
-    }
-
-    let result = root_agent.execute(&mut task, &ctx).await;
+        _ => {
+            // Default to opencode
+            root_agent.execute(&mut task, &ctx).await
+        }
+    };
     result
 }

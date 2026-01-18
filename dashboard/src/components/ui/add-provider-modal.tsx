@@ -444,14 +444,14 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
           {/* Step 4: OAuth Callback */}
           {step === 'oauth-callback' && oauthResponse && (
             <div className="space-y-4">
-              <p className="text-sm text-white/60">
+              <div className="text-sm text-white/60 whitespace-pre-line">
                 {oauthResponse.instructions}
-              </p>
+              </div>
               <input
                 type="text"
                 value={oauthCode}
                 onChange={(e) => setOauthCode(e.target.value)}
-                placeholder="Authorization code or redirect URL"
+                placeholder="sk-ant-oc01-...#..."
                 autoFocus
                 className="w-full rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-sm text-white placeholder-white/30 focus:outline-none focus:border-indigo-500/50 font-mono"
               />

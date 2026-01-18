@@ -142,8 +142,9 @@ impl Backend for ClaudeCodeBackend {
                 })
                 .await;
 
-            // Wait for Claude process to finish
-            let _ = claude_handle.await;
+            // Note: claude_handle is dropped here, but the process is managed
+            // by the ClaudeProcessHandle which will clean up when dropped
+            drop(claude_handle);
         });
 
         Ok((rx, handle))

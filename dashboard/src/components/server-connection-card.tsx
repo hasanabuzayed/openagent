@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils';
 const componentNames: Record<string, string> = {
   open_agent: 'Open Agent',
   opencode: 'OpenCode',
+  claude_code: 'Claude Code',
   oh_my_opencode: 'oh-my-opencode',
 };
 
@@ -32,6 +33,7 @@ const componentNames: Record<string, string> = {
 const componentIcons: Record<string, string> = {
   open_agent: '🚀',
   opencode: '⚡',
+  claude_code: '🤖',
   oh_my_opencode: '🎭',
 };
 
@@ -214,7 +216,17 @@ export function ServerConnectionCard({
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-white/60">System Components</span>
-            <span className="text-xs text-white/30">OpenCode stack</span>
+            <span className="text-xs text-white/30">
+              {components.length > 0 ? (
+                // Show installed backends dynamically
+                (() => {
+                  const backends = [];
+                  if (components.some(c => c.name === 'opencode' && c.installed)) backends.push('OpenCode');
+                  if (components.some(c => c.name === 'claude_code' && c.installed)) backends.push('Claude Code');
+                  return backends.length > 0 ? `${backends.join(' + ')} stack` : 'No backends';
+                })()
+              ) : 'Loading...'}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -295,6 +307,18 @@ export function ServerConnectionCard({
                       >
                         <ArrowUp className="h-3 w-3" />
                         Update
+                      </button>
+                    )}
+
+                    {/* Install button for not installed components */}
+                    {component.status === 'not_installed' && (
+                      <button
+                        onClick={() => handleUpdate(component)}
+                        disabled={updatingComponent !== null}
+                        className="flex items-center gap-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/30 px-2.5 py-1 text-xs text-emerald-300 hover:bg-emerald-500/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <ArrowUp className="h-3 w-3" />
+                        Install
                       </button>
                     )}
                   </div>

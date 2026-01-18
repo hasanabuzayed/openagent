@@ -443,6 +443,23 @@ impl Default for OpenAgentConfig {
     }
 }
 
+/// Claude Code configuration stored in the Library.
+/// Controls default model, agent preferences, and visibility for Claude Code backend.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClaudeCodeConfig {
+    /// Default model to use for Claude Code missions.
+    /// Example: "claude-sonnet-4-20250514", "claude-opus-4-20250514"
+    #[serde(default)]
+    pub default_model: Option<String>,
+    /// Default agent to pre-select for Claude Code missions.
+    #[serde(default)]
+    pub default_agent: Option<String>,
+    /// List of agents to hide from the mission dialog.
+    /// These agents won't appear in the dropdown but can still be used via API.
+    #[serde(default)]
+    pub hidden_agents: Vec<String>,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper Functions
 // ─────────────────────────────────────────────────────────────────────────────

@@ -6,8 +6,8 @@ export default function ControlPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex h-full items-center justify-center">
-          <Loader className="h-6 w-6 animate-spin text-indigo-400" />
+        <div className="flex items-center justify-center min-h-[calc(100vh-4rem)]">
+          <Loader className="h-8 w-8 animate-spin text-white/40" />
         </div>
       }
     >

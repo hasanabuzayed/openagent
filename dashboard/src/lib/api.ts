@@ -2291,6 +2291,32 @@ export async function getVisibleAgents(): Promise<unknown> {
   return res.json();
 }
 
+// Claude Code config stored in Library
+export interface ClaudeCodeConfig {
+  default_model: string | null;
+  default_agent: string | null;
+  hidden_agents: string[];
+}
+
+// Get Claude Code config from Library
+export async function getClaudeCodeConfig(): Promise<ClaudeCodeConfig> {
+  const res = await apiFetch("/api/library/claudecode/config");
+  if (!res.ok) throw new Error("Failed to get Claude Code config");
+  return res.json();
+}
+
+// Save Claude Code config to Library
+export async function saveClaudeCodeConfig(
+  config: ClaudeCodeConfig
+): Promise<void> {
+  const res = await apiFetch("/api/library/claudecode/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error("Failed to save Claude Code config");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // AI Provider API
 // ─────────────────────────────────────────────────────────────────────────────

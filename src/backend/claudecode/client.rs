@@ -2,11 +2,32 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::Value;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::process::{Child, Command};
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// Handle to a running Claude CLI process.
+/// Call `kill()` to terminate the process when cancelling a mission.
+pub struct ClaudeProcessHandle {
+    child: Arc<Mutex<Option<Child>>>,
+    _task_handle: tokio::task::JoinHandle<()>,
+}
+
+impl ClaudeProcessHandle {
+    /// Kill the underlying CLI process.
+    pub async fn kill(&self) {
+        if let Some(mut child) = self.child.lock().await.take() {
+            if let Err(e) = child.kill().await {
+                warn!("Failed to kill Claude CLI process: {}", e);
+            } else {
+                info!("Claude CLI process killed");
+            }
+        }
+    }
+}
 
 /// Events emitted by the Claude CLI in stream-json mode.
 #[derive(Debug, Clone, Deserialize)]
@@ -216,6 +237,8 @@ impl ClaudeCodeClient {
     }
 
     /// Execute a message and return a stream of events.
+    /// Returns a tuple of (event receiver, process handle).
+    /// Call `process_handle.kill()` to terminate the process on cancellation.
     pub async fn execute_message(
         &self,
         directory: &str,
@@ -223,7 +246,7 @@ impl ClaudeCodeClient {
         model: Option<&str>,
         session_id: Option<&str>,
         agent: Option<&str>,
-    ) -> Result<(mpsc::Receiver<ClaudeEvent>, tokio::task::JoinHandle<()>)> {
+    ) -> Result<(mpsc::Receiver<ClaudeEvent>, ClaudeProcessHandle)> {
         let (tx, rx) = mpsc::channel(256);
 
         let mut cmd = Command::new(&self.config.cli_path);
@@ -287,7 +310,11 @@ impl ClaudeCodeClient {
             .take()
             .ok_or_else(|| anyhow!("Failed to capture Claude stdout"))?;
 
-        let handle = tokio::spawn(async move {
+        // Wrap child in Arc<Mutex> so it can be killed from outside the task
+        let child_handle = Arc::new(Mutex::new(Some(child)));
+        let child_for_task = Arc::clone(&child_handle);
+
+        let task_handle = tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
 
@@ -319,22 +346,29 @@ impl ClaudeCodeClient {
                 }
             }
 
-            // Wait for process to finish
-            match child.wait().await {
-                Ok(status) => {
-                    if !status.success() {
-                        warn!("Claude CLI exited with status: {}", status);
-                    } else {
-                        debug!("Claude CLI exited successfully");
+            // Wait for process to finish (if it wasn't killed)
+            if let Some(mut child) = child_for_task.lock().await.take() {
+                match child.wait().await {
+                    Ok(status) => {
+                        if !status.success() {
+                            warn!("Claude CLI exited with status: {}", status);
+                        } else {
+                            debug!("Claude CLI exited successfully");
+                        }
                     }
-                }
-                Err(e) => {
-                    error!("Failed to wait for Claude CLI: {}", e);
+                    Err(e) => {
+                        error!("Failed to wait for Claude CLI: {}", e);
+                    }
                 }
             }
         });
 
-        Ok((rx, handle))
+        let process_handle = ClaudeProcessHandle {
+            child: child_handle,
+            _task_handle: task_handle,
+        };
+
+        Ok((rx, process_handle))
     }
 
     /// Get available agents from the Claude CLI.
