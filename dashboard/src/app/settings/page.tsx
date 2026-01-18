@@ -19,6 +19,8 @@ import {
   listBackends,
   getBackendConfig,
   updateBackendConfig,
+  getProviderForBackend,
+  BackendProviderResponse,
 } from '@/lib/api';
 import {
   Server,
@@ -166,6 +168,13 @@ export default function SettingsPage() {
   const { data: claudecodeBackendConfig, mutate: mutateClaudeBackend } = useSWR(
     'backend-claudecode-config',
     () => getBackendConfig('claudecode'),
+    { revalidateOnFocus: false }
+  );
+
+  // Fetch Claude Code provider status (Anthropic provider configured for claudecode)
+  const { data: claudecodeProvider, mutate: mutateClaudeProvider } = useSWR<BackendProviderResponse>(
+    'claudecode-provider',
+    () => getProviderForBackend('claudecode'),
     { revalidateOnFocus: false }
   );
 
@@ -354,15 +363,11 @@ export default function SettingsPage() {
         default_model: claudeForm.default_model || null,
         cli_path: claudeForm.cli_path || null,
       };
-      if (claudeForm.api_key) {
-        settings.api_key = claudeForm.api_key;
-      }
 
       const result = await updateBackendConfig('claudecode', settings, {
         enabled: claudeForm.enabled,
       });
       toast.success(result.message || 'Claude Code settings updated');
-      setClaudeForm((prev) => ({ ...prev, api_key: '' }));
       mutateClaudeBackend();
     } catch (err) {
       toast.error(
@@ -511,7 +516,7 @@ export default function SettingsPage() {
           />
 
           {/* AI Providers */}
-          <div className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-5">
+          <div id="ai-providers" className="rounded-xl bg-white/[0.02] border border-white/[0.04] p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-500/10">
@@ -520,7 +525,7 @@ export default function SettingsPage() {
                 <div>
                   <h2 className="text-sm font-medium text-white">AI Providers</h2>
                   <p className="text-xs text-white/40">
-                    Configure inference providers for OpenCode
+                    Configure inference providers for OpenCode and Claude Code
                   </p>
                 </div>
               </div>
@@ -623,6 +628,20 @@ export default function SettingsPage() {
                           {/* Icon + Name */}
                           <span className="text-base">{config.icon}</span>
                           <span className="text-sm text-white/80 flex-1 truncate">{provider.name}</span>
+
+                          {/* Backend badges */}
+                          {provider.use_for_backends && provider.use_for_backends.length > 0 && (
+                            <div className="flex items-center gap-1">
+                              {provider.use_for_backends.map((backend) => (
+                                <span
+                                  key={backend}
+                                  className="px-1.5 py-0.5 text-[10px] rounded bg-white/[0.06] text-white/50"
+                                >
+                                  {backend === 'claudecode' ? 'Claude' : backend === 'opencode' ? 'OC' : backend}
+                                </span>
+                              ))}
+                            </div>
+                          )}
 
                           {/* Status indicators */}
                           <div className="flex items-center gap-2">
@@ -799,26 +818,57 @@ export default function SettingsPage() {
                     Enabled
                   </label>
                 </div>
-                <div className="text-xs text-white/50">
-                  API key status:{' '}
-                  <span className={claudeForm.api_key_configured ? 'text-emerald-400' : 'text-amber-400'}>
-                    {claudeForm.api_key_configured ? 'Configured' : 'Not configured'}
-                  </span>
-                </div>
-                <div>
-                  <label className="block text-xs text-white/60 mb-1.5">API Key</label>
-                  <input
-                    type="password"
-                    value={claudeForm.api_key}
-                    onChange={(e) =>
-                      setClaudeForm((prev) => ({ ...prev, api_key: e.target.value }))
-                    }
-                    placeholder="sk-..."
-                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500/50"
-                  />
-                  <p className="mt-1.5 text-xs text-white/30">
-                    Stored securely in the secrets vault; leave blank to keep existing key.
-                  </p>
+                {/* Anthropic Provider Status */}
+                <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">🧠</span>
+                      <div>
+                        <div className="text-sm text-white">
+                          {claudecodeProvider?.configured
+                            ? claudecodeProvider.provider_name || 'Anthropic'
+                            : 'Anthropic Provider'}
+                        </div>
+                        <div className="text-xs text-white/40">
+                          {claudecodeProvider?.configured
+                            ? claudecodeProvider.oauth
+                              ? 'Connected via OAuth'
+                              : claudecodeProvider.api_key
+                              ? 'Using API key'
+                              : 'Configured'
+                            : 'Not configured for Claude Code'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {claudecodeProvider?.configured && claudecodeProvider.has_credentials ? (
+                        <span className="flex items-center gap-1 text-xs text-emerald-400">
+                          <Check className="h-3.5 w-3.5" />
+                          Connected
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-xs text-amber-400">
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                          Not connected
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {!claudecodeProvider?.configured && (
+                    <p className="mt-2 text-xs text-white/50">
+                      Add an Anthropic provider in{' '}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          document.getElementById('ai-providers')?.scrollIntoView({ behavior: 'smooth' });
+                        }}
+                        className="text-indigo-400 hover:text-indigo-300 underline"
+                      >
+                        AI Providers
+                      </button>{' '}
+                      and select &quot;Claude Code&quot; as a target backend.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs text-white/60 mb-1.5">Default Model</label>

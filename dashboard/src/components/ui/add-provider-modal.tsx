@@ -77,7 +77,7 @@ const getProviderAuthMethods = (providerType: AIProviderType): AIProviderAuthMet
   return [];
 };
 
-type ModalStep = 'select-provider' | 'select-method' | 'enter-api-key' | 'oauth-callback';
+type ModalStep = 'select-provider' | 'select-method' | 'select-backends' | 'enter-api-key' | 'oauth-callback';
 
 export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: AddProviderModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -90,6 +90,8 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
   const [oauthResponse, setOauthResponse] = useState<OAuthAuthorizeResponse | null>(null);
   const [oauthCode, setOauthCode] = useState('');
   const [loading, setLoading] = useState(false);
+  // Backend selection for Anthropic (OpenCode and/or Claude Code)
+  const [selectedBackends, setSelectedBackends] = useState<string[]>(['opencode']);
 
   // Get selected provider info
   const selectedTypeInfo = selectedProvider ? providerTypes.find(t => t.id === selectedProvider) : null;
@@ -106,6 +108,7 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
       setOauthResponse(null);
       setOauthCode('');
       setLoading(false);
+      setSelectedBackends(['opencode']);
     }
   }, [open]);
 
@@ -155,6 +158,12 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
     const method = authMethods[methodIndex];
     setSelectedMethodIndex(methodIndex);
 
+    // For Anthropic, show backend selection step first
+    if (selectedProvider === 'anthropic') {
+      setStep('select-backends');
+      return;
+    }
+
     if (method.type === 'api') {
       setStep('enter-api-key');
     } else {
@@ -173,6 +182,39 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
     }
   };
 
+  const handleContinueFromBackends = async () => {
+    if (selectedBackends.length === 0) {
+      toast.error('Please select at least one backend');
+      return;
+    }
+
+    const method = authMethods[selectedMethodIndex!];
+    if (method.type === 'api') {
+      setStep('enter-api-key');
+    } else {
+      // Start OAuth flow
+      setLoading(true);
+      try {
+        const response = await oauthAuthorize(selectedProvider!, selectedMethodIndex!);
+        setOauthResponse(response);
+        setStep('oauth-callback');
+        window.open(response.url, '_blank');
+      } catch (err) {
+        toast.error(`Failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const toggleBackend = (backendId: string) => {
+    setSelectedBackends(prev =>
+      prev.includes(backendId)
+        ? prev.filter(b => b !== backendId)
+        : [...prev, backendId]
+    );
+  };
+
   const handleSubmitApiKey = async () => {
     if (!apiKey.trim() || !selectedProvider) return;
 
@@ -182,6 +224,8 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
         provider_type: selectedProvider,
         name: selectedTypeInfo?.name || selectedProvider,
         api_key: apiKey,
+        // Include backend targeting for Anthropic
+        use_for_backends: selectedProvider === 'anthropic' ? selectedBackends : undefined,
       });
       toast.success('Provider added');
       onSuccess();
@@ -198,7 +242,13 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
 
     setLoading(true);
     try {
-      await oauthCallback(selectedProvider, selectedMethodIndex, oauthCode);
+      await oauthCallback(
+        selectedProvider,
+        selectedMethodIndex,
+        oauthCode,
+        // Include backend targeting for Anthropic
+        selectedProvider === 'anthropic' ? selectedBackends : undefined
+      );
       toast.success('Provider connected');
       onSuccess();
       onClose();
@@ -213,8 +263,12 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
     if (step === 'select-method') {
       setStep('select-provider');
       setSelectedProvider(null);
+    } else if (step === 'select-backends') {
+      setStep('select-method');
     } else if (step === 'enter-api-key') {
-      if (hasOAuth) {
+      if (selectedProvider === 'anthropic') {
+        setStep('select-backends');
+      } else if (hasOAuth) {
         setStep('select-method');
       } else {
         setStep('select-provider');
@@ -230,6 +284,7 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
     switch (step) {
       case 'select-provider': return 'Add Provider';
       case 'select-method': return `Connect ${selectedTypeInfo?.name}`;
+      case 'select-backends': return 'Select Backends';
       case 'enter-api-key': return `${selectedTypeInfo?.name} API Key`;
       case 'oauth-callback': return 'Complete Authorization';
       default: return 'Add Provider';
@@ -320,6 +375,48 @@ export function AddProviderModal({ open, onClose, onSuccess, providerTypes }: Ad
                   </div>
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* Step 2.5: Select Backends (Anthropic only) */}
+          {step === 'select-backends' && (
+            <div className="space-y-4">
+              <p className="text-sm text-white/60">
+                Choose which backends should use this Anthropic provider:
+              </p>
+              <div className="space-y-2">
+                <label className="flex items-center gap-3 p-3 rounded-xl border border-white/[0.06] hover:bg-white/[0.02] transition-colors cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedBackends.includes('opencode')}
+                    onChange={() => toggleBackend('opencode')}
+                    className="rounded border-white/20 bg-white/[0.02] text-indigo-500 focus:ring-indigo-500/30 cursor-pointer"
+                  />
+                  <div className="flex-1">
+                    <div className="text-sm text-white">OpenCode</div>
+                    <div className="text-xs text-white/40">Use for OpenCode agents and missions</div>
+                  </div>
+                </label>
+                <label className="flex items-center gap-3 p-3 rounded-xl border border-white/[0.06] hover:bg-white/[0.02] transition-colors cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedBackends.includes('claudecode')}
+                    onChange={() => toggleBackend('claudecode')}
+                    className="rounded border-white/20 bg-white/[0.02] text-indigo-500 focus:ring-indigo-500/30 cursor-pointer"
+                  />
+                  <div className="flex-1">
+                    <div className="text-sm text-white">Claude Code</div>
+                    <div className="text-xs text-white/40">Use for Claude CLI-based missions</div>
+                  </div>
+                </label>
+              </div>
+              <button
+                onClick={handleContinueFromBackends}
+                disabled={loading || selectedBackends.length === 0}
+                className="w-full rounded-xl bg-indigo-500 px-4 py-3 text-sm font-medium text-white hover:bg-indigo-600 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? <Loader className="h-4 w-4 animate-spin mx-auto" /> : 'Continue'}
+              </button>
             </div>
           )}
 

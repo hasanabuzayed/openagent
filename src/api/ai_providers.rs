@@ -8,6 +8,7 @@
 //! - Delete provider
 //! - Authenticate provider (OAuth flow)
 //! - Set default provider
+//! - Get provider credentials for specific backend (Claude Code)
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -116,6 +117,7 @@ pub fn routes() -> Router<Arc<super::routes::AppState>> {
         .route("/types", get(list_provider_types))
         .route("/opencode-auth", get(get_opencode_auth))
         .route("/opencode-auth", post(set_opencode_auth))
+        .route("/for-backend/:backend_id", get(get_provider_for_backend))
         .route("/:id", get(get_provider))
         .route("/:id", put(update_provider))
         .route("/:id", delete(delete_provider))
@@ -124,6 +126,75 @@ pub fn routes() -> Router<Arc<super::routes::AppState>> {
         .route("/:id/oauth/authorize", post(oauth_authorize))
         .route("/:id/oauth/callback", post(oauth_callback))
         .route("/:id/default", post(set_default))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API for Backend Access
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Get the Anthropic API key for the Claude Code backend.
+///
+/// This checks if the Anthropic provider has "claudecode" in its use_for_backends
+/// configuration and returns the API key if available.
+///
+/// Returns None if:
+/// - Anthropic provider is not configured for claudecode
+/// - No API key is set (OAuth-only auth)
+/// - Any error occurs reading the config
+pub fn get_anthropic_api_key_for_claudecode(working_dir: &Path) -> Option<String> {
+    // Read the OpenCode config to check use_for_backends
+    let config_path = get_opencode_config_path(working_dir);
+    let opencode_config = read_opencode_config(&config_path).ok()?;
+
+    // Check if Anthropic provider has claudecode in use_for_backends
+    let anthropic_config = get_provider_config_entry(&opencode_config, ProviderType::Anthropic);
+    let use_for_claudecode = anthropic_config
+        .as_ref()
+        .and_then(|c| c.use_for_backends.as_ref())
+        .map(|backends| backends.iter().any(|b| b == "claudecode"))
+        .unwrap_or(false);
+
+    if !use_for_claudecode {
+        return None;
+    }
+
+    // Get the API key from auth.json
+    let auth = read_opencode_auth().ok()?;
+    let anthropic_auth = auth.get("anthropic")?;
+
+    // Check for API key (not OAuth)
+    let auth_type = anthropic_auth.get("type").and_then(|v| v.as_str());
+    match auth_type {
+        Some("api_key") | Some("api") => {
+            anthropic_auth
+                .get("key")
+                .or_else(|| anthropic_auth.get("api_key"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        }
+        _ => {
+            // Also check without type field
+            anthropic_auth
+                .get("key")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        }
+    }
+}
+
+/// Check if the Anthropic provider is configured for the Claude Code backend.
+pub fn is_anthropic_configured_for_claudecode(working_dir: &Path) -> bool {
+    let config_path = get_opencode_config_path(working_dir);
+    let Ok(opencode_config) = read_opencode_config(&config_path) else {
+        return false;
+    };
+
+    let anthropic_config = get_provider_config_entry(&opencode_config, ProviderType::Anthropic);
+    anthropic_config
+        .as_ref()
+        .and_then(|c| c.use_for_backends.as_ref())
+        .map(|backends| backends.iter().any(|b| b == "claudecode"))
+        .unwrap_or(false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,6 +219,10 @@ pub struct CreateProviderRequest {
     pub base_url: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Which backends this provider is used for (e.g., ["opencode", "claudecode"])
+    /// Only applicable for Anthropic provider. Defaults to ["opencode"].
+    #[serde(default)]
+    pub use_for_backends: Option<Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -160,6 +235,8 @@ pub struct UpdateProviderRequest {
     pub api_key: Option<Option<String>>,
     pub base_url: Option<Option<String>>,
     pub enabled: Option<bool>,
+    /// Which backends this provider is used for (e.g., ["opencode", "claudecode"])
+    pub use_for_backends: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,6 +253,8 @@ pub struct ProviderResponse {
     pub uses_oauth: bool,
     pub auth_methods: Vec<AuthMethod>,
     pub status: ProviderStatusResponse,
+    /// Which backends this provider is used for (e.g., ["opencode", "claudecode"])
+    pub use_for_backends: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -200,6 +279,8 @@ struct ProviderConfigEntry {
     name: Option<String>,
     base_url: Option<String>,
     enabled: Option<bool>,
+    /// Which backends this provider is used for (e.g., ["opencode", "claudecode"])
+    use_for_backends: Option<Vec<String>>,
 }
 
 fn build_provider_response(
@@ -229,6 +310,17 @@ fn build_provider_response(
         }
     };
 
+    // For Anthropic, use configured backends or default to ["opencode"]
+    // For other providers, always use ["opencode"]
+    let use_for_backends = if provider_type == ProviderType::Anthropic {
+        config
+            .as_ref()
+            .and_then(|c| c.use_for_backends.clone())
+            .unwrap_or_else(|| vec!["opencode".to_string()])
+    } else {
+        vec!["opencode".to_string()]
+    };
+
     ProviderResponse {
         id: provider_type.id().to_string(),
         provider_type,
@@ -242,6 +334,7 @@ fn build_provider_response(
         uses_oauth: provider_type.uses_oauth(),
         auth_methods: provider_type.auth_methods(),
         status,
+        use_for_backends,
         created_at: now,
         updated_at: now,
     }
@@ -253,6 +346,31 @@ pub struct AuthResponse {
     pub message: String,
     /// OAuth URL to redirect user to (if OAuth flow required)
     pub auth_url: Option<String>,
+}
+
+/// Response for provider credentials for a specific backend.
+#[derive(Debug, Serialize)]
+pub struct BackendProviderResponse {
+    /// Whether a provider is configured for this backend
+    pub configured: bool,
+    /// The provider type (e.g., "anthropic")
+    pub provider_type: Option<String>,
+    /// The provider name
+    pub provider_name: Option<String>,
+    /// API key (if using API key auth)
+    pub api_key: Option<String>,
+    /// OAuth credentials (if using OAuth)
+    pub oauth: Option<BackendOAuthCredentials>,
+    /// Whether the provider has valid credentials
+    pub has_credentials: bool,
+}
+
+/// OAuth credentials for backend provider.
+#[derive(Debug, Serialize)]
+pub struct BackendOAuthCredentials {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
 }
 
 /// Request to initiate OAuth authorization.
@@ -280,6 +398,8 @@ pub struct OAuthCallbackRequest {
     pub method_index: usize,
     /// Authorization code from the OAuth flow
     pub code: String,
+    /// Which backends to use this provider for (e.g., ["opencode", "claudecode"])
+    pub use_for_backends: Option<Vec<String>>,
 }
 
 /// Request to set OpenCode auth credentials directly.
@@ -654,10 +774,19 @@ fn get_provider_config_entry(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let enabled = entry.get("enabled").and_then(|v| v.as_bool());
+    let use_for_backends = entry
+        .get("useForBackends")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        });
     Some(ProviderConfigEntry {
         name,
         base_url,
         enabled,
+        use_for_backends,
     })
 }
 
@@ -667,6 +796,7 @@ fn set_provider_config_entry(
     name: Option<String>,
     base_url: Option<Option<String>>,
     enabled: Option<bool>,
+    use_for_backends: Option<Vec<String>>,
 ) {
     if !config.is_object() {
         *config = serde_json::json!({});
@@ -707,6 +837,18 @@ fn set_provider_config_entry(
     // We treat providers as enabled when present and avoid writing this field.
     let _ = enabled;
     entry_obj.remove("enabled");
+
+    // Store which backends this provider is used for (only for Anthropic)
+    if let Some(backends) = use_for_backends {
+        let backends_json: Vec<serde_json::Value> = backends
+            .into_iter()
+            .map(serde_json::Value::String)
+            .collect();
+        entry_obj.insert(
+            "useForBackends".to_string(),
+            serde_json::Value::Array(backends_json),
+        );
+    }
 }
 
 fn remove_provider_config_entry(config: &mut serde_json::Value, provider: ProviderType) {
@@ -1024,6 +1166,128 @@ async fn list_providers(
     Ok(Json(providers))
 }
 
+/// GET /api/ai/providers/for-backend/:backend_id - Get provider credentials for a specific backend.
+///
+/// For Claude Code backend, this returns the Anthropic provider that has "claudecode" in use_for_backends.
+async fn get_provider_for_backend(
+    State(state): State<Arc<super::routes::AppState>>,
+    AxumPath(backend_id): AxumPath<String>,
+) -> Result<Json<BackendProviderResponse>, (StatusCode, String)> {
+    // Currently only "claudecode" backend uses this endpoint
+    if backend_id != "claudecode" {
+        return Ok(Json(BackendProviderResponse {
+            configured: false,
+            provider_type: None,
+            provider_name: None,
+            api_key: None,
+            oauth: None,
+            has_credentials: false,
+        }));
+    }
+
+    // Read the OpenCode config to find provider with claudecode in use_for_backends
+    let config_path = get_opencode_config_path(&state.config.working_dir);
+    let opencode_config =
+        read_opencode_config(&config_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    // Check if Anthropic provider has claudecode in use_for_backends
+    let anthropic_config = get_provider_config_entry(&opencode_config, ProviderType::Anthropic);
+    let use_for_claudecode = anthropic_config
+        .as_ref()
+        .and_then(|c| c.use_for_backends.as_ref())
+        .map(|backends| backends.iter().any(|b| b == "claudecode"))
+        .unwrap_or(false);
+
+    if !use_for_claudecode {
+        return Ok(Json(BackendProviderResponse {
+            configured: false,
+            provider_type: None,
+            provider_name: None,
+            api_key: None,
+            oauth: None,
+            has_credentials: false,
+        }));
+    }
+
+    // Get the Anthropic provider credentials from auth.json
+    let auth = read_opencode_auth().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let anthropic_auth = auth.get("anthropic");
+
+    let (api_key, oauth, has_credentials) = if let Some(auth_entry) = anthropic_auth {
+        let auth_type = auth_entry.get("type").and_then(|v| v.as_str());
+        match auth_type {
+            Some("api_key") | Some("api") => {
+                let key = auth_entry
+                    .get("key")
+                    .or_else(|| auth_entry.get("api_key"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                (key, None, true)
+            }
+            Some("oauth") => {
+                let oauth_creds = BackendOAuthCredentials {
+                    access_token: auth_entry
+                        .get("access")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    refresh_token: auth_entry
+                        .get("refresh")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    expires_at: auth_entry
+                        .get("expires")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0),
+                };
+                (None, Some(oauth_creds), true)
+            }
+            _ => {
+                // Check for OAuth credentials without type field
+                if auth_entry.get("refresh").is_some() {
+                    let oauth_creds = BackendOAuthCredentials {
+                        access_token: auth_entry
+                            .get("access")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        refresh_token: auth_entry
+                            .get("refresh")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        expires_at: auth_entry
+                            .get("expires")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0),
+                    };
+                    (None, Some(oauth_creds), true)
+                } else if auth_entry.get("key").is_some() {
+                    let key = auth_entry
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    (key, None, true)
+                } else {
+                    (None, None, false)
+                }
+            }
+        }
+    } else {
+        (None, None, false)
+    };
+
+    Ok(Json(BackendProviderResponse {
+        configured: true,
+        provider_type: Some("anthropic".to_string()),
+        provider_name: anthropic_config.and_then(|c| c.name).or_else(|| Some("Anthropic".to_string())),
+        api_key,
+        oauth,
+        has_credentials,
+    }))
+}
+
 /// POST /api/ai/providers - Create a new provider.
 async fn create_provider(
     State(state): State<Arc<super::routes::AppState>>,
@@ -1045,12 +1309,21 @@ async fn create_provider(
     let mut opencode_config =
         read_opencode_config(&config_path).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    // For Anthropic, default use_for_backends to ["opencode"] if not specified
+    let use_for_backends = if provider_type == ProviderType::Anthropic {
+        req.use_for_backends
+            .or_else(|| Some(vec!["opencode".to_string()]))
+    } else {
+        None
+    };
+
     set_provider_config_entry(
         &mut opencode_config,
         provider_type,
         Some(req.name),
         Some(req.base_url),
         Some(req.enabled),
+        use_for_backends,
     );
 
     write_opencode_config(&config_path, &opencode_config)
@@ -1135,6 +1408,7 @@ async fn update_provider(
         req.name,
         req.base_url,
         req.enabled,
+        req.use_for_backends,
     );
 
     write_opencode_config(&config_path, &opencode_config)
@@ -1635,8 +1909,24 @@ async fn oauth_callback_inner(
                 }
 
                 let config_path = get_opencode_config_path(&state.config.working_dir);
-                let opencode_config = read_opencode_config(&config_path)
+                let mut opencode_config = read_opencode_config(&config_path)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+                // Update use_for_backends if specified
+                if req.use_for_backends.is_some() {
+                    set_provider_config_entry(
+                        &mut opencode_config,
+                        provider_type,
+                        None,
+                        None,
+                        None,
+                        req.use_for_backends.clone(),
+                    );
+                    if let Err(e) = write_opencode_config(&config_path, &opencode_config) {
+                        tracing::error!("Failed to write OpenCode config: {}", e);
+                    }
+                }
+
                 let default_provider = get_default_provider(&opencode_config);
                 let config_entry = get_provider_config_entry(&opencode_config, provider_type);
                 let response = build_provider_response(
@@ -1683,8 +1973,24 @@ async fn oauth_callback_inner(
                 }
 
                 let config_path = get_opencode_config_path(&state.config.working_dir);
-                let opencode_config = read_opencode_config(&config_path)
+                let mut opencode_config = read_opencode_config(&config_path)
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+                // Update use_for_backends if specified
+                if req.use_for_backends.is_some() {
+                    set_provider_config_entry(
+                        &mut opencode_config,
+                        provider_type,
+                        None,
+                        None,
+                        None,
+                        req.use_for_backends.clone(),
+                    );
+                    if let Err(e) = write_opencode_config(&config_path, &opencode_config) {
+                        tracing::error!("Failed to write OpenCode config: {}", e);
+                    }
+                }
+
                 let default_provider = get_default_provider(&opencode_config);
                 let config_entry = get_provider_config_entry(&opencode_config, provider_type);
                 let response = build_provider_response(

@@ -518,6 +518,7 @@ async fn run_mission_turn(
                 events_tx.clone(),
                 cancel,
                 secrets,
+                &config.working_dir,
             )
             .await
         }
@@ -566,21 +567,32 @@ async fn run_claudecode_turn(
     events_tx: broadcast::Sender<AgentEvent>,
     cancel: CancellationToken,
     secrets: Option<Arc<SecretsStore>>,
+    app_working_dir: &std::path::Path,
 ) -> AgentResult {
     use std::collections::HashMap;
+    use super::ai_providers::get_anthropic_api_key_for_claudecode;
 
-    // Get API key from secrets
-    let api_key = if let Some(ref store) = secrets {
-        match store.get_secret("claudecode", "api_key").await {
-            Ok(key) => Some(key),
-            Err(e) => {
-                tracing::warn!("Failed to get Claude API key from secrets: {}", e);
-                // Fall back to environment variable
-                std::env::var("ANTHROPIC_API_KEY").ok()
-            }
-        }
+    // Try to get API key from Anthropic provider configured for Claude Code backend
+    let api_key = if let Some(key) = get_anthropic_api_key_for_claudecode(app_working_dir) {
+        tracing::info!("Using Anthropic API key from provider for Claude Code");
+        Some(key)
     } else {
-        std::env::var("ANTHROPIC_API_KEY").ok()
+        // Fall back to secrets vault (legacy support)
+        if let Some(ref store) = secrets {
+            match store.get_secret("claudecode", "api_key").await {
+                Ok(key) => {
+                    tracing::info!("Using Claude Code API key from secrets vault (legacy)");
+                    Some(key)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to get Claude API key from secrets: {}", e);
+                    // Fall back to environment variable
+                    std::env::var("ANTHROPIC_API_KEY").ok()
+                }
+            }
+        } else {
+            std::env::var("ANTHROPIC_API_KEY").ok()
+        }
     };
 
     // Determine CLI path

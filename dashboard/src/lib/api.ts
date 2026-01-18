@@ -2345,6 +2345,8 @@ export interface AIProvider {
   uses_oauth: boolean;
   auth_methods: AIProviderAuthMethod[];
   status: AIProviderStatus;
+  /** Which backends this provider is used for (e.g., ["opencode", "claudecode"]) */
+  use_for_backends: string[];
   created_at: string;
   updated_at: string;
 }
@@ -2389,6 +2391,8 @@ export async function createAIProvider(data: {
   api_key?: string;
   base_url?: string;
   enabled?: boolean;
+  /** Which backends this provider is used for (e.g., ["opencode", "claudecode"]) */
+  use_for_backends?: string[];
 }): Promise<AIProvider> {
   const res = await apiFetch("/api/ai/providers", {
     method: "POST",
@@ -2407,6 +2411,8 @@ export async function updateAIProvider(
     api_key?: string | null;
     base_url?: string | null;
     enabled?: boolean;
+    /** Which backends this provider is used for (e.g., ["opencode", "claudecode"]) */
+    use_for_backends?: string[];
   }
 ): Promise<AIProvider> {
   const res = await apiFetch(`/api/ai/providers/${id}`, {
@@ -2422,6 +2428,27 @@ export async function updateAIProvider(
 export async function deleteAIProvider(id: string): Promise<void> {
   const res = await apiFetch(`/api/ai/providers/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed to delete AI provider");
+}
+
+// Provider credentials for a backend
+export interface BackendProviderResponse {
+  configured: boolean;
+  provider_type: string | null;
+  provider_name: string | null;
+  api_key: string | null;
+  oauth: {
+    access_token: string;
+    refresh_token: string;
+    expires_at: number;
+  } | null;
+  has_credentials: boolean;
+}
+
+// Get provider credentials for a specific backend (e.g., "claudecode")
+export async function getProviderForBackend(backendId: string): Promise<BackendProviderResponse> {
+  const res = await apiFetch(`/api/ai/providers/for-backend/${backendId}`);
+  if (!res.ok) throw new Error("Failed to get provider for backend");
+  return res.json();
 }
 
 // Authenticate provider (initiate OAuth or check API key)
@@ -2460,11 +2487,20 @@ export async function oauthAuthorize(id: string, methodIndex: number): Promise<O
 }
 
 // Complete OAuth flow with authorization code
-export async function oauthCallback(id: string, methodIndex: number, code: string): Promise<AIProvider> {
+export async function oauthCallback(
+  id: string,
+  methodIndex: number,
+  code: string,
+  useForBackends?: string[]
+): Promise<AIProvider> {
   const res = await apiFetch(`/api/ai/providers/${id}/oauth/callback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ method_index: methodIndex, code }),
+    body: JSON.stringify({
+      method_index: methodIndex,
+      code,
+      use_for_backends: useForBackends,
+    }),
   });
   if (!res.ok) {
     const error = await res.text();
