@@ -261,9 +261,19 @@ impl ClaudeCodeClient {
             .arg("--include-partial-messages")
             .arg("--dangerously-skip-permissions");
 
-        // Set API key if configured
-        if let Some(ref api_key) = self.config.api_key {
-            cmd.env("ANTHROPIC_API_KEY", api_key);
+        // Set API key or OAuth token if configured
+        // OAuth tokens start with "sk-ant-oat" and must use CLAUDE_CODE_OAUTH_TOKEN
+        // API keys start with "sk-ant-api" and use ANTHROPIC_API_KEY
+        if let Some(ref key) = self.config.api_key {
+            if key.starts_with("sk-ant-oat") {
+                // OAuth access token
+                cmd.env("CLAUDE_CODE_OAUTH_TOKEN", key);
+                debug!("Using OAuth token for Claude CLI authentication");
+            } else {
+                // Regular API key
+                cmd.env("ANTHROPIC_API_KEY", key);
+                debug!("Using API key for Claude CLI authentication");
+            }
         }
 
         // Model selection
