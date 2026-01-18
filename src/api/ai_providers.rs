@@ -137,14 +137,18 @@ pub fn routes() -> Router<Arc<super::routes::AppState>> {
 // Public API for Backend Access
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Get the Anthropic API key for the Claude Code backend.
+/// Get the Anthropic API key or OAuth access token for the Claude Code backend.
 ///
 /// This checks if the Anthropic provider has "claudecode" in its use_for_backends
-/// configuration and returns the API key if available.
+/// configuration and returns the API key or OAuth access token if available.
+///
+/// Credential sources checked (in order):
+/// 1. OpenCode auth.json (API key or OAuth)
+/// 2. Open Agent ai_providers.json (API key or OAuth)
 ///
 /// Returns None if:
 /// - Anthropic provider is not configured for claudecode
-/// - No API key is set (OAuth-only auth)
+/// - No credentials are available (neither API key nor OAuth)
 /// - Any error occurs reading the config
 pub fn get_anthropic_api_key_for_claudecode(working_dir: &Path) -> Option<String> {
     // Read the OpenCode config to check use_for_backends
@@ -163,11 +167,21 @@ pub fn get_anthropic_api_key_for_claudecode(working_dir: &Path) -> Option<String
         return None;
     }
 
-    // Get the API key from auth.json
+    // Try to get credentials from OpenCode auth.json first
+    if let Some(key) = get_anthropic_key_from_opencode_auth() {
+        return Some(key);
+    }
+
+    // Fall back to ai_providers.json
+    get_anthropic_key_from_ai_providers(working_dir)
+}
+
+/// Get Anthropic API key or OAuth access token from OpenCode auth.json.
+fn get_anthropic_key_from_opencode_auth() -> Option<String> {
     let auth = read_opencode_auth().ok()?;
     let anthropic_auth = auth.get("anthropic")?;
 
-    // Check for API key (not OAuth)
+    // Check for API key first
     let auth_type = anthropic_auth.get("type").and_then(|v| v.as_str());
     match auth_type {
         Some("api_key") | Some("api") => {
@@ -177,14 +191,62 @@ pub fn get_anthropic_api_key_for_claudecode(working_dir: &Path) -> Option<String
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         }
-        _ => {
-            // Also check without type field
+        Some("oauth") => {
+            // Return OAuth access token - Claude CLI can use this
             anthropic_auth
-                .get("key")
+                .get("access")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        }
+        _ => {
+            // Check without type field - try key first, then OAuth access token
+            if let Some(key) = anthropic_auth.get("key").and_then(|v| v.as_str()) {
+                return Some(key.to_string());
+            }
+            // Fall back to OAuth access token
+            anthropic_auth
+                .get("access")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         }
     }
+}
+
+/// Get Anthropic API key or OAuth access token from Open Agent's ai_providers.json.
+fn get_anthropic_key_from_ai_providers(working_dir: &Path) -> Option<String> {
+    let ai_providers_path = working_dir.join(".openagent/ai_providers.json");
+    if !ai_providers_path.exists() {
+        return None;
+    }
+
+    let contents = std::fs::read_to_string(&ai_providers_path).ok()?;
+    let providers: Vec<serde_json::Value> = serde_json::from_str(&contents).ok()?;
+
+    // Find Anthropic provider
+    for provider in providers {
+        let provider_type = provider.get("provider_type").and_then(|v| v.as_str());
+        if provider_type != Some("anthropic") {
+            continue;
+        }
+
+        // Check for API key first
+        if let Some(api_key) = provider.get("api_key").and_then(|v| v.as_str()) {
+            if !api_key.is_empty() {
+                return Some(api_key.to_string());
+            }
+        }
+
+        // Check for OAuth access token
+        if let Some(oauth) = provider.get("oauth") {
+            if let Some(access_token) = oauth.get("access_token").and_then(|v| v.as_str()) {
+                if !access_token.is_empty() {
+                    return Some(access_token.to_string());
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Check if the Anthropic provider is configured for the Claude Code backend.
