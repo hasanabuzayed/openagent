@@ -258,8 +258,8 @@ impl ClaudeCodeClient {
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
-            .arg("--include-partial-messages")
-            .arg("--dangerously-skip-permissions");
+            .arg("--include-partial-messages");
+        // Note: --dangerously-skip-permissions cannot be used when running as root
 
         // Set API key or OAuth token if configured
         // OAuth tokens start with "sk-ant-oat" and must use CLAUDE_CODE_OAUTH_TOKEN
