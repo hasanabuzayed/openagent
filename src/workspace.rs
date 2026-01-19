@@ -902,14 +902,19 @@ async fn write_claudecode_config(
     // Add permissive settings to avoid permission prompts for both workspace types.
     // For container workspaces, the environment is isolated.
     // For host workspaces, the user has explicitly chosen to run missions on host.
+    //
+    // IMPORTANT: Claude Code permission syntax:
+    // - "Bash" (no parentheses) allows ALL bash commands
+    // - "Bash(*)" does NOT work as a wildcard - it's a literal pattern
+    // - "mcp__*" works for MCP tools as a wildcard
     let settings = json!({
         "mcpServers": mcp_servers,
         "permissions": {
             "allow": [
-                "Bash(*)",
-                "Edit(*)",
-                "Write(*)",
-                "Read(*)",
+                "Bash",
+                "Edit",
+                "Write",
+                "Read",
                 "mcp__*"
             ]
         }
