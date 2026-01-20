@@ -46,14 +46,14 @@ What if you could:
 - **Mission Control**: Start, stop, and monitor agents remotely with real-time streaming
 - **Isolated Workspaces**: Containerized Linux environments (systemd-nspawn) with per-mission directories
 - **Git-backed Library**: Skills, tools, rules, agents, and MCPs versioned in a single repo
-- **MCP Registry**: Global MCP servers running on the host, available to all workspaces
+- **MCP Registry (optional)**: Extra tool servers (desktop/playwright/etc.) when needed
 - **Multi-platform**: Web dashboard (Next.js) and iOS app (SwiftUI) with Picture-in-Picture
 
 ---
 
 ## Ecosystem
 
-Open Agent is a control plane for [**OpenCode**](https://github.com/anomalyco/opencode), the open-source AI coding agent. It delegates all model inference and autonomous execution to OpenCode while handling orchestration, workspace isolation, and configuration management.
+Open Agent is a control plane for [**OpenCode**](https://github.com/anomalyco/opencode) and Claude Code. It executes harnesses inside each workspace so native bash and file effects are scoped correctly, while Open Agent handles orchestration, workspace isolation, and configuration management.
 
 Works great with [**oh-my-opencode**](https://github.com/code-yeongyu/oh-my-opencode) for enhanced agent capabilities and prebuilt skill packs.
 
@@ -98,11 +98,13 @@ If you feel smarter than the AI, check out **[INSTALL.md](./INSTALL.md)**.
 
 ### Local Development
 
-**Backend**:
+**Backend** (local dev):
 ```bash
 export OPENCODE_BASE_URL="http://127.0.0.1:4096"
 cargo run
 ```
+
+`OPENCODE_BASE_URL` is optional for mission execution (per-workspace CLI is used). Keep it set if you rely on a shared OpenCode server for provider/auth management.
 
 **Dashboard**:
 ```bash

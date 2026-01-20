@@ -49,7 +49,9 @@ curl -fsSL https://sh.rustup.rs | sh -s -- -y
 source /root/.cargo/env
 ```
 
-### 2. Install OpenCode
+### 2. Install OpenCode (optional server backend)
+
+OpenCode server is optional for mission execution. Open Agent runs OpenCode per-workspace via the CLI. Install the server if you want centralized provider/auth management or health checks.
 
 ```bash
 curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
@@ -64,10 +66,13 @@ cd /opt/open_agent
 git clone https://github.com/Th0rgal/open-agent vaduz-v1
 cd vaduz-v1
 
-cargo build --bin open_agent --bin workspace-mcp --bin desktop-mcp
+cargo build --bin open_agent
 install -m 0755 target/debug/open_agent /usr/local/bin/open_agent
-install -m 0755 target/debug/workspace-mcp /usr/local/bin/workspace-mcp
-install -m 0755 target/debug/desktop-mcp /usr/local/bin/desktop-mcp
+
+# Optional: legacy MCP helpers
+# cargo build --bin workspace-mcp --bin desktop-mcp
+# install -m 0755 target/debug/workspace-mcp /usr/local/bin/workspace-mcp
+# install -m 0755 target/debug/desktop-mcp /usr/local/bin/desktop-mcp
 ```
 
 ### 4. Configure
@@ -77,7 +82,7 @@ Create `/etc/open_agent/open_agent.env`:
 ```bash
 mkdir -p /etc/open_agent
 cat > /etc/open_agent/open_agent.env << 'EOF'
-OPENCODE_BASE_URL=http://127.0.0.1:4096
+OPENCODE_BASE_URL=http://127.0.0.1:4096  # optional when using per-workspace CLI
 OPENCODE_PERMISSIVE=true
 HOST=0.0.0.0
 PORT=3000
@@ -90,7 +95,7 @@ EOF
 
 ### 5. Create systemd services
 
-**OpenCode** (`/etc/systemd/system/opencode.service`):
+**OpenCode** (`/etc/systemd/system/opencode.service`, optional):
 
 ```ini
 [Unit]

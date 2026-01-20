@@ -1,90 +1,73 @@
 # Harness System
 
-Open Agent supports multiple execution backends (harnesses) for running agent missions. This document explains the harness architecture, configuration, and how to add new backends.
+Open Agent supports multiple execution backends ("harnesses") for running agent
+missions. The current architecture is **per-workspace execution**: OpenCode and
+Claude Code run inside the selected workspace (host, container, or remote).
+
+This document explains the harness architecture, configuration, and how to add
+new backends.
 
 ## Overview
 
-A **harness** (also called a backend) is an execution engine that runs agent missions. Open Agent currently supports:
+A **harness** (also called a backend) is an execution engine that runs agent
+missions. Open Agent currently supports:
 
 | Harness | Description | Configuration Model |
 |---------|-------------|---------------------|
-| **OpenCode** | OpenCode-based execution with custom agents | Centralized (`oh-my-opencode.json`) |
-| **Claude Code** | Claude CLI subprocess execution | Workspace-centric (`CLAUDE.md`, `.claude/settings.local.json`) |
+| **OpenCode** | OpenCode CLI executed inside each workspace | Per-workspace (`opencode.json`, `.opencode/`) |
+| **Claude Code** | Claude CLI executed inside each workspace | Per-workspace (`CLAUDE.md`, `.claude/settings.local.json`) |
 
-## Architecture
+## Architecture (per-workspace)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Mission Runner                           │
-│                     (src/api/mission_runner.rs)                  │
+│                         Mission Runner                          │
+│                   (src/api/mission_runner.rs)                   │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                       Backend Trait                              │
-│                     (src/backend/mod.rs)                         │
-│  - id() / name()                                                 │
-│  - list_agents()                                                 │
-│  - create_session()                                              │
-│  - send_message_streaming()                                      │
-└──────────────┬─────────────────────────────────┬────────────────┘
-               │                                 │
-               ▼                                 ▼
+│                     Workspace Execution Layer                   │
+│                 (src/workspace_exec.rs)                         │
+│  - host: spawn process directly                                 │
+│  - chroot: systemd-nspawn                                        │
+│  - ssh: remote exec                                             │
+└──────────────┬───────────────────────────────┬──────────────────┘
+               │                               │
+               ▼                               ▼
 ┌──────────────────────────┐    ┌──────────────────────────────────┐
-│     OpenCodeBackend      │    │      ClaudeCodeBackend           │
-│  (src/backend/opencode/) │    │   (src/backend/claudecode/)      │
-│                          │    │                                   │
-│  - HTTP/SSE to OpenCode  │    │  - Subprocess to Claude CLI      │
-│  - oh-my-opencode agents │    │  - Built-in Claude agents        │
+│     OpenCode CLI          │    │      Claude Code CLI            │
+│  (oh-my-opencode run)     │    │      (claude --stream-json)     │
+│  - embedded server        │    │      - built-in agents          │
+│  - per-workspace config   │    │      - per-workspace config     │
 └──────────────────────────┘    └──────────────────────────────────┘
 ```
 
-## Backend Trait
+### Key properties
 
-All backends implement the `Backend` trait defined in `src/backend/mod.rs`:
+- **Native bash works** because the harness runs inside the workspace.
+- **No host proxy bash tools** are required for standard missions.
+- **Per-workspace isolation** prevents cross-workspace file effects.
 
-```rust
-#[async_trait]
-pub trait Backend: Send + Sync {
-    fn id(&self) -> &str;
-    fn name(&self) -> &str;
-    async fn list_agents(&self) -> Result<Vec<AgentInfo>, Error>;
-    async fn create_session(&self, config: SessionConfig) -> Result<Session, Error>;
-    async fn send_message_streaming(
-        &self,
-        session: &Session,
-        message: &str,
-    ) -> Result<(mpsc::Receiver<ExecutionEvent>, JoinHandle<()>), Error>;
-}
-```
+## Backend registry (metadata)
 
-### ExecutionEvent
+Open Agent still maintains a backend registry for:
 
-Backends emit a unified event stream:
+- listing agents
+- backend configuration UI
+- provider/auth settings
 
-| Event | Description |
-|-------|-------------|
-| `Thinking { content }` | Agent reasoning/thinking text |
-| `TextDelta { content }` | Streaming text delta |
-| `ToolCall { id, name, args }` | Tool invocation |
-| `ToolResult { id, name, result }` | Tool execution result |
-| `MessageComplete { session_id }` | Message/turn complete |
-| `Error { message }` | Error occurred |
+Execution itself is handled by the mission runner via the workspace execution
+layer, not by a centralized OpenCode server.
 
-## OpenCode Backend
+## OpenCode harness
 
-OpenCode is the default backend that communicates with an OpenCode server via HTTP/SSE.
+OpenCode is executed **per workspace** using the CLI:
 
-### Configuration
-
-**Settings page** → Backends → OpenCode:
-- **Base URL**: OpenCode server endpoint (default: `http://127.0.0.1:4096`)
-- **Default Agent**: Pre-selected agent for new missions
-- **Permissive Mode**: Auto-allow tool permissions
-
-**Library page** → Configs → OpenCode tab:
-- Edit `oh-my-opencode.json` for agent definitions, models, and plugins
-- Configure agent visibility in mission dialogs
+- Uses `oh-my-opencode run` to start an embedded OpenCode server.
+- Reads config from `opencode.json` and `.opencode/opencode.json`.
+- `oh-my-opencode.json` is synced into each workspace.
+- Built-in `bash` is enabled; legacy `workspace_*` tools are disabled by default.
 
 ### Agents
 
@@ -103,38 +86,15 @@ OpenCode agents are defined in `oh-my-opencode.json`:
 }
 ```
 
-## Claude Code Backend
+## Claude Code harness
 
-Claude Code executes missions via the Claude CLI subprocess with JSON streaming.
+Claude Code is executed **per workspace** using the CLI:
 
-### Configuration
+- `.claude/settings.local.json` defines MCP servers and tool permissions.
+- `CLAUDE.md` provides per-workspace context (generated from Library skills).
+- Built-in `Bash` is enabled in the permissions allowlist.
 
-**Settings page** → Backends → Claude Code:
-- **API Key**: Anthropic API key (stored in secrets vault)
-- **Default Model**: Model for missions (e.g., `claude-sonnet-4-20250514`)
-- **CLI Path**: Path to Claude CLI executable (default: `claude` from PATH)
-
-### Workspace Configuration
-
-Unlike OpenCode's centralized config, Claude Code generates configuration per-workspace from your Library:
-
-| Generated File | Source | Purpose |
-|----------------|--------|---------|
-| `CLAUDE.md` | `skills/*.md` | System prompt and context |
-| `.claude/settings.local.json` | `mcps/`, `tools/` | MCP servers and tool permissions |
-
-### Agents
-
-Claude Code has built-in agents:
-
-| Agent | Description |
-|-------|-------------|
-| `general-purpose` | General-purpose coding agent |
-| `Bash` | Shell command specialist |
-| `Explore` | Codebase exploration |
-| `Plan` | Implementation planning |
-
-### CLI Protocol
+### CLI protocol (NDJSON)
 
 Claude Code communicates via NDJSON streaming:
 
@@ -144,52 +104,39 @@ echo "prompt" | claude \
   --output-format stream-json \
   --verbose \
   --include-partial-messages \
-  --dangerously-skip-permissions \
   --model "claude-sonnet-4-20250514" \
   --session-id "uuid"
 ```
 
 Event types:
-- `system` (init) → Session initialization
-- `stream_event` → Streaming deltas
-- `assistant` → Complete messages and tool calls
-- `user` → Tool results
-- `result` → Final completion
+- `system` (init)
+- `stream_event` (deltas)
+- `assistant` (final content + tool calls)
+- `user` (tool results)
+- `result` (completion)
 
-## Enabling/Disabling Backends
+## Tool policy
 
-Backends can be enabled or disabled in Settings → Backends. Disabled backends:
-- Don't appear in mission creation dialogs
-- Don't appear in Library Configs tabs
-- Cannot be selected for new missions
+Default per-workspace tool settings:
 
-## Adding a New Backend
+- **OpenCode**: built-in `bash` enabled; `workspace_*` disabled by default.
+- **Claude Code**: built-in `Bash` enabled via permissions.
+
+MCP tools (desktop/playwright/workspace) can be enabled when needed.
+
+## Adding a new backend
 
 To add a new backend (e.g., Codex):
 
-1. **Create backend module**: `src/backend/codex/mod.rs`
-   - Implement `Backend` trait
-   - Define event parsing and conversion
+1. Create a backend module under `src/backend/<backend>/`.
+2. Register it in `src/api/routes.rs` for metadata/UI.
+3. Implement a per-workspace execution path in the mission runner.
+4. Update the dashboard to expose backend-specific settings.
 
-2. **Register in routes.rs**:
-   ```rust
-   backend_registry.write().await.register(
-       crate::backend::codex::registry_entry()
-   );
-   ```
+## Mission runner integration
 
-3. **Add API endpoints** in `src/api/backends.rs`:
-   - GET/PUT config handlers
-   - Secrets management
-
-4. **Update dashboard**:
-   - Add tab to Settings → Backends
-   - Add tab to Library → Configs
-   - Update mission creation dialog
-
-## Mission Runner Integration
-
-The mission runner (`src/api/mission_runner.rs`) selects the backend based on `backend_id`:
+The mission runner selects the harness based on `backend_id` and spawns the CLI
+inside the workspace execution context:
 
 ```rust
 let result = match backend_id.as_str() {
@@ -198,29 +145,3 @@ let result = match backend_id.as_str() {
     _ => Err(anyhow!("Unknown backend")),
 };
 ```
-
-Each backend handles its own:
-- Session management
-- Message execution
-- Event streaming
-- Error handling
-
-## Secrets Management
-
-Backend API keys are stored in the secrets vault:
-
-| Backend | Secret Key |
-|---------|------------|
-| Claude Code | `claudecode.api_key` |
-| OpenCode | Configured via AI Providers |
-
-Access via: `secrets.get_secret("claudecode", "api_key")`
-
-## References
-
-- Backend trait: `src/backend/mod.rs`
-- OpenCode backend: `src/backend/opencode/`
-- Claude Code backend: `src/backend/claudecode/`
-- Mission runner: `src/api/mission_runner.rs`
-- Backend API: `src/api/backends.rs`
-- Workspace config generation: `src/workspace.rs`

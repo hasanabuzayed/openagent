@@ -1,8 +1,8 @@
 # Installing Open Agent (Ubuntu 24.04, dedicated server)
 
-This is the installation approach currently used on a **dedicated Ubuntu 24.04 server** (OpenCode + Open Agent running on the same machine, managed by `systemd`).
+This is the installation approach currently used on a **dedicated Ubuntu 24.04 server** (Open Agent + optional OpenCode server on the same machine, managed by `systemd`).
 
-Open Agent is the orchestrator/UI backend. **It does not run model inference**; it delegates execution to an **OpenCode server** running locally (default `http://127.0.0.1:4096`).
+Open Agent is the orchestrator/UI backend. **It does not run model inference**; it executes OpenCode and Claude Code **inside each workspace** (host/chroot/ssh), so native bash and file effects are scoped correctly. A standalone OpenCode server is **optional** and only required if you want centralized OpenCode services (provider/auth management, health checks, etc.).
 
 > **For AI Agents**: Before starting this installation, ask the user to provide:
 > 1. **Server IP address** (e.g., `95.216.112.253`)
@@ -38,8 +38,8 @@ Open Agent is the orchestrator/UI backend. **It does not run model inference**; 
 - Ubuntu 24.04 LTS, root SSH access
 - A dedicated server (not shared hosting)
 - You want:
-  - OpenCode server bound to localhost: `127.0.0.1:4096`
   - Open Agent bound to: `0.0.0.0:3000`
+  - (Optional) OpenCode server bound to localhost: `127.0.0.1:4096`
 - You have a Git repo for your **Library** (skills/tools/agents/rules/MCP configs)
 
 > **Recommendation**: Unless you know exactly what you need, install **all components** in this guide:
@@ -158,7 +158,9 @@ bunx --version
 
 ---
 
-## 3) Install OpenCode (server backend)
+## 3) Install OpenCode (optional server backend)
+
+OpenCode server is optional for mission execution. Open Agent runs OpenCode per-workspace via the CLI. Install the server if you want centralized provider/auth management, health checks, or a shared OpenCode service.
 
 ### 3.1 Install/Update the OpenCode binary
 
@@ -182,6 +184,8 @@ opencode --version
 ```
 
 ### 3.2 Create `systemd` unit for OpenCode
+
+Skip this section if you are not running a centralized OpenCode server.
 
 Create `/etc/systemd/system/opencode.service`:
 
@@ -349,14 +353,15 @@ cd /opt/open_agent/vaduz-v1
 source /root/.cargo/env
 
 # Debug build (fast) - recommended for rapid iteration
-cargo build --bin open_agent --bin workspace-mcp --bin desktop-mcp
+cargo build --bin open_agent
 install -m 0755 target/debug/open_agent /usr/local/bin/open_agent
-install -m 0755 target/debug/workspace-mcp /usr/local/bin/workspace-mcp
-install -m 0755 target/debug/desktop-mcp /usr/local/bin/desktop-mcp
 
 # Or: Release build (slower compile, faster runtime)
-# cargo build --release --bin open_agent --bin workspace-mcp --bin desktop-mcp
+# cargo build --release --bin open_agent
 # install -m 0755 target/release/open_agent /usr/local/bin/open_agent
+
+# Optional: build MCP helpers if you want legacy workspace/desktop tools
+# cargo build --release --bin workspace-mcp --bin desktop-mcp
 # install -m 0755 target/release/workspace-mcp /usr/local/bin/workspace-mcp
 # install -m 0755 target/release/desktop-mcp /usr/local/bin/desktop-mcp
 ```
@@ -417,7 +422,7 @@ Example (fill in your real values):
 
 ```bash
 cat > /etc/open_agent/open_agent.env <<'EOF'
-# OpenCode backend (must match opencode.service)
+# OpenCode backend (optional; if set, must match opencode.service)
 OPENCODE_BASE_URL=http://127.0.0.1:4096
 OPENCODE_PERMISSIVE=true
 # Optional: keep Open Agent writing OpenCode global config into the isolated home
@@ -626,6 +631,14 @@ install -m 0755 target/debug/desktop-mcp /usr/local/bin/desktop-mcp
 systemctl restart open_agent.service
 ```
 
+Optional: if you no longer use legacy workspace/desktop MCP tools, build only `open_agent`:
+
+```bash
+cargo build --bin open_agent
+install -m 0755 target/debug/open_agent /usr/local/bin/open_agent
+systemctl restart open_agent.service
+```
+
 Or to follow the latest master branch:
 
 ```bash
@@ -634,7 +647,7 @@ git pull origin master
 # ... build and install as above
 ```
 
-### 9.3 Update OpenCode (replace binary, restart service)
+### 9.3 Update OpenCode (optional server binary)
 
 ```bash
 # Optionally pin a version
