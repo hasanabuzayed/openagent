@@ -204,7 +204,8 @@ fn get_configured_provider_ids() -> HashSet<String> {
                 for (key, value) in map {
                     if has_valid_auth(value) {
                         tracing::debug!("Found valid auth for provider '{}' in auth.json", key);
-                        configured.insert(key.clone());
+                        let normalized = if key == "codex" { "openai" } else { key };
+                        configured.insert(normalized.to_string());
                     }
                 }
             }

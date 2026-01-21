@@ -136,6 +136,7 @@ impl ProviderType {
         match id {
             "anthropic" => Some(Self::Anthropic),
             "openai" => Some(Self::OpenAI),
+            "codex" => Some(Self::OpenAI),
             "google" => Some(Self::Google),
             "amazon-bedrock" => Some(Self::AmazonBedrock),
             "azure" => Some(Self::Azure),

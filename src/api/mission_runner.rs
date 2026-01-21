@@ -1295,7 +1295,7 @@ fn detect_opencode_provider_auth() -> (bool, bool, bool) {
     if let Some(path) = host_opencode_auth_path() {
         if let Ok(contents) = std::fs::read_to_string(path) {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&contents) {
-                has_openai |= parsed.get("openai").is_some();
+                has_openai |= parsed.get("openai").is_some() || parsed.get("codex").is_some();
                 has_anthropic |= parsed.get("anthropic").is_some();
                 has_google |= parsed.get("google").is_some();
             }
@@ -1561,6 +1561,97 @@ fn ensure_opencode_plugin_specs(
         ) {
             tracing::warn!(
                 "Failed to update OpenCode plugin config at {}: {}",
+                opencode_path.display(),
+                err
+            );
+        }
+    }
+}
+
+fn detect_google_project_id() -> Option<String> {
+    for key in [
+        "OPEN_AGENT_GOOGLE_PROJECT_ID",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_PROJECT_ID",
+        "GCP_PROJECT",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn ensure_opencode_google_project_id(opencode_config_dir: &std::path::Path, project_id: &str) {
+    if project_id.trim().is_empty() {
+        return;
+    }
+
+    let opencode_path = opencode_config_dir.join("opencode.json");
+    let mut root = if opencode_path.exists() {
+        match std::fs::read_to_string(&opencode_path)
+            .ok()
+            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+        {
+            Some(value) => value,
+            None => serde_json::json!({}),
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let mut updated = false;
+    let provider_obj = root
+        .as_object_mut()
+        .and_then(|obj| {
+            obj.entry("provider".to_string())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                .as_object_mut()
+        });
+
+    let Some(provider_obj) = provider_obj else {
+        return;
+    };
+
+    let google_obj = provider_obj
+        .entry("google".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let google_obj = google_obj.as_object_mut();
+
+    let Some(google_obj) = google_obj else {
+        return;
+    };
+
+    let options_obj = google_obj
+        .entry("options".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let options_obj = options_obj.as_object_mut();
+
+    let Some(options_obj) = options_obj else {
+        return;
+    };
+
+    match options_obj.get("projectId").and_then(|v| v.as_str()) {
+        Some(existing) if existing == project_id => {}
+        _ => {
+            options_obj.insert(
+                "projectId".to_string(),
+                serde_json::Value::String(project_id.to_string()),
+            );
+            updated = true;
+        }
+    }
+
+    if updated {
+        if let Err(err) = std::fs::write(
+            &opencode_path,
+            serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".to_string()),
+        ) {
+            tracing::warn!(
+                "Failed to update OpenCode Google projectId at {}: {}",
                 opencode_path.display(),
                 err
             );
@@ -2010,25 +2101,28 @@ fn build_opencode_auth_from_ai_providers(
             crate::ai_providers::ProviderType::OpenAI
             | crate::ai_providers::ProviderType::Anthropic
             | crate::ai_providers::ProviderType::Google => {
-                let key = provider.provider_type.id();
+                let keys: Vec<&str> = match provider.provider_type {
+                    crate::ai_providers::ProviderType::OpenAI => vec!["openai", "codex"],
+                    _ => vec![provider.provider_type.id()],
+                };
                 if let Some(api_key) = provider.api_key {
-                    map.insert(
-                        key.to_string(),
-                        serde_json::json!({
-                            "type": "api_key",
-                            "key": api_key,
-                        }),
-                    );
+                    let entry = serde_json::json!({
+                        "type": "api_key",
+                        "key": api_key,
+                    });
+                    for key in &keys {
+                        map.insert((*key).to_string(), entry.clone());
+                    }
                 } else if let Some(oauth) = provider.oauth {
-                    map.insert(
-                        key.to_string(),
-                        serde_json::json!({
-                            "type": "oauth",
-                            "refresh": oauth.refresh_token,
-                            "access": oauth.access_token,
-                            "expires": oauth.expires_at,
-                        }),
-                    );
+                    let entry = serde_json::json!({
+                        "type": "oauth",
+                        "refresh": oauth.refresh_token,
+                        "access": oauth.access_token,
+                        "expires": oauth.expires_at,
+                    });
+                    for key in &keys {
+                        map.insert((*key).to_string(), entry.clone());
+                    }
                 }
             }
             _ => {}
@@ -2138,7 +2232,12 @@ fn sync_opencode_auth_to_workspace(
     {
         let provider_entries = [("openai", "OpenAI"), ("anthropic", "Anthropic"), ("google", "Google")];
         for (key, label) in provider_entries {
-            if let Some(entry) = value.get(key) {
+            let entry = if key == "openai" {
+                value.get("openai").or_else(|| value.get("codex"))
+            } else {
+                value.get(key)
+            };
+            if let Some(entry) = entry {
                 let dest = dest_dir.join(format!("{}.json", key));
                 if let Err(e) = write_json_file(&dest, entry) {
                     tracing::warn!(
@@ -2174,7 +2273,7 @@ fn apply_opencode_auth_env(
 ) -> Vec<&'static str> {
     let mut providers = Vec::new();
 
-    if let Some(entry) = auth.get("openai") {
+    if let Some(entry) = auth.get("openai").or_else(|| auth.get("codex")) {
         if let Some(key) = extract_opencode_api_key(entry) {
             env.entry("OPENAI_API_KEY".to_string()).or_insert(key);
             providers.push("openai");
@@ -2732,6 +2831,9 @@ pub async fn run_opencode_turn(
     sync_opencode_agent_config(&opencode_config_dir_host, resolved_model.as_deref());
     let (_has_openai, _has_anthropic, has_google) = detect_opencode_provider_auth();
     if has_google {
+        if let Some(project_id) = detect_google_project_id() {
+            ensure_opencode_google_project_id(&opencode_config_dir_host, &project_id);
+        }
         let gemini_plugin = "opencode-gemini-auth@latest";
         ensure_opencode_plugin_specs(&opencode_config_dir_host, &[gemini_plugin]);
         ensure_opencode_plugin_installed(
@@ -2836,6 +2938,13 @@ pub async fn run_opencode_turn(
         "OPENCODE_CONFIG".to_string(),
         opencode_config_path.to_string_lossy().to_string(),
     );
+
+    if let Some(project_id) = detect_google_project_id() {
+        env.entry("GOOGLE_CLOUD_PROJECT".to_string())
+            .or_insert_with(|| project_id.clone());
+        env.entry("GOOGLE_PROJECT_ID".to_string())
+            .or_insert(project_id);
+    }
 
     if let Some(permissive) = get_opencode_permissive_from_config(app_working_dir) {
         env.insert("OPENCODE_PERMISSIVE".to_string(), permissive.to_string());

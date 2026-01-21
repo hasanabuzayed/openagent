@@ -523,9 +523,11 @@ fn sync_to_opencode_auth(
         serde_json::Map::new()
     };
 
-    // Map our provider type to OpenCode's key
-    let key = opencode_auth_key(provider_type)
-        .ok_or_else(|| "Provider does not map to an OpenCode auth key".to_string())?;
+    // Map our provider type to OpenCode's key(s)
+    let keys = opencode_auth_keys(provider_type);
+    if keys.is_empty() {
+        return Err("Provider does not map to an OpenCode auth key".to_string());
+    }
 
     // Create the auth entry in OpenCode format
     let entry = serde_json::json!({
@@ -535,7 +537,9 @@ fn sync_to_opencode_auth(
         "expires": expires_at
     });
 
-    auth.insert(key.to_string(), entry.clone());
+    for key in &keys {
+        auth.insert((*key).to_string(), entry.clone());
+    }
 
     // Write back to file
     let contents = serde_json::to_string_pretty(&auth)
@@ -553,8 +557,8 @@ fn sync_to_opencode_auth(
     }
 
     tracing::info!(
-        "Synced OAuth credentials to OpenCode auth.json for provider: {}",
-        key
+        "Synced OAuth credentials to OpenCode auth.json for provider keys: {:?}",
+        keys
     );
 
     Ok(())
@@ -569,22 +573,28 @@ struct OAuthTokenEntry {
 
 fn read_oauth_token_entry(provider_type: ProviderType) -> Option<OAuthTokenEntry> {
     let auth = read_opencode_auth().ok()?;
-    let key = opencode_auth_key(provider_type)?;
-    let entry = auth.get(key)?;
-    let auth_type = entry.get("type").and_then(|v| v.as_str());
-    if auth_type != Some("oauth") {
-        return None;
+    for key in opencode_auth_keys(provider_type) {
+        let entry = match auth.get(key) {
+            Some(entry) => entry,
+            None => continue,
+        };
+        let auth_type = entry.get("type").and_then(|v| v.as_str());
+        if auth_type != Some("oauth") {
+            continue;
+        }
+
+        let refresh_token = entry.get("refresh").and_then(|v| v.as_str())?;
+        let access_token = entry.get("access").and_then(|v| v.as_str()).unwrap_or("");
+        let expires_at = entry.get("expires").and_then(|v| v.as_i64()).unwrap_or(0);
+
+        return Some(OAuthTokenEntry {
+            refresh_token: refresh_token.to_string(),
+            access_token: access_token.to_string(),
+            expires_at,
+        });
     }
 
-    let refresh_token = entry.get("refresh").and_then(|v| v.as_str())?;
-    let access_token = entry.get("access").and_then(|v| v.as_str()).unwrap_or("");
-    let expires_at = entry.get("expires").and_then(|v| v.as_i64()).unwrap_or(0);
-
-    Some(OAuthTokenEntry {
-        refresh_token: refresh_token.to_string(),
-        access_token: access_token.to_string(),
-        expires_at,
-    })
+    None
 }
 
 fn oauth_token_expired(expires_at: i64) -> bool {
@@ -888,17 +898,19 @@ fn sync_api_key_to_opencode_auth(provider_type: ProviderType, api_key: &str) -> 
         serde_json::Map::new()
     };
 
-    let key = match opencode_auth_key(provider_type) {
-        Some(key) => key,
-        None => return Ok(()),
-    };
+    let keys = opencode_auth_keys(provider_type);
+    if keys.is_empty() {
+        return Ok(());
+    }
 
     let entry = serde_json::json!({
         "type": "api_key",
         "key": api_key
     });
 
-    auth.insert(key.to_string(), entry);
+    for key in &keys {
+        auth.insert((*key).to_string(), entry.clone());
+    }
 
     let contents = serde_json::to_string_pretty(&auth)
         .map_err(|e| format!("Failed to serialize OpenCode auth: {}", e))?;
@@ -918,7 +930,10 @@ fn sync_api_key_to_opencode_auth(provider_type: ProviderType, api_key: &str) -> 
         }
     }
 
-    tracing::info!("Synced API key to OpenCode auth.json for provider: {}", key);
+    tracing::info!(
+        "Synced API key to OpenCode auth.json for provider keys: {:?}",
+        keys
+    );
 
     Ok(())
 }
@@ -947,12 +962,19 @@ fn remove_opencode_auth_entry(provider_type: ProviderType) -> Result<(), String>
         serde_json::from_str(&contents).unwrap_or_default()
     };
 
-    let key = match opencode_auth_key(provider_type) {
-        Some(key) => key,
-        None => return Ok(()),
-    };
+    let keys = opencode_auth_keys(provider_type);
+    if keys.is_empty() {
+        return Ok(());
+    }
 
-    if auth.remove(key).is_some() {
+    let mut changed = false;
+    for key in &keys {
+        if auth.remove(*key).is_some() {
+            changed = true;
+        }
+    }
+
+    if changed {
         let contents = serde_json::to_string_pretty(&auth)
             .map_err(|e| format!("Failed to serialize OpenCode auth: {}", e))?;
         std::fs::write(&auth_path, contents)
@@ -1067,12 +1089,14 @@ fn write_opencode_provider_auth_file(
     Ok(())
 }
 
-fn opencode_auth_key(provider_type: ProviderType) -> Option<&'static str> {
+fn opencode_auth_keys(provider_type: ProviderType) -> Vec<&'static str> {
     match provider_type {
-        ProviderType::Custom => None,
-        _ => Some(provider_type.id()),
+        ProviderType::Custom => Vec::new(),
+        ProviderType::OpenAI => vec!["openai", "codex"],
+        _ => vec![provider_type.id()],
     }
 }
+
 
 fn get_opencode_config_path(working_dir: &Path) -> PathBuf {
     if let Ok(path) = std::env::var("OPENCODE_CONFIG") {
@@ -1507,13 +1531,25 @@ async fn set_opencode_auth(
     });
     let entry_clone = entry.clone();
 
+    let keys = opencode_auth_keys(provider_type);
+    if keys.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Provider {} does not map to OpenCode auth keys", req.provider),
+        ));
+    }
+
     // Update the auth object
     if let Some(obj) = auth.as_object_mut() {
-        obj.insert(req.provider.clone(), entry);
+        for key in &keys {
+            obj.insert((*key).to_string(), entry.clone());
+        }
     } else {
-        auth = serde_json::json!({
-            req.provider.clone(): entry
-        });
+        let mut map = serde_json::Map::new();
+        for key in &keys {
+            map.insert((*key).to_string(), entry.clone());
+        }
+        auth = serde_json::Value::Object(map);
     }
 
     // Write back to file
