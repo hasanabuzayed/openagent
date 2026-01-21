@@ -629,7 +629,8 @@ pub async fn run_claudecode_turn(
     }
 
     // Ensure OAuth tokens are fresh before resolving credentials.
-    if let Err(e) = ensure_anthropic_oauth_token_valid().await {
+    let oauth_refresh_result = ensure_anthropic_oauth_token_valid().await;
+    if let Err(e) = &oauth_refresh_result {
         tracing::warn!("Failed to refresh Anthropic OAuth token: {}", e);
     }
 
@@ -659,6 +660,17 @@ pub async fn run_claudecode_turn(
                 .map(classify_claudecode_secret)
         }
     };
+
+    if matches!(api_auth, Some(ClaudeCodeAuth::OAuthToken(_))) {
+        if let Err(err) = oauth_refresh_result {
+            let err_msg = format!(
+                "Anthropic OAuth token refresh failed: {}. Please re-authenticate in Settings → AI Providers.",
+                err
+            );
+            tracing::warn!(mission_id = %mission_id, "{}", err_msg);
+            return AgentResult::failure(err_msg, 0).with_terminal_reason(TerminalReason::LlmError);
+        }
+    }
 
     // Determine CLI path: prefer backend config, then env var, then default
     let cli_path = get_claudecode_cli_path_from_config(app_working_dir)
@@ -2422,6 +2434,10 @@ pub async fn run_opencode_turn(
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    use super::ai_providers::{
+        ensure_anthropic_oauth_token_valid, ensure_google_oauth_token_valid,
+        ensure_openai_oauth_token_valid,
+    };
 
     // Determine CLI runner: prefer backend config, then env var, then try bunx/npx
     // We use 'bunx oh-my-opencode run' or 'npx oh-my-opencode run' for per-workspace execution.
@@ -2443,6 +2459,28 @@ pub async fn run_opencode_turn(
                 .ok()
                 .filter(|v| !v.trim().is_empty())
         });
+
+    let provider_hint = resolved_model
+        .as_deref()
+        .and_then(|m| m.split_once('/'))
+        .map(|(provider, _)| provider.to_lowercase());
+
+    let refresh_result = match provider_hint.as_deref() {
+        Some("anthropic") | Some("claude") => ensure_anthropic_oauth_token_valid().await,
+        Some("openai") | Some("codex") => ensure_openai_oauth_token_valid().await,
+        Some("google") | Some("gemini") => ensure_google_oauth_token_valid().await,
+        _ => Ok(()),
+    };
+
+    if let Err(err) = refresh_result {
+        let label = provider_hint.unwrap_or_else(|| "provider".to_string());
+        let err_msg = format!(
+            "{} OAuth token refresh failed: {}. Please re-authenticate in Settings → AI Providers.",
+            label, err
+        );
+        tracing::warn!(mission_id = %mission_id, "{}", err_msg);
+        return AgentResult::failure(err_msg, 0).with_terminal_reason(TerminalReason::LlmError);
+    }
 
     let configured_runner = get_opencode_cli_path_from_config(app_working_dir)
         .or_else(|| std::env::var("OPENCODE_CLI_PATH").ok());
