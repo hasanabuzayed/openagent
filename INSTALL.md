@@ -275,15 +275,31 @@ scripts/validate_skill_isolation.sh
 Install the default agent pack as root:
 
 ```bash
-bunx oh-my-opencode install --no-tui
+bunx oh-my-opencode install --no-tui --claude=max20 --gemini=yes
 ```
 
-This installs the **Sisyphus** default agent (plus other personalities). To preserve plugin defaults:
-Leave the Open Agent agent/model overrides unset to use the OpenCode / oh-my-opencode defaults.
+This installs the **Sisyphus** default agent (plus other personalities like Oracle, Librarian, etc.).
+
+**Important**: If you enabled strong workspace skill isolation (section 3.2.1), the OpenCode service runs with `HOME=/var/lib/opencode`. The `oh-my-opencode install` command writes to `/root/.config/opencode/` by default, so you must copy the configs to the isolated home:
+
+```bash
+# Copy configs to isolated OpenCode home (required if using section 3.2.1)
+mkdir -p /var/lib/opencode/.config/opencode
+cp /root/.config/opencode/opencode.json /var/lib/opencode/.config/opencode/
+cp /root/.config/opencode/oh-my-opencode.json /var/lib/opencode/.config/opencode/
+systemctl restart opencode.service
+
+# Verify agents are loaded
+curl -s http://127.0.0.1:4096/agent | jq '.[].name'
+# Should show: Sisyphus, oracle, librarian, etc.
+```
+
+To preserve plugin defaults: leave the Open Agent agent/model overrides unset to use the OpenCode / oh-my-opencode defaults.
 
 Update strategy:
 - Pin a version in your Library `plugins.json` (e.g., `oh-my-opencode@1.2.3`) to lock updates.
 - Otherwise, the plugin can auto-update via OpenCode's install hook and Open Agent sync.
+- **After updating oh-my-opencode**, re-copy the configs if using isolated home.
 
 ### 3.4 Install opencode-gemini-auth (optional, for Google OAuth)
 
