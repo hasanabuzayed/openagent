@@ -143,12 +143,52 @@ pub enum ContentBlock {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: String,
+        /// Content can be a string (text result) or an array (e.g., image results).
+        /// For images, Claude Code sends: [{"type": "image", "source": {"type": "base64", "data": "..."}}]
+        content: ToolResultContent,
         #[serde(default)]
         is_error: bool,
     },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
+}
+
+/// Tool result content - can be either a simple string or structured content (array with images/text).
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum ToolResultContent {
+    /// Simple text content
+    Text(String),
+    /// Structured content (e.g., array of image/text blocks)
+    Structured(Vec<Value>),
+}
+
+impl ToolResultContent {
+    /// Convert to a string representation for storage/display.
+    /// For structured content (images), returns a JSON string or placeholder.
+    pub fn to_string_lossy(&self) -> String {
+        match self {
+            ToolResultContent::Text(s) => s.clone(),
+            ToolResultContent::Structured(items) => {
+                // Try to extract meaningful text, or serialize as JSON
+                let mut parts = Vec::new();
+                for item in items {
+                    if let Some(obj) = item.as_object() {
+                        if obj.get("type").and_then(|v| v.as_str()) == Some("image") {
+                            parts.push("[image]".to_string());
+                        } else if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
+                            parts.push(text.to_string());
+                        }
+                    }
+                }
+                if parts.is_empty() {
+                    serde_json::to_string(items).unwrap_or_else(|_| "[structured content]".to_string())
+                } else {
+                    parts.join("\n")
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

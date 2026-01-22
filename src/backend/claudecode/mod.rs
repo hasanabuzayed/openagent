@@ -240,17 +240,20 @@ fn convert_claude_event(
                         .cloned()
                         .unwrap_or_else(|| "unknown".to_string());
 
+                    // Convert content to string (handles both text and image results)
+                    let content_str = content.to_string_lossy();
+
                     // Include extra result info if available
                     let result_value = if let Some(ref extra) = evt.tool_use_result {
                         serde_json::json!({
-                            "content": content,
+                            "content": content_str,
                             "stdout": extra.stdout,
                             "stderr": extra.stderr,
                             "is_error": is_error,
                             "interrupted": extra.interrupted,
                         })
                     } else {
-                        Value::String(content)
+                        Value::String(content_str)
                     };
 
                     results.push(ExecutionEvent::ToolResult {
