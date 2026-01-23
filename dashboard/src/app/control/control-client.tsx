@@ -2990,15 +2990,27 @@ export default function ControlClient() {
       const hasRunning = runningSessions.length > 0;
 
       if (hasRunning) {
-        // Auto-select first active session if current display isn't running
-        const currentIsRunning = runningSessions.some(s => s.display === desktopDisplayId);
-        if (!currentIsRunning) {
-          setDesktopDisplayId(runningSessions[0].display);
-        }
-        // Auto-open desktop panel when there's an active session
-        if (!hasDesktopSession) {
-          setHasDesktopSession(true);
-          setShowDesktopStream(true);
+        // Get current mission ID to scope auto-open behavior
+        const activeMission = viewingMissionRef.current ?? currentMissionRef.current;
+        const activeMissionId = activeMission?.id;
+
+        // Only auto-open for sessions belonging to the current mission
+        const currentMissionSessions = activeMissionId
+          ? runningSessions.filter(s => s.mission_id === activeMissionId)
+          : [];
+        const hasCurrentMissionSession = currentMissionSessions.length > 0;
+
+        // Auto-select first active session from current mission if current display isn't running
+        if (hasCurrentMissionSession) {
+          const currentIsRunning = currentMissionSessions.some(s => s.display === desktopDisplayId);
+          if (!currentIsRunning) {
+            setDesktopDisplayId(currentMissionSessions[0].display);
+          }
+          // Auto-open desktop panel only when there's an active session for the current mission
+          if (!hasDesktopSession) {
+            setHasDesktopSession(true);
+            setShowDesktopStream(true);
+          }
         }
       }
     } catch (err) {
