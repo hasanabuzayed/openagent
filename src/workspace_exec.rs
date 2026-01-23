@@ -365,10 +365,19 @@ impl WorkspaceExec {
                 }
 
                 // Network configuration.
-                let use_shared_network = self.workspace.shared_network.unwrap_or(true);
+                // If Tailscale env vars are set, automatically use private networking
+                // (TS_AUTHKEY indicates the workspace wants Tailscale connectivity).
+                let tailscale_requested = nspawn::tailscale_enabled(&env);
+                let use_shared_network = if tailscale_requested {
+                    // Override: Tailscale requires private networking
+                    false
+                } else {
+                    self.workspace.shared_network.unwrap_or(true)
+                };
                 tracing::debug!(
                     workspace = %self.workspace.name,
                     shared_network = ?self.workspace.shared_network,
+                    tailscale_requested = %tailscale_requested,
                     use_shared_network = %use_shared_network,
                     "WorkspaceExec: checking network configuration"
                 );
