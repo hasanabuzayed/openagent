@@ -2453,20 +2453,21 @@ async fn control_actor_loop(
                                 let progress_ref = Arc::clone(&progress);
                                 // Capture which mission this task is working on
                                 let mission_id = current_mission.read().await.clone();
-                                let (workspace_id, model_override, mission_agent, backend_id) = if let Some(mid) = mission_id {
+                                let (workspace_id, model_override, mission_agent, backend_id, session_id) = if let Some(mid) = mission_id {
                                     match mission_store.get_mission(mid).await {
                                         Ok(Some(mission)) => (
                                             Some(mission.workspace_id),
                                             mission.model_override.clone(),
                                             mission.agent.clone(),
                                             Some(mission.backend.clone()),
+                                            mission.session_id.clone(),
                                         ),
                                         Ok(None) => {
                                             tracing::warn!(
                                                 "Mission {} not found while resolving workspace",
                                                 mid
                                             );
-                                            (None, None, None, None)
+                                            (None, None, None, None, None)
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -2474,11 +2475,11 @@ async fn control_actor_loop(
                                                 mid,
                                                 e
                                             );
-                                            (None, None, None, None)
+                                            (None, None, None, None, None)
                                         }
                                     }
                                 } else {
-                                    (None, None, None, None)
+                                    (None, None, None, None, None)
                                 };
                                 // Per-message agent overrides mission agent
                                 let agent_override = per_msg_agent.or(mission_agent);
@@ -2507,6 +2508,7 @@ async fn control_actor_loop(
                                         backend_id,
                                         model_override,
                                         agent_override,
+                                        session_id,
                                     )
                                     .await;
                                     (mid, msg, result)
@@ -2860,6 +2862,7 @@ async fn control_actor_loop(
                                         let model_override = mission.model_override.clone();
                                         // Resume uses mission agent (no per-message override for resumes)
                                         let agent_override = mission.agent.clone();
+                                        let session_id = mission.session_id.clone();
                                         running_cancel = Some(cancel.clone());
                                         // Capture which mission this task is working on (the resumed mission)
                                         running_mission_id = Some(mission_id);
@@ -2884,6 +2887,7 @@ async fn control_actor_loop(
                                                 backend_id,
                                                 model_override,
                                                 agent_override,
+                                                session_id,
                                             )
                                             .await;
                                             (mid, msg, result)
@@ -3314,20 +3318,21 @@ async fn control_actor_loop(
                     running_cancel = Some(cancel.clone());
                     // Capture which mission this task is working on
                     let mission_id = current_mission.read().await.clone();
-                    let (workspace_id, model_override, mission_agent, backend_id) = if let Some(mid) = mission_id {
+                    let (workspace_id, model_override, mission_agent, backend_id, session_id) = if let Some(mid) = mission_id {
                         match mission_store.get_mission(mid).await {
                             Ok(Some(mission)) => (
                                 Some(mission.workspace_id),
                                 mission.model_override.clone(),
                                 mission.agent.clone(),
                                 Some(mission.backend.clone()),
+                                mission.session_id.clone(),
                             ),
                             Ok(None) => {
                                 tracing::warn!(
                                     "Mission {} not found while resolving workspace",
                                     mid
                                 );
-                                (None, None, None, None)
+                                (None, None, None, None, None)
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -3335,11 +3340,11 @@ async fn control_actor_loop(
                                     mid,
                                     e
                                 );
-                                (None, None, None, None)
+                                (None, None, None, None, None)
                             }
                         }
                     } else {
-                        (None, None, None, None)
+                        (None, None, None, None, None)
                     };
                     // Per-message agent overrides mission agent
                     let agent_override = per_msg_agent.or(mission_agent);
@@ -3367,6 +3372,7 @@ async fn control_actor_loop(
                             backend_id,
                             model_override,
                             agent_override,
+                            session_id,
                         )
                         .await;
                         (mid, msg, result)
@@ -3588,6 +3594,7 @@ async fn run_single_control_turn(
     backend_id: Option<String>,
     model_override: Option<String>,
     agent_override: Option<String>,
+    session_id: Option<String>,
 ) -> crate::agents::AgentResult {
     let is_claudecode = backend_id.as_deref() == Some("claudecode");
     if let Some(model) = model_override {
@@ -3711,7 +3718,7 @@ async fn run_single_control_turn(
                 cancel,
                 None, // secrets - not available in control context
                 &config.working_dir,
-                None, // session_id - not available in control session context
+                session_id.as_deref(),
             )
             .await
         }
