@@ -531,6 +531,24 @@ impl MissionStore for SqliteMissionStore {
         .map_err(|e| e.to_string())?
     }
 
+    async fn update_mission_session_id(&self, id: Uuid, session_id: &str) -> Result<(), String> {
+        let conn = self.conn.clone();
+        let now = now_string();
+        let session_id = session_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.blocking_lock();
+            conn.execute(
+                "UPDATE missions SET session_id = ?1, updated_at = ?2 WHERE id = ?3",
+                params![session_id, now, id.to_string()],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
     async fn update_mission_tree(&self, id: Uuid, tree: &AgentTreeNode) -> Result<(), String> {
         let conn = self.conn.clone();
         let now = now_string();
@@ -829,7 +847,8 @@ impl MissionStore for SqliteMissionStore {
             AgentEvent::Status { .. }
             | AgentEvent::AgentPhase { .. }
             | AgentEvent::AgentTree { .. }
-            | AgentEvent::Progress { .. } => return Ok(()),
+            | AgentEvent::Progress { .. }
+            | AgentEvent::SessionIdUpdate { .. } => return Ok(()),
         };
 
         let event_type = event_type.to_string();

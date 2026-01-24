@@ -141,6 +141,18 @@ amp threads continue T-<uuid> --execute "prompt" --stream-json
 Amp uses `AMP_API_KEY` for authentication. Set this environment variable with
 your access token from [ampcode.com/settings](https://ampcode.com/settings).
 
+### Using CLIProxyAPI (Optional)
+
+You can route Amp requests through [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
+to use your own OAuth credentials instead of Amp credits:
+
+```bash
+# Set the provider URL to your proxy
+export AMP_PROVIDER_URL="http://localhost:8317"
+```
+
+See [AMP_PROXY_SETUP.md](./AMP_PROXY_SETUP.md) for detailed configuration.
+
 ### Harness bootstrap (auto-install)
 
 For **container workspaces**, Open Agent can automatically install the required

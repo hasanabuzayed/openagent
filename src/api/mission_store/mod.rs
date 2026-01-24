@@ -152,6 +152,9 @@ pub trait MissionStore: Send + Sync {
     /// Update mission title.
     async fn update_mission_title(&self, id: Uuid, title: &str) -> Result<(), String>;
 
+    /// Update mission session ID (for backends like Amp that generate their own IDs).
+    async fn update_mission_session_id(&self, id: Uuid, session_id: &str) -> Result<(), String>;
+
     /// Update mission agent tree.
     async fn update_mission_tree(&self, id: Uuid, tree: &AgentTreeNode) -> Result<(), String>;
 

@@ -373,6 +373,13 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         mission_id: Option<Uuid>,
     },
+    /// Session ID update (for backends like Amp that generate their own session IDs)
+    SessionIdUpdate {
+        /// The new session ID to use for continuation
+        session_id: String,
+        /// Mission this session ID belongs to
+        mission_id: Uuid,
+    },
 }
 
 /// A node in the agent tree (for visualization)
@@ -450,6 +457,7 @@ impl AgentEvent {
             AgentEvent::AgentPhase { .. } => "agent_phase",
             AgentEvent::AgentTree { .. } => "agent_tree",
             AgentEvent::Progress { .. } => "progress",
+            AgentEvent::SessionIdUpdate { .. } => "session_id_update",
         }
     }
 
@@ -466,6 +474,7 @@ impl AgentEvent {
             AgentEvent::AgentPhase { mission_id, .. } => *mission_id,
             AgentEvent::AgentTree { mission_id, .. } => *mission_id,
             AgentEvent::Progress { mission_id, .. } => *mission_id,
+            AgentEvent::SessionIdUpdate { mission_id, .. } => Some(*mission_id),
         }
     }
 }
@@ -3597,6 +3606,26 @@ async fn control_actor_loop(
                             );
                         }
                     }
+
+                    // Handle session ID updates (for backends like Amp that generate their own IDs)
+                    if let AgentEvent::SessionIdUpdate { mission_id, session_id } = &event {
+                        if let Err(err) = mission_store
+                            .update_mission_session_id(*mission_id, session_id)
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to update session ID for mission {}: {}",
+                                mission_id,
+                                err
+                            );
+                        } else {
+                            tracing::debug!(
+                                mission_id = %mission_id,
+                                session_id = %session_id,
+                                "Updated mission session ID from backend"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -3750,6 +3779,37 @@ async fn run_single_control_turn(
                 events_tx.clone(),
                 cancel,
                 None, // secrets - not available in control context
+                &config.working_dir,
+                session_id.as_deref(),
+                is_continuation,
+            )
+            .await
+        }
+        Some("amp") => {
+            let mid = match mission_id {
+                Some(id) => id,
+                None => {
+                    let _ = events_tx.send(AgentEvent::Error {
+                        message: "Amp backend requires a mission ID".to_string(),
+                        mission_id: None,
+                        resumable: false,
+                    });
+                    return crate::agents::AgentResult::failure(
+                        "Amp backend requires a mission ID".to_string(),
+                        0,
+                    )
+                    .with_terminal_reason(TerminalReason::LlmError);
+                }
+            };
+            let is_continuation = history.iter().any(|(role, _)| role == "assistant");
+            super::mission_runner::run_amp_turn(
+                exec_workspace,
+                &ctx.working_dir,
+                &user_message,
+                config.opencode_agent.as_deref(), // mode (smart/rush)
+                mid,
+                events_tx.clone(),
+                cancel,
                 &config.working_dir,
                 session_id.as_deref(),
                 is_continuation,

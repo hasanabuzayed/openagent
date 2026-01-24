@@ -4785,6 +4785,20 @@ pub async fn run_amp_turn(
     if let Ok(api_key) = std::env::var("AMP_API_KEY") {
         env.insert("AMP_API_KEY".to_string(), api_key);
     }
+    
+    // Pass through AMP_URL for CLIProxyAPI integration
+    // This allows routing Amp requests through a local proxy (e.g., CLIProxyAPI)
+    // AMP_URL sets the Amp service URL (default: https://ampcode.com/)
+    if let Ok(amp_url) = std::env::var("AMP_URL") {
+        env.insert("AMP_URL".to_string(), amp_url);
+    }
+    
+    // Also support legacy AMP_PROVIDER_URL as an alias
+    if !env.contains_key("AMP_URL") {
+        if let Ok(provider_url) = std::env::var("AMP_PROVIDER_URL") {
+            env.insert("AMP_URL".to_string(), provider_url);
+        }
+    }
 
     // Use WorkspaceExec to spawn the CLI
     let mut child = match workspace_exec
@@ -4893,6 +4907,12 @@ pub async fn run_amp_turn(
                                 if sys.model.is_some() {
                                     model_used = sys.model;
                                 }
+                                // Amp generates its own session/thread ID; emit an update so the
+                                // mission's session_id gets updated for continuation.
+                                let _ = events_tx.send(AgentEvent::SessionIdUpdate {
+                                    session_id: sys.session_id.clone(),
+                                    mission_id,
+                                });
                             }
                             AmpEvent::StreamEvent(wrapper) => {
                                 match wrapper.event {

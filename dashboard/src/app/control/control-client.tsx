@@ -3190,6 +3190,13 @@ export default function ControlClient() {
       const previousViewingId = viewingMissionIdRef.current;
       const previousViewingMission = viewingMissionRef.current;
 
+      // Clear pending thinking state to prevent stale content from appearing in new mission
+      if (thinkingFlushTimeoutRef.current) {
+        clearTimeout(thinkingFlushTimeoutRef.current);
+        thinkingFlushTimeoutRef.current = null;
+      }
+      pendingThinkingRef.current = null;
+
       setViewingMissionId(missionId);
       fetchingMissionIdRef.current = missionId;
 

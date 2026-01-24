@@ -1188,12 +1188,26 @@ async fn write_amp_config(
             agents_md.push_str("This is an **isolated container workspace** managed by Open Agent.\n\n");
             agents_md.push_str("- Shell commands execute inside the container\n");
             agents_md.push_str("- Use the built-in `Bash` tool for shell commands\n");
-            agents_md.push_str("- Skills are available in `.agents/skills/`\n");
         }
         WorkspaceType::Host => {
             agents_md.push_str("This is a **host workspace** managed by Open Agent.\n\n");
             agents_md.push_str("- Use the built-in `Bash` tool to run shell commands directly\n");
-            agents_md.push_str("- Skills are available in `.agents/skills/`\n");
+        }
+    }
+
+    // Include skill references using Amp's @-mention syntax
+    if let Some(skills) = skill_contents {
+        if !skills.is_empty() {
+            agents_md.push_str("\n## Available Skills\n\n");
+            agents_md.push_str("The following skills provide specialized instructions for specific tasks.\n");
+            agents_md.push_str("Read a skill when the task matches its description.\n\n");
+            for skill in skills {
+                let desc = skill.description.as_deref().unwrap_or("A specialized skill");
+                agents_md.push_str(&format!(
+                    "- **{}**: {} - See @.agents/skills/{}/SKILL.md\n",
+                    skill.name, desc, skill.name
+                ));
+            }
         }
     }
 

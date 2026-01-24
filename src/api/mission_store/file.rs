@@ -190,6 +190,17 @@ impl MissionStore for FileMissionStore {
         self.persist().await
     }
 
+    async fn update_mission_session_id(&self, id: Uuid, session_id: &str) -> Result<(), String> {
+        let mut missions = self.missions.write().await;
+        let mission = missions
+            .get_mut(&id)
+            .ok_or_else(|| format!("Mission {} not found", id))?;
+        mission.session_id = Some(session_id.to_string());
+        mission.updated_at = now_string();
+        drop(missions);
+        self.persist().await
+    }
+
     async fn update_mission_tree(&self, id: Uuid, tree: &AgentTreeNode) -> Result<(), String> {
         self.trees.write().await.insert(id, tree.clone());
         self.persist().await
