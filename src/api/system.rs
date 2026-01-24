@@ -121,6 +121,10 @@ async fn get_components(State(state): State<Arc<AppState>>) -> Json<SystemCompon
     let claudecode_info = get_claude_code_info().await;
     components.push(claudecode_info);
 
+    // Amp
+    let amp_info = get_amp_info().await;
+    components.push(amp_info);
+
     // oh-my-opencode
     let omo_info = get_oh_my_opencode_info().await;
     components.push(omo_info);
@@ -225,6 +229,87 @@ async fn which_claude_code() -> Option<String> {
     let output = Command::new("which").arg("claude").output().await.ok()?;
     if output.status.success() {
         Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Get Amp version and status.
+async fn get_amp_info() -> ComponentInfo {
+    // Try to run amp --version to check if it's installed
+    match Command::new("amp").arg("--version").output().await {
+        Ok(output) if output.status.success() => {
+            let mut version_str = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.trim().is_empty() {
+                if !version_str.is_empty() {
+                    version_str.push(' ');
+                }
+                version_str.push_str(stderr.trim());
+            }
+            // Parse version from output like "amp version 0.1.0" or "0.1.0"
+            let version = extract_version_token(&version_str);
+
+            let update_available = check_amp_update(version.as_deref()).await;
+            let status = if update_available.is_some() {
+                ComponentStatus::UpdateAvailable
+            } else {
+                ComponentStatus::Ok
+            };
+
+            ComponentInfo {
+                name: "amp".to_string(),
+                version,
+                installed: true,
+                update_available,
+                path: which_amp().await,
+                status,
+            }
+        }
+        _ => ComponentInfo {
+            name: "amp".to_string(),
+            version: None,
+            installed: false,
+            update_available: None,
+            path: None,
+            status: ComponentStatus::NotInstalled,
+        },
+    }
+}
+
+/// Find the path to the Amp binary.
+async fn which_amp() -> Option<String> {
+    let output = Command::new("which").arg("amp").output().await.ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Check if there's a newer version of Amp available.
+async fn check_amp_update(current_version: Option<&str>) -> Option<String> {
+    let current_raw = current_version?;
+    let current = extract_version_token(current_raw)?;
+
+    // Check npm registry for @anthropic-ai/amp (note: actual package name may differ)
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://registry.npmjs.org/@anthropic-ai/amp/latest")
+        .header("User-Agent", "open-agent")
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let latest = json.get("version")?.as_str()?;
+
+    if version_is_newer(latest, &current) {
+        Some(latest.to_string())
     } else {
         None
     }
@@ -516,6 +601,7 @@ async fn update_component(
         "open_agent" => Ok(Sse::new(Box::pin(stream_open_agent_update()))),
         "opencode" => Ok(Sse::new(Box::pin(stream_opencode_update()))),
         "claude_code" => Ok(Sse::new(Box::pin(stream_claude_code_update()))),
+        "amp" => Ok(Sse::new(Box::pin(stream_amp_update()))),
         "oh_my_opencode" => Ok(Sse::new(Box::pin(stream_oh_my_opencode_update()))),
         _ => Err((
             StatusCode::BAD_REQUEST,
@@ -975,6 +1061,62 @@ fn stream_claude_code_update() -> impl Stream<Item = Result<Event, std::convert:
                 yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
                     event_type: "error".to_string(),
                     message: format!("Failed to run npm install: {}", e),
+                    progress: None,
+                }).unwrap()));
+            }
+        }
+    }
+}
+
+/// Stream the Amp update process.
+fn stream_amp_update() -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
+    async_stream::stream! {
+        yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+            event_type: "log".to_string(),
+            message: "Starting Amp update...".to_string(),
+            progress: Some(0),
+        }).unwrap()));
+
+        yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+            event_type: "log".to_string(),
+            message: "Running npm install -g @anthropic-ai/amp@latest...".to_string(),
+            progress: Some(20),
+        }).unwrap()));
+
+        // Run npm install for Amp
+        let install_result = Command::new("npm")
+            .args(["install", "-g", "@anthropic-ai/amp@latest"])
+            .output()
+            .await;
+
+        match install_result {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                    event_type: "log".to_string(),
+                    message: format!("Installation output: {}", stdout.lines().take(5).collect::<Vec<_>>().join("\n")),
+                    progress: Some(80),
+                }).unwrap()));
+
+                yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                    event_type: "complete".to_string(),
+                    message: "Amp updated successfully!".to_string(),
+                    progress: Some(100),
+                }).unwrap()));
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                    event_type: "error".to_string(),
+                    message: format!("Failed to update Amp: {} {}", stderr, stdout),
+                    progress: None,
+                }).unwrap()));
+            }
+            Err(e) => {
+                yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
+                    event_type: "error".to_string(),
+                    message: format!("Failed to run update: {}", e),
                     progress: None,
                 }).unwrap()));
             }

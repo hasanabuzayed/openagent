@@ -82,7 +82,7 @@ export function NewMissionDialog({
   const { data: backends } = useSWR<Backend[]>('backends', listBackends, {
     revalidateOnFocus: false,
     dedupingInterval: 30000,
-    fallbackData: [{ id: 'opencode', name: 'OpenCode' }, { id: 'claudecode', name: 'Claude Code' }],
+    fallbackData: [{ id: 'opencode', name: 'OpenCode' }, { id: 'claudecode', name: 'Claude Code' }, { id: 'amp', name: 'Amp' }],
   });
 
   // SWR: fetch backend configs to check enabled status
@@ -94,15 +94,20 @@ export function NewMissionDialog({
     revalidateOnFocus: false,
     dedupingInterval: 30000,
   });
+  const { data: ampConfig } = useSWR('backend-amp-config', () => getBackendConfig('amp'), {
+    revalidateOnFocus: false,
+    dedupingInterval: 30000,
+  });
 
   // Filter to only enabled backends
   const enabledBackends = useMemo(() => {
     return backends?.filter((b) => {
       if (b.id === 'opencode') return opencodeConfig?.enabled !== false;
       if (b.id === 'claudecode') return claudecodeConfig?.enabled !== false;
+      if (b.id === 'amp') return ampConfig?.enabled !== false;
       return true;
     }) || [];
-  }, [backends, opencodeConfig, claudecodeConfig]);
+  }, [backends, opencodeConfig, claudecodeConfig, ampConfig]);
 
   // SWR: fetch agents for each enabled backend
   const { data: opencodeAgents } = useSWR<BackendAgent[]>(
@@ -113,6 +118,11 @@ export function NewMissionDialog({
   const { data: claudecodeAgents } = useSWR<BackendAgent[]>(
     enabledBackends.some(b => b.id === 'claudecode') ? 'backend-claudecode-agents' : null,
     () => listBackendAgents('claudecode'),
+    { revalidateOnFocus: false, dedupingInterval: 30000 }
+  );
+  const { data: ampAgents } = useSWR<BackendAgent[]>(
+    enabledBackends.some(b => b.id === 'amp') ? 'backend-amp-agents' : null,
+    () => listBackendAgents('amp'),
     { revalidateOnFocus: false, dedupingInterval: 30000 }
   );
 
@@ -166,6 +176,10 @@ export function NewMissionDialog({
         // Filter out hidden Claude Code agents
         const allClaudeAgents = claudecodeAgents?.map(a => a.name) || [];
         agentNames = allClaudeAgents.filter(name => !claudeCodeHiddenAgents.includes(name));
+      } else if (backend.id === 'amp') {
+        // Amp has built-in modes: smart and rush
+        const backendAgentList = ampAgents?.map(a => a.name) || [];
+        agentNames = backendAgentList.length > 0 ? backendAgentList : ['Smart Mode', 'Rush Mode'];
       }
 
       for (const agent of agentNames) {
@@ -179,7 +193,7 @@ export function NewMissionDialog({
     }
 
     return result;
-  }, [enabledBackends, opencodeAgents, claudecodeAgents, agentsPayload, config, claudeCodeLibConfig]);
+  }, [enabledBackends, opencodeAgents, claudecodeAgents, ampAgents, agentsPayload, config, claudeCodeLibConfig]);
 
   // Group agents by backend for display
   const agentsByBackend = useMemo(() => {
@@ -208,10 +222,10 @@ export function NewMissionDialog({
   }, [selectedAgentValue]);
 
   // Filter providers based on selected backend
-  // Claude Code only supports Anthropic models
+  // Claude Code and Amp only support Anthropic models
   const filteredProviders = useMemo(() => {
-    if (selectedBackend === 'claudecode') {
-      // Only show Anthropic (Claude) models for Claude Code
+    if (selectedBackend === 'claudecode' || selectedBackend === 'amp') {
+      // Only show Anthropic (Claude) models for Claude Code and Amp
       return providers.filter(p => p.id === 'anthropic');
     }
     // Show all providers for OpenCode or when no backend is selected
@@ -221,10 +235,10 @@ export function NewMissionDialog({
   const formatWorkspaceType = (type: Workspace['workspace_type']) =>
     type === 'host' ? 'host' : 'isolated';
 
-  // Reset model override when switching to Claude Code if current model is provider-prefixed
+  // Reset model override when switching to Claude Code or Amp if current model is provider-prefixed
   useEffect(() => {
-    if (selectedBackend === 'claudecode' && newMissionModelOverride) {
-      // Claude Code expects raw model IDs (no provider prefix).
+    if ((selectedBackend === 'claudecode' || selectedBackend === 'amp') && newMissionModelOverride) {
+      // Claude Code and Amp expect raw model IDs (no provider prefix).
       if (newMissionModelOverride.includes('/')) {
         setNewMissionModelOverride('');
       }
@@ -425,7 +439,7 @@ export function NewMissionDialog({
                   <optgroup key={provider.id} label={provider.name} className="bg-[#1a1a1a]">
                     {provider.models.map((model) => {
                       const value =
-                        selectedBackend === 'claudecode' ? model.id : `${provider.id}/${model.id}`;
+                        (selectedBackend === 'claudecode' || selectedBackend === 'amp') ? model.id : `${provider.id}/${model.id}`;
                       return (
                         <option
                           key={`${provider.id}/${model.id}`}

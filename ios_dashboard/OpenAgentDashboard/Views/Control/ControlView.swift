@@ -322,9 +322,9 @@ struct ControlView: View {
                     get: { workspaceState.selectedWorkspace?.id },
                     set: { if let id = $0 { workspaceState.selectWorkspace(id: id) } }
                 ),
-                onCreate: { workspaceId in
+                onCreate: { options in
                     showNewMissionSheet = false
-                    Task { await createNewMission(workspaceId: workspaceId) }
+                    Task { await createNewMission(options: options) }
                 },
                 onCancel: {
                     showNewMissionSheet = false
@@ -768,9 +768,15 @@ struct ControlView: View {
         }
     }
     
-    private func createNewMission(workspaceId: String? = nil) async {
+    private func createNewMission(options: NewMissionOptions? = nil) async {
         do {
-            let mission = try await api.createMission(workspaceId: workspaceId)
+            let mission = try await api.createMission(
+                workspaceId: options?.workspaceId,
+                title: nil,
+                agent: options?.agent,
+                modelOverride: options?.modelOverride,
+                backend: options?.backend
+            )
             currentMission = mission
             applyViewingMission(mission, scrollToBottom: false)
 

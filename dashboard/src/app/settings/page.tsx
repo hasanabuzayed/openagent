@@ -108,7 +108,7 @@ export default function SettingsPage() {
   const [savingLibraryRemote, setSavingLibraryRemote] = useState(false);
 
   // Backend settings state
-  const [activeBackendTab, setActiveBackendTab] = useState<'opencode' | 'claudecode'>('opencode');
+  const [activeBackendTab, setActiveBackendTab] = useState<'opencode' | 'claudecode' | 'amp'>('opencode');
   const [savingBackend, setSavingBackend] = useState(false);
   const [opencodeForm, setOpencodeForm] = useState({
     base_url: '',
@@ -120,6 +120,12 @@ export default function SettingsPage() {
     api_key: '',
     cli_path: '',
     api_key_configured: false,
+    enabled: true,
+  });
+  const [ampForm, setAmpForm] = useState({
+    cli_path: '',
+    default_mode: 'smart',
+    permissive: true,
     enabled: true,
   });
 
@@ -168,6 +174,11 @@ export default function SettingsPage() {
   const { data: claudecodeBackendConfig, mutate: mutateClaudeBackend } = useSWR(
     'backend-claudecode-config',
     () => getBackendConfig('claudecode'),
+    { revalidateOnFocus: false }
+  );
+  const { data: ampBackendConfig, mutate: mutateAmpBackend } = useSWR(
+    'backend-amp-config',
+    () => getBackendConfig('amp'),
     { revalidateOnFocus: false }
   );
 
@@ -245,6 +256,17 @@ export default function SettingsPage() {
       enabled: claudecodeBackendConfig.enabled,
     }));
   }, [claudecodeBackendConfig]);
+
+  useEffect(() => {
+    if (!ampBackendConfig?.settings) return;
+    const settings = ampBackendConfig.settings as Record<string, unknown>;
+    setAmpForm({
+      cli_path: typeof settings.cli_path === 'string' ? settings.cli_path : '',
+      default_mode: typeof settings.default_mode === 'string' ? settings.default_mode : 'smart',
+      permissive: settings.permissive !== false,
+      enabled: ampBackendConfig.enabled,
+    });
+  }, [ampBackendConfig]);
 
   const handleSave = () => {
     if (!validateUrl(apiUrl)) {
@@ -370,6 +392,31 @@ export default function SettingsPage() {
     } catch (err) {
       toast.error(
         `Failed to update Claude Code settings: ${
+          err instanceof Error ? err.message : 'Unknown error'
+        }`
+      );
+    } finally {
+      setSavingBackend(false);
+    }
+  };
+
+  const handleSaveAmpBackend = async () => {
+    setSavingBackend(true);
+    try {
+      const settings: Record<string, unknown> = {
+        cli_path: ampForm.cli_path || null,
+        default_mode: ampForm.default_mode || 'smart',
+        permissive: ampForm.permissive,
+      };
+
+      const result = await updateBackendConfig('amp', settings, {
+        enabled: ampForm.enabled,
+      });
+      toast.success(result.message || 'Amp settings updated');
+      mutateAmpBackend();
+    } catch (err) {
+      toast.error(
+        `Failed to update Amp settings: ${
           err instanceof Error ? err.message : 'Unknown error'
         }`
       );
@@ -734,7 +781,7 @@ export default function SettingsPage() {
                   key={backend.id}
                   onClick={() =>
                     setActiveBackendTab(
-                      backend.id === 'claudecode' ? 'claudecode' : 'opencode'
+                      backend.id as 'opencode' | 'claudecode' | 'amp'
                     )
                   }
                   className={cn(
@@ -813,7 +860,7 @@ export default function SettingsPage() {
                   <span className="text-xs text-white/40">Restart required to apply runtime changes</span>
                 </div>
               </div>
-            ) : (
+            ) : activeBackendTab === 'claudecode' ? (
               <div className="space-y-3">
                 <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
                   <input
@@ -888,7 +935,98 @@ export default function SettingsPage() {
                   <span className="text-xs text-white/40">Restart required to apply runtime changes</span>
                 </div>
               </div>
-            )}
+            ) : activeBackendTab === 'amp' ? (
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ampForm.enabled}
+                    onChange={(e) =>
+                      setAmpForm((prev) => ({ ...prev, enabled: e.target.checked }))
+                    }
+                    className="rounded border-white/20 cursor-pointer"
+                  />
+                  Enabled
+                </label>
+                {/* Anthropic Provider Status for Amp */}
+                <div className="flex items-center justify-between py-2 px-3 rounded-lg border border-white/[0.06] bg-white/[0.02]">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🧠</span>
+                    <span className="text-sm text-white/70">Anthropic (required for Amp)</span>
+                  </div>
+                  {claudecodeProvider?.configured && claudecodeProvider.has_credentials ? (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <Check className="h-3.5 w-3.5" />
+                      Connected
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        document.getElementById('ai-providers')?.scrollIntoView({ behavior: 'smooth' });
+                      }}
+                      className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      Configure in AI Providers ↑
+                    </button>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs text-white/60 mb-1.5">CLI Path</label>
+                  <input
+                    type="text"
+                    value={ampForm.cli_path || ''}
+                    onChange={(e) =>
+                      setAmpForm((prev) => ({ ...prev, cli_path: e.target.value }))
+                    }
+                    placeholder="amp (uses PATH) or /path/to/amp"
+                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500/50"
+                  />
+                  <p className="mt-1.5 text-xs text-white/30">
+                    Path to the Amp CLI executable. Leave blank to use default from PATH.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs text-white/60 mb-1.5">Default Mode</label>
+                  <select
+                    value={ampForm.default_mode}
+                    onChange={(e) =>
+                      setAmpForm((prev) => ({ ...prev, default_mode: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500/50"
+                  >
+                    <option value="smart">Smart Mode (full capability)</option>
+                    <option value="rush">Rush Mode (faster, cheaper)</option>
+                  </select>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ampForm.permissive}
+                    onChange={(e) =>
+                      setAmpForm((prev) => ({ ...prev, permissive: e.target.checked }))
+                    }
+                    className="rounded border-white/20 cursor-pointer"
+                  />
+                  Permissive mode (--dangerously-allow-all)
+                </label>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    onClick={handleSaveAmpBackend}
+                    disabled={savingBackend}
+                    className="flex items-center gap-2 rounded-lg bg-indigo-500 px-3 py-1.5 text-xs text-white hover:bg-indigo-600 transition-colors disabled:opacity-50"
+                  >
+                    {savingBackend ? (
+                      <Loader className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Save className="h-3.5 w-3.5" />
+                    )}
+                    Save Amp
+                  </button>
+                  <span className="text-xs text-white/40">Restart required to apply runtime changes</span>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {/* Library Settings */}

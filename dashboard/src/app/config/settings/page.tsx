@@ -48,7 +48,7 @@ export default function SettingsPage() {
   } = useLibrary();
 
   // Harness tab state
-  const [activeHarness, setActiveHarness] = useState<'opencode' | 'claudecode'>('opencode');
+  const [activeHarness, setActiveHarness] = useState<'opencode' | 'claudecode' | 'amp'>('opencode');
 
   // Fetch backends and their config to show enabled harnesses
   const { data: backends = [] } = useSWR('backends', listBackends, {
@@ -56,12 +56,16 @@ export default function SettingsPage() {
     fallbackData: [
       { id: 'opencode', name: 'OpenCode' },
       { id: 'claudecode', name: 'Claude Code' },
+      { id: 'amp', name: 'Amp' },
     ],
   });
   const { data: opencodeConfig } = useSWR('backend-opencode-config', () => getBackendConfig('opencode'), {
     revalidateOnFocus: false,
   });
   const { data: claudecodeConfig } = useSWR('backend-claudecode-config', () => getBackendConfig('claudecode'), {
+    revalidateOnFocus: false,
+  });
+  const { data: ampConfig } = useSWR('backend-amp-config', () => getBackendConfig('amp'), {
     revalidateOnFocus: false,
   });
 
@@ -79,6 +83,7 @@ export default function SettingsPage() {
   const enabledBackends = backends.filter((b) => {
     if (b.id === 'opencode') return opencodeConfig?.enabled !== false;
     if (b.id === 'claudecode') return claudecodeConfig?.enabled !== false;
+    if (b.id === 'amp') return ampConfig?.enabled !== false;
     return true;
   });
 
@@ -520,7 +525,7 @@ export default function SettingsPage() {
         {enabledBackends.map((backend) => (
           <button
             key={backend.id}
-            onClick={() => setActiveHarness(backend.id === 'claudecode' ? 'claudecode' : 'opencode')}
+            onClick={() => setActiveHarness(backend.id as 'opencode' | 'claudecode' | 'amp')}
             className={cn(
               'px-4 py-2 rounded-lg text-sm font-medium border transition-colors',
               activeHarness === backend.id
