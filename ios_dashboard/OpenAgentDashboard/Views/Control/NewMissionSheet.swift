@@ -485,12 +485,13 @@ struct NewMissionSheet: View {
         }
         
         // Set default agent (prefer Sisyphus in OpenCode, then first available)
+        // Use agent.id for CLI value, not display name
         if selectedAgentValue.isEmpty {
             if let sisyphus = backendAgents["opencode"]?.first(where: { $0.name == "Sisyphus" }) {
-                selectedAgentValue = "opencode:\(sisyphus.name)"
+                selectedAgentValue = "opencode:\(sisyphus.id)"
             } else if let firstBackend = backends.first(where: { enabledBackendIds.contains($0.id) }),
                       let firstAgent = backendAgents[firstBackend.id]?.first {
-                selectedAgentValue = "\(firstBackend.id):\(firstAgent.name)"
+                selectedAgentValue = "\(firstBackend.id):\(firstAgent.id)"
             }
         }
         
