@@ -1067,6 +1067,7 @@ pub async fn run_claudecode_turn(
         get_anthropic_auth_from_workspace, get_anthropic_auth_from_host_with_expiry,
         get_workspace_auth_path, ClaudeCodeAuth, ensure_anthropic_oauth_token_valid,
         get_anthropic_auth_for_claudecode, refresh_workspace_anthropic_auth,
+        write_claudecode_credentials_for_workspace,
     };
     use std::collections::HashMap;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -1251,6 +1252,36 @@ pub async fn run_claudecode_turn(
         tracing::warn!(mission_id = %mission_id, "{}", err_msg);
         return AgentResult::failure(err_msg.to_string(), 0)
             .with_terminal_reason(TerminalReason::LlmError);
+    }
+
+    // Write Claude Code credentials file with refresh token for long-running missions.
+    // This allows Claude Code to refresh tokens automatically during execution.
+    let is_oauth = matches!(api_auth, Some(ClaudeCodeAuth::OAuthToken(_)));
+    tracing::debug!(
+        mission_id = %mission_id,
+        is_oauth = is_oauth,
+        workspace_path = %workspace.path.display(),
+        workspace_type = ?workspace.workspace_type,
+        "Checking if should write Claude Code credentials"
+    );
+    if is_oauth {
+        match write_claudecode_credentials_for_workspace(&workspace) {
+            Ok(()) => {
+                tracing::info!(
+                    mission_id = %mission_id,
+                    workspace_type = ?workspace.workspace_type,
+                    "Wrote Claude Code credentials with refresh token for automatic token refresh"
+                );
+            }
+            Err(e) => {
+                // Non-fatal: we still have the access token in env var as fallback
+                tracing::warn!(
+                    mission_id = %mission_id,
+                    error = %e,
+                    "Failed to write Claude Code credentials file (token refresh during mission may fail)"
+                );
+            }
+        }
     }
 
     // Determine CLI path: prefer backend config, then env var, then default

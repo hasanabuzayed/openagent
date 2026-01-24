@@ -1257,6 +1257,81 @@ pub async fn ensure_google_oauth_token_valid() -> Result<(), String> {
     refresh_google_oauth_token().await
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Claude Code Credentials File
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Write OAuth credentials to Claude Code's credentials file.
+///
+/// Claude Code stores auth in `~/.claude/.credentials.json` with format:
+/// ```json
+/// {
+///   "claudeAiOauth": {
+///     "accessToken": "sk-ant-oat01-...",
+///     "refreshToken": "sk-ant-ort01-...",
+///     "expiresAt": 1748658860401,
+///     "scopes": ["user:inference", "user:profile"]
+///   }
+/// }
+/// ```
+///
+/// This allows Claude Code to refresh tokens automatically during long-running missions.
+pub fn write_claudecode_credentials_to_path(credentials_dir: &std::path::Path) -> Result<(), String> {
+    let entry = read_oauth_token_entry(ProviderType::Anthropic)
+        .ok_or_else(|| "No Anthropic OAuth entry found".to_string())?;
+
+    let credentials_path = credentials_dir.join(".credentials.json");
+
+    // Ensure parent directory exists
+    std::fs::create_dir_all(credentials_dir)
+        .map_err(|e| format!("Failed to create Claude credentials directory: {}", e))?;
+
+    let credentials = serde_json::json!({
+        "claudeAiOauth": {
+            "accessToken": entry.access_token,
+            "refreshToken": entry.refresh_token,
+            "expiresAt": entry.expires_at,
+            "scopes": ["user:inference", "user:profile"]
+        }
+    });
+
+    let contents = serde_json::to_string_pretty(&credentials)
+        .map_err(|e| format!("Failed to serialize Claude credentials: {}", e))?;
+
+    std::fs::write(&credentials_path, contents)
+        .map_err(|e| format!("Failed to write Claude credentials: {}", e))?;
+
+    tracing::info!(
+        path = %credentials_path.display(),
+        expires_at = entry.expires_at,
+        "Wrote Claude Code credentials file with refresh token"
+    );
+
+    Ok(())
+}
+
+/// Write Claude Code credentials to a workspace.
+///
+/// For container workspaces, writes to the container's root home directory.
+/// For host workspaces, writes to the host's home directory.
+pub fn write_claudecode_credentials_for_workspace(workspace: &crate::workspace::Workspace) -> Result<(), String> {
+    use crate::workspace::WorkspaceType;
+
+    let claude_dir = match workspace.workspace_type {
+        WorkspaceType::Container => {
+            // Container workspaces: write to /root/.claude inside the container
+            workspace.path.join("root").join(".claude")
+        }
+        WorkspaceType::Host => {
+            // Host workspaces: write to $HOME/.claude
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            std::path::PathBuf::from(home).join(".claude")
+        }
+    };
+
+    write_claudecode_credentials_to_path(&claude_dir)
+}
+
 /// Sync an API key to OpenCode's auth.json file.
 fn sync_api_key_to_opencode_auth(provider_type: ProviderType, api_key: &str) -> Result<(), String> {
     let auth_path = get_opencode_auth_path();
