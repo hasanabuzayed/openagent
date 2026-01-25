@@ -475,7 +475,7 @@ export const EnhancedInput = forwardRef<EnhancedInputHandle, EnhancedInputProps>
         )}
 
         {/* Textarea with ghost text overlay */}
-        <div className="relative flex-1">
+        <div className="relative flex-1 flex items-center">
           <textarea
             ref={textareaRef}
             value={lockedAgent ? displayValue : value}
@@ -484,7 +484,7 @@ export const EnhancedInput = forwardRef<EnhancedInputHandle, EnhancedInputProps>
             placeholder={lockedAgent ? "Type your message..." : placeholder}
             disabled={disabled}
             rows={1}
-            className="w-full bg-transparent text-sm text-white placeholder-white/30 focus:outline-none resize-none overflow-y-auto leading-5"
+            className="w-full bg-transparent text-sm text-white placeholder-white/30 focus:outline-none resize-none overflow-y-auto leading-[1.4]"
             style={{
               minHeight: "20px",
               maxHeight: "200px",
@@ -493,7 +493,7 @@ export const EnhancedInput = forwardRef<EnhancedInputHandle, EnhancedInputProps>
           {/* Ghost text overlay - positioned to appear after input text */}
           {ghostText && (
             <div
-              className="absolute top-0 left-0 pointer-events-none text-sm leading-5 whitespace-pre-wrap overflow-hidden"
+              className="absolute top-0 left-0 pointer-events-none text-sm leading-[1.4] whitespace-pre-wrap overflow-hidden"
               style={{
                 minHeight: "20px",
                 maxHeight: "200px",
