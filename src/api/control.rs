@@ -308,6 +308,14 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         mission_id: Option<Uuid>,
     },
+    /// Text content delta (streaming assistant response)
+    TextDelta {
+        /// Accumulated text content so far
+        content: String,
+        /// Mission this text belongs to (for parallel execution)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mission_id: Option<Uuid>,
+    },
     ToolCall {
         tool_call_id: String,
         name: String,
@@ -450,6 +458,7 @@ impl AgentEvent {
             AgentEvent::UserMessage { .. } => "user_message",
             AgentEvent::AssistantMessage { .. } => "assistant_message",
             AgentEvent::Thinking { .. } => "thinking",
+            AgentEvent::TextDelta { .. } => "text_delta",
             AgentEvent::ToolCall { .. } => "tool_call",
             AgentEvent::ToolResult { .. } => "tool_result",
             AgentEvent::Error { .. } => "error",
@@ -467,6 +476,7 @@ impl AgentEvent {
             AgentEvent::UserMessage { mission_id, .. } => *mission_id,
             AgentEvent::AssistantMessage { mission_id, .. } => *mission_id,
             AgentEvent::Thinking { mission_id, .. } => *mission_id,
+            AgentEvent::TextDelta { mission_id, .. } => *mission_id,
             AgentEvent::ToolCall { mission_id, .. } => *mission_id,
             AgentEvent::ToolResult { mission_id, .. } => *mission_id,
             AgentEvent::Error { mission_id, .. } => *mission_id,

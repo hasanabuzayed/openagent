@@ -802,6 +802,7 @@ async fn write_opencode_config(
     workspace_type: WorkspaceType,
     workspace_env: &HashMap<String, String>,
     skill_allowlist: Option<&[String]>,
+    command_contents: Option<&[CommandContent]>,
     shared_network: Option<bool>,
 ) -> anyhow::Result<()> {
     fn strip_jsonc_comments(input: &str) -> String {
@@ -1014,6 +1015,12 @@ async fn write_opencode_config(
     tokio::fs::create_dir_all(&opencode_dir).await?;
     let opencode_config_path = opencode_dir.join("opencode.json");
     tokio::fs::write(opencode_config_path, config_payload).await?;
+
+    // Write commands as skills for OpenCode (since OpenCode doesn't have a separate command system)
+    if let Some(commands) = command_contents {
+        write_commands_as_opencode_skills(workspace_dir, commands).await?;
+    }
+
     Ok(())
 }
 
@@ -1026,6 +1033,7 @@ async fn write_claudecode_config(
     workspace_type: WorkspaceType,
     workspace_env: &HashMap<String, String>,
     skill_contents: Option<&[SkillContent]>,
+    command_contents: Option<&[CommandContent]>,
     shared_network: Option<bool>,
 ) -> anyhow::Result<()> {
     // Create .claude directory
@@ -1118,6 +1126,11 @@ async fn write_claudecode_config(
         }
 
         tokio::fs::write(&claude_md_path, claude_md).await?;
+    }
+
+    // Write commands to .claude/commands/ using Claude Code's native custom slash command format
+    if let Some(commands) = command_contents {
+        write_claudecode_commands_to_workspace(workspace_dir, commands).await?;
     }
 
     Ok(())
@@ -1353,6 +1366,7 @@ pub async fn write_backend_config(
     workspace_env: &HashMap<String, String>,
     skill_allowlist: Option<&[String]>,
     skill_contents: Option<&[SkillContent]>,
+    command_contents: Option<&[CommandContent]>,
     shared_network: Option<bool>,
 ) -> anyhow::Result<()> {
     match backend_id {
@@ -1364,6 +1378,7 @@ pub async fn write_backend_config(
                 workspace_type,
                 workspace_env,
                 skill_allowlist,
+                command_contents,
                 shared_network,
             )
             .await
@@ -1377,6 +1392,7 @@ pub async fn write_backend_config(
                 workspace_type,
                 workspace_env,
                 skill_allowlist,
+                command_contents,
                 shared_network,
             )
             .await?;
@@ -1387,6 +1403,7 @@ pub async fn write_backend_config(
                 workspace_type,
                 workspace_env,
                 skill_contents,
+                command_contents,
                 shared_network,
             )
             .await
@@ -1416,6 +1433,7 @@ pub async fn write_backend_config(
                 workspace_type,
                 workspace_env,
                 skill_allowlist,
+                command_contents,
                 shared_network,
             )
             .await
@@ -1434,6 +1452,18 @@ pub struct SkillContent {
     /// Additional markdown files (relative path, content)
     /// Path preserves subdirectory structure (e.g., "references/guide.md")
     pub files: Vec<(String, String)>,
+}
+
+/// Command content to be written to the workspace.
+/// For Claude Code: written to `.claude/commands/<name>.md`
+/// For OpenCode: written as a skill to `.opencode/skill/<name>/SKILL.md`
+pub struct CommandContent {
+    /// Command name (filename without .md)
+    pub name: String,
+    /// Description from frontmatter
+    pub description: Option<String>,
+    /// Full markdown content
+    pub content: String,
 }
 
 /// Ensure the skill content has a `name` field in the YAML frontmatter.
@@ -1535,12 +1565,24 @@ pub async fn write_claudecode_skills_to_workspace(
 ) -> anyhow::Result<()> {
     let skills_dir = workspace_dir.join(".claude").join("skills");
 
+    tracing::debug!(
+        workspace = %workspace_dir.display(),
+        skills_dir = %skills_dir.display(),
+        skill_count = skills.len(),
+        skill_names = ?skills.iter().map(|s| &s.name).collect::<Vec<_>>(),
+        "Writing Claude Code skills to workspace"
+    );
+
     // Clean up old skills directory to remove stale skills
     if skills_dir.exists() {
         let _ = tokio::fs::remove_dir_all(&skills_dir).await;
     }
 
     if skills.is_empty() {
+        tracing::warn!(
+            workspace = %workspace_dir.display(),
+            "No skills to write for Claude Code"
+        );
         return Ok(());
     }
 
@@ -1584,14 +1626,148 @@ pub async fn write_claudecode_skills_to_workspace(
     Ok(())
 }
 
+/// Write command files to the workspace's `.claude/commands/` directory.
+/// Claude Code custom slash commands are simple markdown files at `.claude/commands/<name>.md`.
+pub async fn write_claudecode_commands_to_workspace(
+    workspace_dir: &Path,
+    commands: &[CommandContent],
+) -> anyhow::Result<()> {
+    let commands_dir = workspace_dir.join(".claude").join("commands");
+
+    tracing::debug!(
+        workspace = %workspace_dir.display(),
+        commands_dir = %commands_dir.display(),
+        command_count = commands.len(),
+        command_names = ?commands.iter().map(|c| &c.name).collect::<Vec<_>>(),
+        "Writing Claude Code commands to workspace"
+    );
+
+    // Clean up old commands directory to remove stale commands
+    if commands_dir.exists() {
+        let _ = tokio::fs::remove_dir_all(&commands_dir).await;
+    }
+
+    if commands.is_empty() {
+        tracing::debug!(
+            workspace = %workspace_dir.display(),
+            "No commands to write for Claude Code"
+        );
+        return Ok(());
+    }
+
+    tokio::fs::create_dir_all(&commands_dir).await?;
+
+    for command in commands {
+        // Claude Code commands are just markdown files, not directories
+        let command_path = commands_dir.join(format!("{}.md", command.name));
+        tokio::fs::write(&command_path, &command.content).await?;
+
+        tracing::debug!(
+            command = %command.name,
+            workspace = %workspace_dir.display(),
+            "Wrote Claude Code command to workspace"
+        );
+    }
+
+    tracing::info!(
+        count = commands.len(),
+        workspace = %workspace_dir.display(),
+        "Wrote Claude Code commands to workspace"
+    );
+
+    Ok(())
+}
+
+/// Write commands as skills to the workspace's `.opencode/skill/` directory.
+/// For OpenCode, commands are treated as skills since OpenCode doesn't have a separate command system.
+pub async fn write_commands_as_opencode_skills(
+    workspace_dir: &Path,
+    commands: &[CommandContent],
+) -> anyhow::Result<()> {
+    if commands.is_empty() {
+        return Ok(());
+    }
+
+    let skills_dir = workspace_dir.join(".opencode").join("skill");
+    tokio::fs::create_dir_all(&skills_dir).await?;
+
+    for command in commands {
+        let skill_dir = skills_dir.join(&command.name);
+        tokio::fs::create_dir_all(&skill_dir).await?;
+
+        // Convert command to skill format with proper frontmatter
+        let skill_content = convert_command_to_skill_content(&command.content, &command.name);
+
+        let skill_md_path = skill_dir.join("SKILL.md");
+        tokio::fs::write(&skill_md_path, &skill_content).await?;
+
+        tracing::debug!(
+            command = %command.name,
+            workspace = %workspace_dir.display(),
+            "Wrote command as OpenCode skill"
+        );
+    }
+
+    tracing::info!(
+        count = commands.len(),
+        workspace = %workspace_dir.display(),
+        "Wrote commands as OpenCode skills"
+    );
+
+    Ok(())
+}
+
+/// Convert command content to skill format by ensuring proper frontmatter.
+fn convert_command_to_skill_content(content: &str, name: &str) -> String {
+    // Check if the content starts with YAML frontmatter
+    if !content.starts_with("---") {
+        // No frontmatter, add it with name field
+        return format!("---\nname: {}\n---\n{}", name, content);
+    }
+
+    // Find the end of frontmatter
+    if let Some(end_idx) = content[3..].find("---") {
+        let frontmatter = &content[3..3 + end_idx];
+        let rest = &content[3 + end_idx..];
+
+        // Check if name field already exists
+        let has_name = frontmatter.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("name:") || trimmed.starts_with("name :")
+        });
+
+        if has_name {
+            return content.to_string();
+        }
+
+        // Add name field
+        return format!("---\nname: {}\n{}---{}", name, frontmatter, rest);
+    }
+
+    content.to_string()
+}
+
+/// Format a YAML description value, quoting if it contains special chars.
+fn format_yaml_description(desc: &str) -> String {
+    let clean = desc.replace('\n', " ");
+    // Quote if it contains colons, brackets, or other YAML special characters
+    if clean.contains(':') || clean.contains('[') || clean.contains(']') || clean.contains('{') || clean.contains('}') || clean.contains('#') || clean.contains('&') || clean.contains('*') || clean.contains('!') || clean.contains('|') || clean.contains('>') || clean.contains('\'') || clean.contains('"') || clean.contains('%') || clean.contains('@') || clean.contains('`') {
+        // Escape any double quotes in the description and wrap in quotes
+        format!("\"{}\"", clean.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        clean
+    }
+}
+
 /// Ensure the skill content has proper YAML frontmatter for Claude Code.
 /// Claude Code requires `name` and benefits from `description` for auto-discovery.
+/// Also fixes invalid YAML descriptions that contain colons without quotes.
 fn ensure_claudecode_skill_frontmatter(content: &str, skill_name: &str, description: Option<&str>) -> String {
     // Check if the content starts with YAML frontmatter
     if !content.starts_with("---") {
         // No frontmatter, add it with name and description
         let desc_line = description
-            .map(|d| format!("description: {}\n", d.replace('\n', " ")))
+            .map(|d| format!("description: {}\n", format_yaml_description(d)))
             .unwrap_or_default();
         return format!("---\nname: {}\n{}---\n{}", skill_name, desc_line, content);
     }
@@ -1607,30 +1783,59 @@ fn ensure_claudecode_skill_frontmatter(content: &str, skill_name: &str, descript
             trimmed.starts_with("name:") || trimmed.starts_with("name :")
         });
 
+        // Check if description needs fixing (unquoted with special chars)
+        let needs_description_fix = frontmatter.lines().any(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("description:") {
+                // Get the description value after "description:"
+                let value = trimmed.strip_prefix("description:").unwrap_or("").trim();
+                // If it starts with a quote or '>' or '|', it's already properly formatted
+                if value.starts_with('"') || value.starts_with('\'') || value.starts_with('>') || value.starts_with('|') {
+                    return false;
+                }
+                // Check if it contains YAML special characters that need quoting
+                value.contains(':') || value.contains('[') || value.contains(']') || value.contains('{') || value.contains('}')
+            } else {
+                false
+            }
+        });
+
         // Check if description field already exists
         let has_description = frontmatter.lines().any(|line| {
             let trimmed = line.trim();
             trimmed.starts_with("description:") || trimmed.starts_with("description :")
         });
 
-        if has_name && (has_description || description.is_none()) {
-            // All required fields present, return as-is
+        if has_name && (has_description || description.is_none()) && !needs_description_fix {
+            // All required fields present and valid, return as-is
             return content.to_string();
         }
 
-        // Build updated frontmatter
+        // Build updated frontmatter, fixing any invalid descriptions
         let mut new_frontmatter = String::new();
         if !has_name {
             new_frontmatter.push_str(&format!("name: {}\n", skill_name));
         }
         if !has_description {
             if let Some(desc) = description {
-                new_frontmatter.push_str(&format!("description: {}\n", desc.replace('\n', " ")));
+                new_frontmatter.push_str(&format!("description: {}\n", format_yaml_description(desc)));
             }
         }
-        new_frontmatter.push_str(frontmatter.trim());
 
-        return format!("---\n{}\n{}", new_frontmatter, rest.trim_start_matches('\n'));
+        // Process existing frontmatter lines, fixing descriptions if needed
+        for line in frontmatter.lines() {
+            let trimmed = line.trim();
+            if needs_description_fix && trimmed.starts_with("description:") {
+                // Fix the description line
+                let value = trimmed.strip_prefix("description:").unwrap_or("").trim();
+                new_frontmatter.push_str(&format!("description: {}\n", format_yaml_description(value)));
+            } else if !trimmed.is_empty() {
+                new_frontmatter.push_str(line);
+                new_frontmatter.push('\n');
+            }
+        }
+
+        return format!("---\n{}{}", new_frontmatter.trim_end(), rest);
     }
 
     // Malformed frontmatter, return as-is
@@ -1784,6 +1989,48 @@ async fn collect_skill_contents(
     }
 
     skills_to_write
+}
+
+/// Collect all command contents from the library.
+/// Used for both Claude Code (as commands) and OpenCode (as skills).
+async fn collect_command_contents(
+    context_name: &str,
+    library: &LibraryStore,
+) -> Vec<CommandContent> {
+    let mut commands_to_write: Vec<CommandContent> = Vec::new();
+
+    match library.list_commands().await {
+        Ok(command_summaries) => {
+            for summary in command_summaries {
+                match library.get_command(&summary.name).await {
+                    Ok(command) => {
+                        commands_to_write.push(CommandContent {
+                            name: command.name,
+                            description: command.description,
+                            content: command.content,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            command = %summary.name,
+                            context = %context_name,
+                            error = %e,
+                            "Failed to load command from library, skipping"
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                context = %context_name,
+                error = %e,
+                "Failed to list commands from library"
+            );
+        }
+    }
+
+    commands_to_write
 }
 
 /// Tool content to be written to the workspace.
@@ -2024,6 +2271,7 @@ pub async fn prepare_custom_workspace(
         WorkspaceType::Host,
         &workspace_env,
         None,
+        None, // No command_contents for simple workspace preparation
         None, // shared_network: not relevant for host workspaces
     )
     .await?;
@@ -2061,6 +2309,7 @@ pub async fn prepare_mission_workspace_in(
         workspace.workspace_type,
         &workspace.env_vars,
         skill_allowlist,
+        None, // No command_contents for simple workspace preparation
         workspace.shared_network,
     )
     .await?;
@@ -2096,16 +2345,72 @@ pub async fn prepare_mission_workspace_with_skills_backend(
         Some(workspace.skills.as_slice())
     };
     let mut skill_contents: Option<Vec<SkillContent>> = None;
+    let mut command_contents: Option<Vec<CommandContent>> = None;
 
-    if backend_id == "claudecode" || backend_id == "amp" {
-        if let Some(lib) = library {
-            let context = format!("mission-{}", mission_id);
-            let skill_names = resolve_workspace_skill_names(workspace, lib)
-                .await
-                .unwrap_or_default();
+    if let Some(lib) = library {
+        let context = format!("mission-{}", mission_id);
+
+        // Collect commands from library (for all backends)
+        let commands = collect_command_contents(&context, lib).await;
+        if !commands.is_empty() {
+            tracing::info!(
+                mission_id = %mission_id,
+                backend_id = %backend_id,
+                workspace = %workspace.name,
+                command_count = commands.len(),
+                command_names = ?commands.iter().map(|c| &c.name).collect::<Vec<_>>(),
+                "Collected {} commands for {} backend",
+                commands.len(),
+                backend_id
+            );
+            command_contents = Some(commands);
+        }
+
+        // Collect skills (only for claudecode and amp, which use skill contents directly)
+        if backend_id == "claudecode" || backend_id == "amp" {
+            let skill_names = match resolve_workspace_skill_names(workspace, lib).await {
+                Ok(names) => {
+                    tracing::debug!(
+                        mission_id = %mission_id,
+                        backend_id = %backend_id,
+                        workspace = %workspace.name,
+                        skill_count = names.len(),
+                        skills = ?names,
+                        "Resolved skill names for mission"
+                    );
+                    names
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        mission_id = %mission_id,
+                        backend_id = %backend_id,
+                        workspace = %workspace.name,
+                        error = %e,
+                        "Failed to resolve skill names for mission, using empty list"
+                    );
+                    Vec::new()
+                }
+            };
             let skills = collect_skill_contents(&skill_names, &context, lib).await;
+            tracing::info!(
+                mission_id = %mission_id,
+                backend_id = %backend_id,
+                workspace = %workspace.name,
+                skill_count = skills.len(),
+                skill_names = ?skill_names,
+                "Collected {} skills for {} backend",
+                skills.len(),
+                backend_id
+            );
             skill_contents = Some(skills);
         }
+    } else {
+        tracing::warn!(
+            mission_id = %mission_id,
+            backend_id = %backend_id,
+            workspace = %workspace.name,
+            "Library not available, cannot sync skills/commands to mission workspace"
+        );
     }
 
     write_backend_config(
@@ -2117,6 +2422,7 @@ pub async fn prepare_mission_workspace_with_skills_backend(
         &workspace.env_vars,
         skill_allowlist,
         skill_contents.as_deref(),
+        command_contents.as_deref(),
         workspace.shared_network,
     )
     .await?;
@@ -2286,6 +2592,7 @@ pub async fn prepare_task_workspace(
         WorkspaceType::Host,
         &workspace_env,
         None,
+        None, // No command_contents for task workspace
         None, // shared_network: not relevant for host workspaces
     )
     .await?;
@@ -2466,6 +2773,7 @@ pub async fn sync_all_workspaces(config: &Config, mcp: &McpRegistry) -> anyhow::
             WorkspaceType::Host,
             &workspace_env,
             None,
+            None, // No command_contents for migration
             None, // shared_network: not relevant for host workspaces
         )
         .await
