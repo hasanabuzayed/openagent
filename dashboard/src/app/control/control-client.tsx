@@ -41,6 +41,7 @@ import {
   cleanupOrphanedDesktopSessions,
   removeFromQueue,
   clearQueue,
+  getQueue,
   type StreamDiagnosticUpdate,
   type ControlRunState,
   type Mission,
@@ -3252,10 +3253,11 @@ export default function ControlClient() {
       // Always load fresh history from API when switching missions
       // This ensures we don't show stale cached events
       try {
-        // Load mission and events in parallel for faster load
-        const [mission, events] = await Promise.all([
+        // Load mission, events, and queue in parallel for faster load
+        const [mission, events, queuedMessages] = await Promise.all([
           getMission(missionId),
           getMissionEvents(missionId).catch(() => null), // Don't fail if events unavailable
+          getQueue().catch(() => []), // Don't fail if queue unavailable
         ]);
 
         // Race condition guard: only update if this is still the mission we want
@@ -3264,7 +3266,25 @@ export default function ControlClient() {
         }
 
         // Use events if available, otherwise fall back to basic history
-        const historyItems = events ? eventsToItems(events) : missionHistoryToItems(mission);
+        let historyItems = events ? eventsToItems(events) : missionHistoryToItems(mission);
+
+        // Merge queued messages if this is the running mission
+        // Queue is global and applies to whatever mission is currently active
+        if (queuedMessages.length > 0) {
+          const queuedChatItems: ChatItem[] = queuedMessages.map((qm) => ({
+            kind: "user" as const,
+            id: qm.id,
+            content: qm.content,
+            timestamp: Date.now(),
+            agent: qm.agent ?? undefined,
+            queued: true,
+          }));
+          // Filter out any queued messages that already exist in history (by ID)
+          const existingIds = new Set(historyItems.map((item) => item.id));
+          const newQueuedItems = queuedChatItems.filter((item) => !existingIds.has(item.id));
+          historyItems = [...historyItems, ...newQueuedItems];
+        }
+
         setItems(historyItems);
         // Check if mission has an active desktop session (stored metadata or fallback to history)
         applyDesktopSessionState(mission);
@@ -3521,10 +3541,24 @@ export default function ControlClient() {
 
         // If we just reconnected, refresh the viewed mission's history to catch missed events
         if (wasReconnecting && viewingId) {
-          Promise.all([getMission(viewingId), getMissionEvents(viewingId)])
-            .then(([mission, events]) => {
+          Promise.all([getMission(viewingId), getMissionEvents(viewingId), getQueue().catch(() => [])])
+            .then(([mission, events, queuedMessages]) => {
               if (!mounted) return;
-              const historyItems = eventsToItems(events);
+              let historyItems = eventsToItems(events);
+              // Merge queued messages
+              if (queuedMessages.length > 0) {
+                const queuedChatItems: ChatItem[] = queuedMessages.map((qm) => ({
+                  kind: "user" as const,
+                  id: qm.id,
+                  content: qm.content,
+                  timestamp: Date.now(),
+                  agent: qm.agent ?? undefined,
+                  queued: true,
+                }));
+                const existingIds = new Set(historyItems.map((item) => item.id));
+                const newQueuedItems = queuedChatItems.filter((item) => !existingIds.has(item.id));
+                historyItems = [...historyItems, ...newQueuedItems];
+              }
               setItems(historyItems);
               updateMissionItems(viewingId, historyItems);
               // Also check events for desktop sessions
