@@ -108,7 +108,8 @@ export function ServerConnectionCard({
           `${componentNames[component.name] || component.name} updated successfully!`
         );
         setUpdatingComponent(null);
-        mutate(); // Revalidate components list
+        // Small delay to ensure backend has updated its cache/state
+        setTimeout(() => mutate(), 500);
       },
       (error: string) => {
         toast.error(`Update failed: ${error}`);

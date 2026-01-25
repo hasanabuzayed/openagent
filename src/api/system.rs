@@ -524,17 +524,19 @@ async fn get_oh_my_opencode_info() -> ComponentInfo {
     }
 }
 
-/// Get the installed version of oh-my-opencode.
+/// Get the installed version of oh-my-opencode from bun cache.
+/// Uses $HOME/.bun/install/cache which matches the service's HOME directory.
 async fn get_oh_my_opencode_version() -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
 
-    // First, try to find the version from bun's cache (most reliable for the actual installed version)
-    // Run: find ~/.bun -name 'package.json' -path '*oh-my-opencode*' and parse version
+    // Find oh-my-opencode versions in bun cache and return the highest
     let output = Command::new("bash")
         .args([
             "-c",
             &format!(
-                "find {}/.bun -name 'package.json' -path '*oh-my-opencode*' 2>/dev/null | head -1 | xargs cat 2>/dev/null",
+                r#"find {}/.bun/install/cache -maxdepth 1 -type d -name 'oh-my-opencode@*' 2>/dev/null | \
+                   grep -oP 'oh-my-opencode@\K[0-9]+\.[0-9]+\.[0-9]+' | \
+                   sort -V | tail -1"#,
                 home
             ),
         ])
@@ -543,24 +545,10 @@ async fn get_oh_my_opencode_version() -> Option<String> {
         .ok()?;
 
     if output.status.success() {
-        let content = String::from_utf8_lossy(&output.stdout);
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(version) = json.get("version").and_then(|v| v.as_str()) {
-                return Some(version.to_string());
-            }
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !version.is_empty() {
+            return Some(version);
         }
-    }
-
-    // Fallback: try running bunx to check the version (may be buggy in some versions)
-    let output = Command::new("bunx")
-        .args(["oh-my-opencode", "--version"])
-        .output()
-        .await
-        .ok()?;
-
-    if output.status.success() {
-        let version_str = String::from_utf8_lossy(&output.stdout);
-        return version_str.lines().next().map(|l| l.trim().to_string());
     }
 
     None
@@ -1133,16 +1121,20 @@ fn stream_oh_my_opencode_update() -> impl Stream<Item = Result<Event, std::conve
             progress: Some(0),
         }).unwrap()));
 
-        // First, clear the bun cache for oh-my-opencode to force fetching the latest version
+        // First, remove only the oh-my-opencode cache entries to force fetching the latest version
         yield Ok(Event::default().data(serde_json::to_string(&UpdateProgressEvent {
             event_type: "log".to_string(),
-            message: "Clearing package cache...".to_string(),
+            message: "Clearing oh-my-opencode cache...".to_string(),
             progress: Some(10),
         }).unwrap()));
 
-        // Clear bun cache to force re-download
-        let _ = Command::new("bun")
-            .args(["pm", "cache", "rm"])
+        // Remove only oh-my-opencode from bun cache (not the entire cache)
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let _ = Command::new("bash")
+            .args([
+                "-c",
+                &format!("rm -rf {}/.bun/install/cache/oh-my-opencode@*", home),
+            ])
             .output()
             .await;
 
@@ -1162,6 +1154,7 @@ fn stream_oh_my_opencode_update() -> impl Stream<Item = Result<Event, std::conve
                 "--claude=yes",
                 "--openai=yes",
                 "--gemini=yes",
+                "--copilot=no",
             ])
             .output()
             .await;

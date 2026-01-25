@@ -1018,12 +1018,12 @@ async fn run_mission_turn(
 
 fn read_backend_configs() -> Option<Vec<serde_json::Value>> {
     let home = std::env::var("HOME").ok()?;
-    
+
     // Check WORKING_DIR first (for custom deployment paths), then HOME
     let working_dir = std::env::var("WORKING_DIR").ok();
-    
+
     let mut candidates = vec![];
-    
+
     // Add WORKING_DIR paths if set
     if let Some(ref wd) = working_dir {
         candidates.push(
@@ -1032,7 +1032,7 @@ fn read_backend_configs() -> Option<Vec<serde_json::Value>> {
                 .join("backend_config.json"),
         );
     }
-    
+
     // Add HOME paths
     candidates.push(
         std::path::PathBuf::from(&home)
@@ -1045,6 +1045,22 @@ fn read_backend_configs() -> Option<Vec<serde_json::Value>> {
             .join("data")
             .join("backend_configs.json"),
     );
+
+    // Always check /root/.openagent as fallback since the dashboard saves config there
+    // and Open Agent service may run with a different HOME (e.g., /var/lib/opencode)
+    if home != "/root" {
+        candidates.push(
+            std::path::PathBuf::from("/root")
+                .join(".openagent")
+                .join("backend_config.json"),
+        );
+        candidates.push(
+            std::path::PathBuf::from("/root")
+                .join(".openagent")
+                .join("data")
+                .join("backend_configs.json"),
+        );
+    }
 
     for path in candidates {
         let contents = match std::fs::read_to_string(&path) {
@@ -2383,6 +2399,7 @@ async fn ensure_oh_my_opencode_config(
             format!("--claude={}", claude_flag),
             format!("--openai={}", openai_flag),
             format!("--gemini={}", gemini_flag),
+            "--copilot=no".to_string(),
             "--skip-auth".to_string(),
         ]);
     } else {
@@ -2393,6 +2410,7 @@ async fn ensure_oh_my_opencode_config(
             format!("--claude={}", claude_flag),
             format!("--openai={}", openai_flag),
             format!("--gemini={}", gemini_flag),
+            "--copilot=no".to_string(),
             "--skip-auth".to_string(),
         ]);
     }
@@ -4911,6 +4929,15 @@ pub async fn run_amp_turn(
         }
     }
 
+    // Log the environment for debugging
+    tracing::debug!(
+        mission_id = %mission_id,
+        env_vars = ?env.keys().collect::<Vec<_>>(),
+        amp_url = ?env.get("AMP_URL"),
+        amp_api_key_present = env.contains_key("AMP_API_KEY"),
+        "Spawning Amp CLI with environment"
+    );
+
     // Use WorkspaceExec to spawn the CLI
     let mut child = match workspace_exec
         .spawn_streaming(work_dir, &amp_binary, &args, env)
@@ -4923,6 +4950,10 @@ pub async fn run_amp_turn(
             return AgentResult::failure(err_msg, 0).with_terminal_reason(TerminalReason::LlmError);
         }
     };
+
+    // Close stdin immediately - Amp uses --execute with args, not stdin
+    // Leaving the pipe open can cause issues with Node.js process lifecycle
+    drop(child.stdin.take());
 
     // Get stdout for reading events
     let stdout = match child.stdout.take() {
@@ -4977,6 +5008,8 @@ pub async fn run_amp_turn(
     let mut thinking_buffer: HashMap<u32, String> = HashMap::new();
     let mut text_buffer: HashMap<u32, String> = HashMap::new();
     let mut last_thinking_len: usize = 0;
+    let mut last_text_len: usize = 0;
+    let mut thinking_streamed = false; // Track if thinking was already streamed
 
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
@@ -5044,6 +5077,7 @@ pub async fn run_amp_turn(
                                                     if total_len > last_thinking_len {
                                                         let accumulated: String = thinking_buffer.values().cloned().collect::<Vec<_>>().join("");
                                                         last_thinking_len = total_len;
+                                                        thinking_streamed = true;
 
                                                         let _ = events_tx.send(AgentEvent::Thinking {
                                                             content: accumulated,
@@ -5058,6 +5092,18 @@ pub async fn run_amp_turn(
                                                 if !text.is_empty() {
                                                     let buffer = text_buffer.entry(index).or_default();
                                                     buffer.push_str(&text);
+
+                                                    // Stream text deltas similar to thinking
+                                                    let total_len = text_buffer.values().map(|s| s.len()).sum::<usize>();
+                                                    if total_len > last_text_len {
+                                                        let accumulated: String = text_buffer.values().cloned().collect::<Vec<_>>().join("");
+                                                        last_text_len = total_len;
+
+                                                        let _ = events_tx.send(AgentEvent::TextDelta {
+                                                            content: accumulated,
+                                                            mission_id: Some(mission_id),
+                                                        });
+                                                    }
                                                 }
                                             }
                                         }
@@ -5105,9 +5151,18 @@ pub async fn run_amp_turn(
                                             });
                                         }
                                         ContentBlock::Thinking { thinking } => {
-                                            if !thinking.is_empty() {
+                                            // Only emit thinking from Assistant event if it wasn't already streamed
+                                            // via ContentBlockDelta events. This prevents duplicate thinking content.
+                                            if !thinking.is_empty() && !thinking_streamed {
                                                 let _ = events_tx.send(AgentEvent::Thinking {
                                                     content: thinking,
+                                                    done: true,
+                                                    mission_id: Some(mission_id),
+                                                });
+                                            } else if thinking_streamed {
+                                                // Send done=true signal without content to indicate thinking is complete
+                                                let _ = events_tx.send(AgentEvent::Thinking {
+                                                    content: String::new(),
                                                     done: true,
                                                     mission_id: Some(mission_id),
                                                 });
@@ -5228,17 +5283,8 @@ pub async fn run_amp_turn(
         "Amp cost computed from token usage"
     );
 
-    // Emit assistant message
-    let _ = events_tx.send(AgentEvent::AssistantMessage {
-        id: Uuid::new_v4(),
-        content: final_result.clone(),
-        success,
-        cost_cents,
-        model: model_used.clone(),
-        mission_id: Some(mission_id),
-        shared_files: None,
-        resumable: !success,
-    });
+    // Note: Do NOT emit AssistantMessage here - control.rs emits it based on AgentResult.
+    // Emitting here would cause duplicate messages in the UI.
 
     let mut result = if success {
         AgentResult::success(final_result, cost_cents)

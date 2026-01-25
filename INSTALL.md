@@ -728,6 +728,25 @@ systemctl restart opencode.service
 curl -fsSL http://127.0.0.1:4096/global/health | jq .
 ```
 
+### 9.4 Update oh-my-opencode
+
+oh-my-opencode is installed via `bunx` and cached in the service's HOME directory (`/var/lib/opencode/.bun/install/cache/`). Updates can be triggered from the dashboard (Settings → System Components) or manually:
+
+```bash
+# Run as the service user context
+sudo -u root HOME=/var/lib/opencode bunx oh-my-opencode@latest install --no-tui --claude=yes --gemini=yes --copilot=no
+```
+
+**Important:** Do NOT install oh-my-opencode globally via `npm install -g`. This creates version detection conflicts. Always use `bunx` which caches packages in the HOME directory.
+
+To clean up a stale global install:
+
+```bash
+npm uninstall -g oh-my-opencode
+```
+
+The service detects versions from `$HOME/.bun/install/cache/oh-my-opencode@*` directories. Ensure the service's HOME (`/var/lib/opencode`) is used consistently.
+
 ## 10) Production Security (TLS + Reverse Proxy)
 
 For production deployments, **always** put Open Agent behind a reverse proxy with TLS. The backend serves HTTP only and should never be exposed directly to the internet.
