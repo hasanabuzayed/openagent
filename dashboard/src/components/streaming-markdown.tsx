@@ -48,8 +48,12 @@ export const StreamingMarkdown = memo(function StreamingMarkdown({
 
   // Get stable blocks (all except the last one during streaming)
   const stableBlocks = useMemo(() => {
-    if (!isStreaming || blocks.length <= 1) {
+    if (!isStreaming) {
       return blocks;
+    }
+    // During streaming, all blocks except the last are stable
+    if (blocks.length <= 1) {
+      return [];
     }
     return blocks.slice(0, -1);
   }, [blocks, isStreaming]);

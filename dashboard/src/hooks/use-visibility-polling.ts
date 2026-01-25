@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 
 interface UseVisibilityPollingOptions {
   /** Polling interval in ms */
@@ -100,16 +100,18 @@ export function useVisibilityPolling(
  * Useful for conditionally skipping expensive operations.
  */
 export function useDocumentVisible(): boolean {
-  const visibleRef = useRef(!document.hidden);
+  const [visible, setVisible] = useState(() =>
+    typeof document !== 'undefined' ? !document.hidden : true
+  );
 
   useEffect(() => {
     const handleVisibilityChange = () => {
-      visibleRef.current = !document.hidden;
+      setVisible(!document.hidden);
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
-  return visibleRef.current;
+  return visible;
 }
