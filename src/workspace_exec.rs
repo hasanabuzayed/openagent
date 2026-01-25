@@ -496,7 +496,7 @@ impl WorkspaceExec {
                 program,
                 args,
                 env,
-                Stdio::null(),  // Use null stdin - streaming processes don't read input
+                Stdio::piped(),  // Pipe stdin for processes that read input (e.g., Claude Code --print)
                 Stdio::piped(),
                 Stdio::piped(),
             )
