@@ -286,6 +286,9 @@ impl WorkspaceExec {
     ) -> anyhow::Result<Command> {
         match self.workspace.workspace_type {
             WorkspaceType::Host => {
+                // For Host workspaces, spawn the command directly with environment variables.
+                // We pass env vars directly via Command::envs() rather than shell export
+                // to avoid issues with shell profile sourcing that can cause timeouts.
                 let mut cmd = Command::new(program);
                 cmd.current_dir(cwd);
                 if !args.is_empty() {
@@ -493,7 +496,7 @@ impl WorkspaceExec {
                 program,
                 args,
                 env,
-                Stdio::piped(),
+                Stdio::null(),  // Use null stdin - streaming processes don't read input
                 Stdio::piped(),
                 Stdio::piped(),
             )

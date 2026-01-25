@@ -325,6 +325,61 @@ For dashboard OAuth integration, see the Settings page which handles this flow v
 
 ---
 
+## 3.5) Configure Amp (Sourcegraph's coding agent)
+
+Amp is Sourcegraph's frontier coding agent with multi-model support. Unlike Claude Code and OpenCode which can use your own API keys, **Amp requires paid credits purchased through Sourcegraph**.
+
+### 3.5.1 Get Amp API credentials
+
+1. Visit [ampcode.com](https://ampcode.com) and create an account
+2. Purchase credits (Amp does not have a free tier for API access)
+3. Generate an API key from your account dashboard
+
+### 3.5.2 Configure Amp in Open Agent
+
+**Option A: Via Dashboard Settings (recommended)**
+
+1. Go to **Settings → AI Backends**
+2. Find the "Amp" backend and click to configure
+3. Enter your `AMP_API_KEY`
+4. Choose default mode: `smart` (full capability) or `rush` (faster, cheaper)
+
+**Option B: Via environment file**
+
+Add to `/etc/open_agent/open_agent.env`:
+
+```bash
+AMP_API_KEY=sgamp_user_XXXXX...
+```
+
+### 3.5.3 Amp modes
+
+| Mode | Description |
+|------|-------------|
+| **smart** | Full capability mode with extended thinking |
+| **rush** | Faster responses, lower cost, less thorough |
+
+### 3.5.4 Using CLIProxyAPI (cost optimization)
+
+To route Amp requests through a local proxy (e.g., [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)), set the `AMP_URL` environment variable:
+
+```bash
+# In /etc/open_agent/open_agent.env
+AMP_URL=http://localhost:8080
+```
+
+This redirects Amp CLI requests to your proxy instead of ampcode.com.
+
+### 3.5.5 Troubleshooting Amp
+
+**"Insufficient credits" error**: Amp requires paid credits. Purchase credits at ampcode.com.
+
+**"Network timeout" error**: This was a known issue in earlier versions. Update to the latest Open Agent which includes the fix.
+
+**CLI not found**: Open Agent auto-installs the Amp CLI via bun/npm. Ensure bun or npm is available in your PATH.
+
+---
+
 ## 4) Install Open Agent (Rust backend)
 
 ### 4.1 Install Rust toolchain
