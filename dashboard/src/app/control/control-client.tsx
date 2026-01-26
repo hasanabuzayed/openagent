@@ -4651,7 +4651,7 @@ export default function ControlClient() {
                     {/* Show sessions from API if available, otherwise show hardcoded list */}
                     {desktopSessions.length > 0 ? (
                       <>
-                        {desktopSessions.filter(s => s.process_running).map((session, index) => (
+                        {desktopSessions.map((session, index) => (
                           <div
                             key={`${session.display}-${session.mission_id || index}`}
                             className={cn(
@@ -4671,10 +4671,11 @@ export default function ControlClient() {
                               {/* Status indicator */}
                               <span className={cn(
                                 "h-2 w-2 rounded-full",
+                                !session.process_running ? "bg-gray-600" :
                                 session.status === 'active' ? "bg-emerald-500" :
                                 session.status === 'orphaned' ? "bg-amber-500" :
                                 "bg-gray-500"
-                              )} title={session.status} />
+                              )} title={session.process_running ? session.status : 'stopped'} />
 
                               {/* Display ID */}
                               <span className={cn(
@@ -4689,11 +4690,13 @@ export default function ControlClient() {
                               {/* Status label */}
                               <span className={cn(
                                 "text-xs",
+                                !session.process_running ? "text-white/30" :
                                 session.status === 'active' ? "text-emerald-500/70" :
                                 session.status === 'orphaned' ? "text-amber-500/70" :
                                 "text-white/40"
                               )}>
-                                {session.status === 'active' ? 'Active' :
+                                {!session.process_running ? 'Stopped' :
+                                 session.status === 'active' ? 'Active' :
                                  session.status === 'orphaned' ? 'Orphaned' :
                                  session.status}
                               </span>
