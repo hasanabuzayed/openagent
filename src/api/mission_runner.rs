@@ -414,9 +414,65 @@ fn parse_opencode_sse_event(
             }
         }
         "message.part.updated" => handle_part_update(&props, state, mission_id),
+        "tool.execute" => {
+            let tool_name = props
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let tool_id = format!("opencode-{}", uuid::Uuid::new_v4());
+            let args = props
+                .get("input")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            state
+                .emitted_tool_calls
+                .insert(tool_id.clone(), ());
+            Some(AgentEvent::ToolCall {
+                tool_call_id: tool_id,
+                name: tool_name,
+                args,
+                mission_id: Some(mission_id),
+            })
+        }
+        "tool.result" => {
+            let tool_name = props
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let output = props
+                .get("output")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // Use the most recent tool call id if tracking
+            let tool_id = format!("opencode-{}", uuid::Uuid::new_v4());
+            Some(AgentEvent::ToolResult {
+                tool_call_id: tool_id,
+                name: tool_name,
+                result: serde_json::json!({ "output": output }),
+                mission_id: Some(mission_id),
+            })
+        }
         "message.completed" | "assistant.message.completed" => {
             message_complete = true;
             None
+        }
+        "session.error" => {
+            let message = props
+                .get("error")
+                .and_then(|v| {
+                    v.as_str().map(|s| s.to_string()).or_else(|| {
+                        serde_json::to_string(v).ok()
+                    })
+                })
+                .unwrap_or_else(|| "Unknown session error".to_string());
+            Some(AgentEvent::Error {
+                message,
+                mission_id: Some(mission_id),
+                resumable: true,
+            })
         }
         "error" | "message.error" => {
             let message = props
@@ -1718,60 +1774,6 @@ pub fn run_claudecode_turn<'a>(
                             continue;
                         }
 
-                        // Log raw event type for debugging streaming issues
-                        if let Ok(raw_val) = serde_json::from_str::<serde_json::Value>(&line) {
-                            let event_type = raw_val.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
-                            tracing::debug!(
-                                mission_id = %mission_id,
-                                event_type = %event_type,
-                                line_len = line.len(),
-                                "Claude Code raw event received"
-                            );
-                            // Log full assistant event to check for thinking blocks
-                            if event_type == "assistant" {
-                                if let Some(msg) = raw_val.get("message") {
-                                    if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
-                                        let block_types: Vec<&str> = content.iter()
-                                            .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
-                                            .collect();
-                                        tracing::info!(
-                                            mission_id = %mission_id,
-                                            block_types = ?block_types,
-                                            "Claude raw assistant content block types"
-                                        );
-                                    }
-                                }
-                            }
-                            // Log stream_event details for thinking debug
-                            if event_type == "stream_event" {
-                                if let Some(evt) = raw_val.get("event") {
-                                    let sub_type = evt.get("type").and_then(|t| t.as_str()).unwrap_or("?");
-                                    if sub_type == "content_block_start" {
-                                        if let Some(cb) = evt.get("content_block") {
-                                            let bt = cb.get("type").and_then(|t| t.as_str()).unwrap_or("?");
-                                            tracing::info!(
-                                                mission_id = %mission_id,
-                                                block_type = bt,
-                                                "Claude raw content_block_start type"
-                                            );
-                                        }
-                                    }
-                                    if sub_type == "content_block_delta" {
-                                        if let Some(delta) = evt.get("delta") {
-                                            let dt = delta.get("type").and_then(|t| t.as_str()).unwrap_or("?");
-                                            if dt == "thinking_delta" || dt == "signature_delta" {
-                                                tracing::info!(
-                                                    mission_id = %mission_id,
-                                                    delta_type = dt,
-                                                    "Claude raw thinking/signature delta detected!"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
                         let claude_event: ClaudeEvent = match serde_json::from_str(&line) {
                             Ok(event) => event,
                             Err(e) => {
@@ -1800,14 +1802,6 @@ pub fn run_claudecode_turn<'a>(
                             ClaudeEvent::StreamEvent(wrapper) => {
                                 match wrapper.event {
                                     StreamEvent::ContentBlockDelta { index, delta } => {
-                                        tracing::debug!(
-                                            mission_id = %mission_id,
-                                            index = index,
-                                            delta_type = %delta.delta_type,
-                                            has_thinking = delta.thinking.is_some(),
-                                            has_text = delta.text.is_some(),
-                                            "Claude ContentBlockDelta"
-                                        );
                                         // Check the delta type to determine where to route content
                                         // "thinking_delta" -> thinking panel (uses delta.thinking field)
                                         // "text_delta" -> text output (uses delta.text field)
@@ -1849,12 +1843,6 @@ pub fn run_claudecode_turn<'a>(
                                         // Ignore other delta types (e.g., input_json_delta for tool use)
                                     }
                                     StreamEvent::ContentBlockStart { index, content_block } => {
-                                        tracing::debug!(
-                                            mission_id = %mission_id,
-                                            index = index,
-                                            block_type = %content_block.block_type,
-                                            "Claude ContentBlockStart"
-                                        );
                                         // Track the block type so we know how to handle deltas
                                         block_types.insert(index, content_block.block_type.clone());
 
@@ -1868,19 +1856,6 @@ pub fn run_claudecode_turn<'a>(
                                 }
                             }
                             ClaudeEvent::Assistant(evt) => {
-                                let block_types_str: Vec<String> = evt.message.content.iter().map(|b| match b {
-                                    ContentBlock::Text { .. } => "text".to_string(),
-                                    ContentBlock::ToolUse { name, .. } => format!("tool_use({})", name),
-                                    ContentBlock::ToolResult { .. } => "tool_result".to_string(),
-                                    ContentBlock::Thinking { thinking } => format!("thinking({}chars)", thinking.len()),
-                                }).collect();
-                                tracing::info!(
-                                    mission_id = %mission_id,
-                                    block_count = evt.message.content.len(),
-                                    block_types = ?block_types_str,
-                                    model = ?evt.message.model,
-                                    "Claude Assistant event content blocks"
-                                );
                                 for block in evt.message.content {
                                     match block {
                                         ContentBlock::Text { text } => {
@@ -4566,6 +4541,10 @@ pub async fn run_opencode_turn(
     args.push("--timeout".to_string());
     args.push("0".to_string());
 
+    // JSON format for structured event streaming on stdout
+    args.push("--format".to_string());
+    args.push("json".to_string());
+
     // The message is passed as the final argument
     args.push(message.to_string());
 
@@ -4713,7 +4692,9 @@ pub async fn run_opencode_turn(
     let sse_done_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let sse_cancel = CancellationToken::new();
 
-    let sse_handle = if command_available(&workspace_exec, work_dir, "curl").await {
+    // With --format json, events stream on stdout so skip the SSE curl approach.
+    let use_json_stdout = true;
+    let sse_handle = if !use_json_stdout && command_available(&workspace_exec, work_dir, "curl").await {
         let workspace_exec = workspace_exec.clone();
         let work_dir = work_dir.to_path_buf();
         let work_dir_arg = work_dir_arg.clone();
@@ -4866,87 +4847,28 @@ pub async fn run_opencode_turn(
         None
     };
 
-    let mut stdout_reader = stdout;
-
-    // Spawn a task to read stderr events if available
-    let events_tx_clone = events_tx.clone();
+    // Spawn a task to read stderr (just log in JSON mode, events come on stdout)
     let mission_id_clone = mission_id;
-    let session_id_clone = session_id_capture.clone();
     let stderr_handle = if let Some(stderr) = stderr {
         Some(tokio::spawn(async move {
             let stderr_reader = BufReader::new(stderr);
             let mut stderr_lines = stderr_reader.lines();
-            let mut last_tool_id: Option<String> = None;
-            let mut last_tool_name: Option<String> = None;
-
             while let Ok(Some(line)) = stderr_lines.next_line().await {
-                let clean = strip_ansi_codes(&line);
-                let clean = clean.trim().to_string();
-                if clean.is_empty() {
-                    continue;
+                let clean = line.trim().to_string();
+                if !clean.is_empty() {
+                    tracing::debug!(mission_id = %mission_id_clone, line = %clean, "OpenCode CLI stderr");
                 }
-
-                tracing::debug!(mission_id = %mission_id_clone, line = %clean, "OpenCode CLI stderr");
-
-                if let Some(session) = extract_opencode_session_id(&clean) {
-                    let mut guard = session_id_clone.lock().unwrap();
-                    if guard.is_none() {
-                        *guard = Some(session);
-                    }
-                }
-
-                // Parse stderr for tool execution events
-                // Format: "[MAIN] ⚡ TOOL.EXECUTE: <tool>" or "✓ TOOL.RESULT: \"...\""
-                if clean.contains("TOOL.EXECUTE:") {
-                    // Extract tool name from the line
-                    if let Some(name_start) = clean.find("TOOL.EXECUTE:") {
-                        let name_part = &clean[name_start + 14..];
-                        let tool_name = name_part.trim().trim_matches('"');
-                        let tool_id = format!("opencode-{}", uuid::Uuid::new_v4());
-                        last_tool_id = Some(tool_id.clone());
-                        last_tool_name = Some(tool_name.to_string());
-                        let _ = events_tx_clone.send(AgentEvent::ToolCall {
-                            tool_call_id: tool_id,
-                            name: tool_name.to_string(),
-                            args: serde_json::json!({}),
-                            mission_id: Some(mission_id_clone),
-                        });
-                    }
-                } else if clean.contains("TOOL.RESULT:") {
-                    // Emit tool result using the most recent tool call if available
-                    let tool_id = last_tool_id
-                        .clone()
-                        .unwrap_or_else(|| format!("opencode-{}", uuid::Uuid::new_v4()));
-                    let tool_name = last_tool_name
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let _ = events_tx_clone.send(AgentEvent::ToolResult {
-                        tool_call_id: tool_id,
-                        name: tool_name,
-                        result: serde_json::json!({ "output": clean }),
-                        mission_id: Some(mission_id_clone),
-                    });
-                } else if clean.contains("SESSION.ERROR:")
-                    || clean.contains("Error:")
-                    || clean.contains("error:")
-                {
-                    // Emit error event
-                    let _ = events_tx_clone.send(AgentEvent::Error {
-                        message: clean.clone(),
-                        mission_id: Some(mission_id_clone),
-                        resumable: true,
-                    });
-                }
-
             }
         }))
     } else {
         None
     };
 
-    // Process stdout until completion or cancellation
-    // stdout contains the actual assistant response text
-    let mut buffer = [0u8; 4096];
+    // Process stdout NDJSON events from --format json
+    // Each line is a JSON event: {"type":"message.part.updated","properties":{...}}
+    let stdout_reader = BufReader::new(stdout);
+    let mut stdout_lines = stdout_reader.lines();
+    let mut state = OpencodeSseState::default();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -4958,21 +4880,96 @@ pub async fn run_opencode_turn(
                 return AgentResult::failure("Cancelled".to_string(), 0)
                     .with_terminal_reason(TerminalReason::Cancelled);
             }
-            read_result = stdout_reader.read(&mut buffer) => {
-                match read_result {
-                    Ok(0) => {
+            line_result = stdout_lines.next_line() => {
+                match line_result {
+                    Ok(None) => {
                         // EOF - process finished
                         break;
                     }
-                    Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&buffer[..n]);
-                        if !chunk.is_empty() {
-                            tracing::debug!(mission_id = %mission_id, chunk = %chunk, "OpenCode CLI stdout");
-                            final_result.push_str(&chunk);
+                    Ok(Some(line)) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
 
-                            if chunk.contains("Error:") || chunk.contains("error:") {
-                                had_error = true;
+                        // Try to parse as JSON event
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                            let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            tracing::debug!(
+                                mission_id = %mission_id,
+                                event_type = %event_type,
+                                "OpenCode JSON event"
+                            );
+
+                            // Extract text content from message.part.updated for final result
+                            if event_type == "message.part.updated" {
+                                if let Some(props) = json.get("properties") {
+                                    if let Some(part) = props.get("part") {
+                                        let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                        if part_type == "text" {
+                                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                                final_result = text.to_string();
+                                            }
+                                        }
+                                    }
+                                }
                             }
+
+                            // Handle completion and error events from oh-my-opencode
+                            if event_type == "completion" {
+                                tracing::info!(mission_id = %mission_id, "OpenCode JSON completion event");
+                            } else if event_type == "error" {
+                                had_error = true;
+                                if let Some(props) = json.get("properties") {
+                                    if let Some(err) = props.get("error").and_then(|e| e.as_str()) {
+                                        tracing::warn!(mission_id = %mission_id, error = %err, "OpenCode JSON error event");
+                                        if final_result.is_empty() {
+                                            final_result = err.to_string();
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Route through SSE event parser for thinking/tool events
+                            let current_session = session_id_capture.lock().unwrap().clone();
+                            if let Some(parsed) = parse_opencode_sse_event(
+                                trimmed,
+                                None,
+                                current_session.as_deref(),
+                                &mut state,
+                                mission_id,
+                            ) {
+                                if let Some(session_id) = parsed.session_id {
+                                    let mut guard = session_id_capture.lock().unwrap();
+                                    if guard.is_none() {
+                                        *guard = Some(session_id);
+                                    }
+                                }
+                                if let Some(event) = parsed.event {
+                                    if matches!(event, AgentEvent::Thinking { .. }) {
+                                        sse_emitted_thinking.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    }
+                                    let _ = events_tx.send(event);
+                                }
+                                if parsed.message_complete {
+                                    // Send thinking done signal if needed
+                                    if sse_emitted_thinking.load(std::sync::atomic::Ordering::SeqCst)
+                                        && !sse_done_sent.load(std::sync::atomic::Ordering::SeqCst)
+                                    {
+                                        let _ = events_tx.send(AgentEvent::Thinking {
+                                            content: String::new(),
+                                            done: true,
+                                            mission_id: Some(mission_id),
+                                        });
+                                        sse_done_sent.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    }
+                                }
+                            }
+                        } else {
+                            // Non-JSON line (shouldn't happen with --format json, but handle gracefully)
+                            tracing::debug!(mission_id = %mission_id, line = %trimmed, "OpenCode non-JSON stdout");
+                            final_result.push_str(trimmed);
+                            final_result.push('\n');
                         }
                     }
                     Err(e) => {
