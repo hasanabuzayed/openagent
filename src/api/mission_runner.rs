@@ -1718,10 +1718,65 @@ pub fn run_claudecode_turn<'a>(
                             continue;
                         }
 
+                        // Log raw event type for debugging streaming issues
+                        if let Ok(raw_val) = serde_json::from_str::<serde_json::Value>(&line) {
+                            let event_type = raw_val.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
+                            tracing::debug!(
+                                mission_id = %mission_id,
+                                event_type = %event_type,
+                                line_len = line.len(),
+                                "Claude Code raw event received"
+                            );
+                            // Log full assistant event to check for thinking blocks
+                            if event_type == "assistant" {
+                                if let Some(msg) = raw_val.get("message") {
+                                    if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+                                        let block_types: Vec<&str> = content.iter()
+                                            .filter_map(|b| b.get("type").and_then(|t| t.as_str()))
+                                            .collect();
+                                        tracing::info!(
+                                            mission_id = %mission_id,
+                                            block_types = ?block_types,
+                                            "Claude raw assistant content block types"
+                                        );
+                                    }
+                                }
+                            }
+                            // Log stream_event details for thinking debug
+                            if event_type == "stream_event" {
+                                if let Some(evt) = raw_val.get("event") {
+                                    let sub_type = evt.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+                                    if sub_type == "content_block_start" {
+                                        if let Some(cb) = evt.get("content_block") {
+                                            let bt = cb.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+                                            tracing::info!(
+                                                mission_id = %mission_id,
+                                                block_type = bt,
+                                                "Claude raw content_block_start type"
+                                            );
+                                        }
+                                    }
+                                    if sub_type == "content_block_delta" {
+                                        if let Some(delta) = evt.get("delta") {
+                                            let dt = delta.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+                                            if dt == "thinking_delta" || dt == "signature_delta" {
+                                                tracing::info!(
+                                                    mission_id = %mission_id,
+                                                    delta_type = dt,
+                                                    "Claude raw thinking/signature delta detected!"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         let claude_event: ClaudeEvent = match serde_json::from_str(&line) {
                             Ok(event) => event,
                             Err(e) => {
                                 tracing::warn!(
+                                    mission_id = %mission_id,
                                     "Failed to parse Claude event: {} - line: {}",
                                     e,
                                     if line.len() > 200 {
@@ -1745,6 +1800,14 @@ pub fn run_claudecode_turn<'a>(
                             ClaudeEvent::StreamEvent(wrapper) => {
                                 match wrapper.event {
                                     StreamEvent::ContentBlockDelta { index, delta } => {
+                                        tracing::debug!(
+                                            mission_id = %mission_id,
+                                            index = index,
+                                            delta_type = %delta.delta_type,
+                                            has_thinking = delta.thinking.is_some(),
+                                            has_text = delta.text.is_some(),
+                                            "Claude ContentBlockDelta"
+                                        );
                                         // Check the delta type to determine where to route content
                                         // "thinking_delta" -> thinking panel (uses delta.thinking field)
                                         // "text_delta" -> text output (uses delta.text field)
@@ -1786,6 +1849,12 @@ pub fn run_claudecode_turn<'a>(
                                         // Ignore other delta types (e.g., input_json_delta for tool use)
                                     }
                                     StreamEvent::ContentBlockStart { index, content_block } => {
+                                        tracing::debug!(
+                                            mission_id = %mission_id,
+                                            index = index,
+                                            block_type = %content_block.block_type,
+                                            "Claude ContentBlockStart"
+                                        );
                                         // Track the block type so we know how to handle deltas
                                         block_types.insert(index, content_block.block_type.clone());
 
@@ -1799,6 +1868,19 @@ pub fn run_claudecode_turn<'a>(
                                 }
                             }
                             ClaudeEvent::Assistant(evt) => {
+                                let block_types_str: Vec<String> = evt.message.content.iter().map(|b| match b {
+                                    ContentBlock::Text { .. } => "text".to_string(),
+                                    ContentBlock::ToolUse { name, .. } => format!("tool_use({})", name),
+                                    ContentBlock::ToolResult { .. } => "tool_result".to_string(),
+                                    ContentBlock::Thinking { thinking } => format!("thinking({}chars)", thinking.len()),
+                                }).collect();
+                                tracing::info!(
+                                    mission_id = %mission_id,
+                                    block_count = evt.message.content.len(),
+                                    block_types = ?block_types_str,
+                                    model = ?evt.message.model,
+                                    "Claude Assistant event content blocks"
+                                );
                                 for block in evt.message.content {
                                     match block {
                                         ContentBlock::Text { text } => {
