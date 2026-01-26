@@ -1,4 +1,6 @@
 DEBUGGING.md
+worktree/
+worktree/**
 backups/
 backups/**
 context/
