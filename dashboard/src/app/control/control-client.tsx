@@ -1967,6 +1967,9 @@ export default function ControlClient() {
   const [hasDesktopSession, setHasDesktopSession] = useState(false);
   const [desktopSessions, setDesktopSessions] = useState<DesktopSessionDetail[]>([]);
   const [isClosingDesktop, setIsClosingDesktop] = useState<string | null>(null);
+  // Track when we're expecting a desktop session (from ToolCall before ToolResult arrives)
+  const expectingDesktopSessionRef = useRef(false);
+  const desktopRapidPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Thinking panel state
   const [showThinkingPanel, setShowThinkingPanel] = useState(false);
@@ -3139,10 +3142,18 @@ export default function ControlClient() {
         const activeMission = viewingMissionRef.current ?? currentMissionRef.current;
         const activeMissionId = activeMission?.id;
 
-        // Only auto-open for sessions belonging to the current mission
+        // Only auto-open for sessions belonging to the current mission.
+        // When expecting a desktop session (ToolCall detected but no ToolResult yet),
+        // also include unattributed sessions (mission_id is null) since the backend
+        // background task may not have attributed them yet.
+        const expecting = expectingDesktopSessionRef.current;
         const currentMissionSessions = activeMissionId
-          ? runningSessions.filter(s => s.mission_id === activeMissionId)
-          : [];
+          ? runningSessions.filter(s =>
+              s.mission_id === activeMissionId || (expecting && !s.mission_id)
+            )
+          : expecting
+            ? runningSessions.filter(s => !s.mission_id)
+            : [];
         const hasCurrentMissionSession = currentMissionSessions.length > 0;
 
         // Auto-select first active session from current mission if current display isn't running
@@ -3156,6 +3167,14 @@ export default function ControlClient() {
             setHasDesktopSession(true);
             setShowDesktopStream(true);
           }
+          // Clear expecting flag once we found a session
+          if (expecting) {
+            expectingDesktopSessionRef.current = false;
+            if (desktopRapidPollRef.current) {
+              clearInterval(desktopRapidPollRef.current);
+              desktopRapidPollRef.current = null;
+            }
+          }
         }
       }
     } catch (err) {
@@ -3167,7 +3186,14 @@ export default function ControlClient() {
   useEffect(() => {
     refreshDesktopSessions();
     const interval = setInterval(refreshDesktopSessions, 10000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      // Also clean up rapid polling interval
+      if (desktopRapidPollRef.current) {
+        clearInterval(desktopRapidPollRef.current);
+        desktopRapidPollRef.current = null;
+      }
+    };
   }, [refreshDesktopSessions]);
 
   // Handle closing a desktop session
@@ -3914,6 +3940,31 @@ export default function ControlClient() {
             startTime: Date.now(),
           },
         ]);
+
+        // Detect desktop_start_session from ToolCall (Claude Code/Amp don't emit ToolResult for MCP tools)
+        const isDesktopStart =
+          name === "desktop_start_session" ||
+          name === "desktop_desktop_start_session" ||
+          name === "mcp__desktop__desktop_start_session";
+        if (isDesktopStart) {
+          setHasDesktopSession(true);
+          setShowDesktopStream(true);
+          expectingDesktopSessionRef.current = true;
+          // Start rapid polling (every 2s) to pick up the session once the backend attributes it
+          if (desktopRapidPollRef.current) clearInterval(desktopRapidPollRef.current);
+          desktopRapidPollRef.current = setInterval(() => {
+            refreshDesktopSessions();
+          }, 2000);
+          // Stop rapid polling after 30s
+          setTimeout(() => {
+            if (desktopRapidPollRef.current) {
+              clearInterval(desktopRapidPollRef.current);
+              desktopRapidPollRef.current = null;
+            }
+            expectingDesktopSessionRef.current = false;
+          }, 30000);
+        }
+
         return;
       }
 
