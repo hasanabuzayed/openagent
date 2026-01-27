@@ -2691,6 +2691,21 @@ async fn control_actor_loop(
                             if mission_id.is_none() {
                                 // Use effective_target if available, otherwise create new
                                 if let Some(tid) = effective_target {
+                                    // Load mission history from DB so continuation detection
+                                    // works correctly (e.g., after server restart when
+                                    // current_mission is None but the mission has prior turns).
+                                    if let Ok(mission) = load_mission_record(&mission_store, tid).await {
+                                        if !mission.history.is_empty() {
+                                            history.clear();
+                                            for entry in &mission.history {
+                                                history.push((entry.role.clone(), entry.content.clone()));
+                                            }
+                                            tracing::info!(
+                                                "Loaded {} history entries for target mission {} (first message after session start)",
+                                                mission.history.len(), tid
+                                            );
+                                        }
+                                    }
                                     *current_mission.write().await = Some(tid);
                                     tracing::info!("Set current mission to target: {}", tid);
                                 } else if let Ok(new_mission) = create_new_mission(&mission_store).await {
