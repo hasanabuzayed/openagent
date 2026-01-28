@@ -2638,11 +2638,11 @@ async fn control_actor_loop(
                                     // Load mission and start in parallel
                                     match load_mission_record(&mission_store, tid).await {
                                         Ok(mission) => {
-                                            // Auto-resume: if mission is interrupted/blocked, update status to active
-                                            if matches!(mission.status, MissionStatus::Interrupted | MissionStatus::Blocked) {
-                                                tracing::info!("Auto-resuming parallel mission {} (was {})", tid, mission.status);
+                                            // Activate mission: if pending, interrupted, or blocked, update status to active
+                                            if matches!(mission.status, MissionStatus::Pending | MissionStatus::Interrupted | MissionStatus::Blocked) {
+                                                tracing::info!("Activating parallel mission {} (was {})", tid, mission.status);
                                                 if let Err(e) = mission_store.update_mission_status(tid, MissionStatus::Active).await {
-                                                    tracing::warn!("Failed to auto-resume parallel mission {}: {}", tid, e);
+                                                    tracing::warn!("Failed to activate parallel mission {}: {}", tid, e);
                                                 } else {
                                                     let _ = events_tx.send(AgentEvent::MissionStatusChanged {
                                                         mission_id: tid,
@@ -2823,11 +2823,11 @@ async fn control_actor_loop(
                                 let (workspace_id, model_override, mission_agent, backend_id, session_id) = if let Some(mid) = mission_id {
                                     match mission_store.get_mission(mid).await {
                                         Ok(Some(mission)) => {
-                                            // Auto-resume: if mission is interrupted/blocked, update status to active
-                                            if matches!(mission.status, MissionStatus::Interrupted | MissionStatus::Blocked) {
-                                                tracing::info!("Auto-resuming mission {} (was {})", mid, mission.status);
+                                            // Activate mission: if pending, interrupted, or blocked, update status to active
+                                            if matches!(mission.status, MissionStatus::Pending | MissionStatus::Interrupted | MissionStatus::Blocked) {
+                                                tracing::info!("Activating mission {} (was {})", mid, mission.status);
                                                 if let Err(e) = mission_store.update_mission_status(mid, MissionStatus::Active).await {
-                                                    tracing::warn!("Failed to auto-resume mission {}: {}", mid, e);
+                                                    tracing::warn!("Failed to activate mission {}: {}", mid, e);
                                                 } else {
                                                     // Notify frontend of status change
                                                     let _ = events_tx.send(AgentEvent::MissionStatusChanged {
