@@ -1556,11 +1556,14 @@ impl LibraryStore {
             let has_commands = skills.iter().any(|(_, cmds)| !cmds.is_empty());
             if has_commands {
                 assembled.push_str("\n# === Skill Setup Commands ===\n");
+                assembled.push_str("# (npm commands auto-substituted to use bun if available)\n");
                 for (skill_name, commands) in skills {
                     if !commands.is_empty() {
                         assembled.push_str(&format!("# Skill: {}\n", skill_name));
                         for cmd in commands {
-                            assembled.push_str(cmd);
+                            // Auto-substitute npm with bun for faster installs
+                            let cmd = Self::substitute_npm_with_bun(cmd);
+                            assembled.push_str(&cmd);
                             assembled.push_str("\n");
                         }
                     }
@@ -1613,6 +1616,29 @@ impl LibraryStore {
             }
         }
         result
+    }
+
+    /// Substitute npm commands with bun equivalents for faster package installation.
+    /// Generates a shell command that uses bun if available, falling back to npm.
+    fn substitute_npm_with_bun(cmd: &str) -> String {
+        // Check if this is an npm install command
+        let trimmed = cmd.trim();
+        if trimmed.starts_with("npm install") || trimmed.starts_with("npm i ") {
+            // Extract the rest of the command after "npm install" or "npm i"
+            let rest = if trimmed.starts_with("npm install") {
+                trimmed.strip_prefix("npm install").unwrap_or("")
+            } else {
+                trimmed.strip_prefix("npm i").unwrap_or("")
+            };
+
+            // Generate command that prefers bun but falls back to npm
+            format!(
+                "if command -v bun >/dev/null 2>&1; then bun install{}; else npm install{}; fi",
+                rest, rest
+            )
+        } else {
+            cmd.to_string()
+        }
     }
 
     /// Extract description from the first comment line after shebang.
