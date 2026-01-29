@@ -13,7 +13,7 @@
 //! - Migration
 
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{delete, get, post, put},
     Json, Router,
@@ -291,12 +291,8 @@ pub struct SaveContentRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct ImportSkillRequest {
-    /// Git repository URL
-    url: String,
-    /// Optional path within the repository (for monorepos)
-    path: Option<String>,
-    /// Target skill name (defaults to last path component)
-    name: Option<String>,
+    /// Skill name (required for file upload)
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -595,46 +591,194 @@ async fn delete_skill_reference(
     Ok((StatusCode::OK, "Reference deleted successfully".to_string()))
 }
 
-/// POST /api/library/skills/import - Import a skill from a Git URL.
+/// POST /api/library/skills/import - Import a skill from a file upload (.zip or .md).
+///
+/// Accepts multipart form data with:
+/// - `name`: skill name (query parameter)
+/// - `file`: the uploaded file (.zip or .md)
+///
+/// For .md files: creates a skill with the file as SKILL.md
+/// For .zip files: extracts and looks for SKILL.md in the archive
 async fn import_skill(
     State(state): State<Arc<super::routes::AppState>>,
     headers: HeaderMap,
-    Json(req): Json<ImportSkillRequest>,
+    Query(req): Query<ImportSkillRequest>,
+    mut multipart: Multipart,
 ) -> Result<Json<Skill>, (StatusCode, String)> {
     let library = ensure_library(&state, &headers).await?;
 
-    // Determine target name
-    let target_name = req.name.clone().unwrap_or_else(|| {
-        // Extract from path or URL
-        if let Some(ref path) = req.path {
-            path.rsplit('/')
-                .next()
-                .unwrap_or("imported-skill")
-                .to_string()
-        } else {
-            req.url
-                .rsplit('/')
-                .next()
-                .map(|s| s.trim_end_matches(".git"))
-                .unwrap_or("imported-skill")
-                .to_string()
-        }
-    });
+    // Validate skill name
+    let skill_name = req.name.trim().to_lowercase();
+    if skill_name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Skill name is required".to_string()));
+    }
+    if !skill_name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Skill name must contain only lowercase letters, numbers, and hyphens".to_string(),
+        ));
+    }
 
-    let skill = library
-        .import_skill_from_git(&req.url, req.path.as_deref(), &target_name)
+    // Check if skill already exists
+    let skill_dir = library.path().join("skill").join(&skill_name);
+    if skill_dir.exists() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("Skill '{}' already exists", skill_name),
+        ));
+    }
+
+    // Extract file from multipart
+    let mut file_data: Option<(String, Vec<u8>)> = None;
+    while let Some(field) = multipart
+        .next_field()
         .await
-        .map_err(|e| {
-            if e.to_string().contains("already exists") {
-                (StatusCode::CONFLICT, e.to_string())
-            } else if e.to_string().contains("No SKILL.md found") {
-                (StatusCode::BAD_REQUEST, e.to_string())
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-            }
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Failed to read upload: {}", e)))?
+    {
+        if field.name() == Some("file") {
+            let filename = field
+                .file_name()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "upload".to_string());
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Failed to read file: {}", e)))?;
+            file_data = Some((filename, data.to_vec()));
+            break;
+        }
+    }
+
+    let (filename, data) = file_data
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "No file uploaded".to_string()))?;
+
+    // Create skill directory
+    tokio::fs::create_dir_all(&skill_dir)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create skill directory: {}", e)))?;
+
+    // Handle based on file type
+    let filename_lower = filename.to_lowercase();
+    if filename_lower.ends_with(".zip") {
+        // Extract ZIP file
+        import_skill_from_zip(&skill_dir, &data).await.map_err(|e| {
+            // Clean up on error
+            let _ = std::fs::remove_dir_all(&skill_dir);
+            (StatusCode::BAD_REQUEST, e)
         })?;
-    sync_skill_to_workspaces(&state, library.as_ref(), &target_name).await;
+    } else if filename_lower.ends_with(".md") {
+        // Single markdown file - save as SKILL.md
+        let skill_md_path = skill_dir.join("SKILL.md");
+        tokio::fs::write(&skill_md_path, &data)
+            .await
+            .map_err(|e| {
+                let _ = std::fs::remove_dir_all(&skill_dir);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write SKILL.md: {}", e))
+            })?;
+    } else {
+        let _ = std::fs::remove_dir_all(&skill_dir);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Unsupported file type. Please upload a .zip or .md file".to_string(),
+        ));
+    }
+
+    // Verify SKILL.md exists
+    let skill_md_path = skill_dir.join("SKILL.md");
+    if !skill_md_path.exists() {
+        let _ = std::fs::remove_dir_all(&skill_dir);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "No SKILL.md found in the uploaded archive".to_string(),
+        ));
+    }
+
+    // Load and return the skill
+    let skill = library.get_skill(&skill_name).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load imported skill: {}", e))
+    })?;
+
+    sync_skill_to_workspaces(&state, library.as_ref(), &skill_name).await;
     Ok(Json(skill))
+}
+
+/// Extract a ZIP file into the skill directory.
+async fn import_skill_from_zip(skill_dir: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    use std::io::{Cursor, Read};
+
+    let cursor = Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| format!("Invalid ZIP file: {}", e))?;
+
+    // Find the common prefix (for archives with a single root folder)
+    let prefix = find_zip_prefix(&mut archive);
+
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
+
+        let name = file.name().to_string();
+
+        // Skip directories and hidden files
+        if name.ends_with('/') || name.contains("/.") || name.starts_with('.') {
+            continue;
+        }
+
+        // Remove common prefix if present
+        let relative_path = if let Some(ref p) = prefix {
+            name.strip_prefix(p).unwrap_or(&name)
+        } else {
+            &name
+        };
+
+        if relative_path.is_empty() {
+            continue;
+        }
+
+        let target_path = skill_dir.join(relative_path);
+
+        // Create parent directories
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+
+        // Extract file
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)
+            .map_err(|e| format!("Failed to read file from ZIP: {}", e))?;
+        std::fs::write(&target_path, contents)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+    }
+
+    Ok(())
+}
+
+/// Find common prefix in ZIP archive (for archives with a single root folder).
+fn find_zip_prefix(archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Option<String> {
+    let mut first_dir: Option<String> = None;
+
+    for i in 0..archive.len() {
+        if let Ok(file) = archive.by_index(i) {
+            let name = file.name();
+            if let Some(slash_pos) = name.find('/') {
+                let dir = &name[..=slash_pos];
+                match &first_dir {
+                    None => first_dir = Some(dir.to_string()),
+                    Some(d) if d != dir => return None, // Multiple root dirs
+                    _ => {}
+                }
+            } else {
+                return None; // File at root level
+            }
+        }
+    }
+
+    first_dir
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1865,4 +2009,135 @@ async fn copy_dir_recursive(
     }
 
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Write};
+    use tempfile::tempdir;
+    use zip::write::SimpleFileOptions;
+
+    /// Create a ZIP archive in memory with the given files.
+    fn create_zip(files: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let cursor = Cursor::new(&mut buf);
+            let mut writer = zip::ZipWriter::new(cursor);
+            let options = SimpleFileOptions::default();
+
+            for (path, content) in files {
+                writer.start_file(*path, options).unwrap();
+                writer.write_all(content.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn test_find_zip_prefix_single_root() {
+        let zip_data = create_zip(&[
+            ("my-skill/SKILL.md", "# Test"),
+            ("my-skill/refs/file.md", "content"),
+        ]);
+        let cursor = Cursor::new(zip_data.as_slice());
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let prefix = find_zip_prefix(&mut archive);
+        assert_eq!(prefix, Some("my-skill/".to_string()));
+    }
+
+    #[test]
+    fn test_find_zip_prefix_multiple_roots() {
+        let zip_data = create_zip(&[
+            ("folder1/file.md", "content1"),
+            ("folder2/file.md", "content2"),
+        ]);
+        let cursor = Cursor::new(zip_data.as_slice());
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let prefix = find_zip_prefix(&mut archive);
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    fn test_find_zip_prefix_file_at_root() {
+        let zip_data = create_zip(&[
+            ("SKILL.md", "# Test"),
+            ("refs/file.md", "content"),
+        ]);
+        let cursor = Cursor::new(zip_data.as_slice());
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let prefix = find_zip_prefix(&mut archive);
+        assert_eq!(prefix, None);
+    }
+
+    #[tokio::test]
+    async fn test_import_skill_from_zip_flat() {
+        let zip_data = create_zip(&[
+            ("SKILL.md", "---\ndescription: Test skill\n---\n\n# Test"),
+            ("refs/example.md", "Example content"),
+        ]);
+
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        import_skill_from_zip(&skill_dir, &zip_data).await.unwrap();
+
+        // Check files were extracted correctly
+        assert!(skill_dir.join("SKILL.md").exists());
+        let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(content.contains("description: Test skill"));
+
+        assert!(skill_dir.join("refs/example.md").exists());
+    }
+
+    #[tokio::test]
+    async fn test_import_skill_from_zip_with_root_folder() {
+        // Simulate a GitHub-style archive with a root folder
+        let zip_data = create_zip(&[
+            ("my-skill-main/SKILL.md", "---\ndescription: GitHub style\n---\n\n# Test"),
+            ("my-skill-main/refs/doc.md", "Documentation"),
+        ]);
+
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        import_skill_from_zip(&skill_dir, &zip_data).await.unwrap();
+
+        // Root folder prefix should be stripped
+        assert!(skill_dir.join("SKILL.md").exists());
+        let content = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(content.contains("GitHub style"));
+
+        // Nested file should also have prefix stripped
+        assert!(skill_dir.join("refs/doc.md").exists());
+    }
+
+    #[tokio::test]
+    async fn test_import_skill_from_zip_skips_hidden_files() {
+        let zip_data = create_zip(&[
+            ("SKILL.md", "# Test"),
+            (".gitignore", "*.log"),
+            ("refs/.hidden", "secret"),
+        ]);
+
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        import_skill_from_zip(&skill_dir, &zip_data).await.unwrap();
+
+        // SKILL.md should exist
+        assert!(skill_dir.join("SKILL.md").exists());
+
+        // Hidden files should be skipped
+        assert!(!skill_dir.join(".gitignore").exists());
+        assert!(!skill_dir.join("refs/.hidden").exists());
+    }
 }

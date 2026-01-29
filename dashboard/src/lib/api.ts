@@ -1200,15 +1200,23 @@ export async function deleteSkillReference(
   );
 }
 
-// Import skill from Git URL
-export interface ImportSkillRequest {
-  url: string;
-  path?: string;
-  name?: string;
-}
+// Import skill from file (.zip or .md)
+export async function importSkill(name: string, file: File): Promise<Skill> {
+  const formData = new FormData();
+  formData.append("file", file);
 
-export async function importSkill(request: ImportSkillRequest): Promise<Skill> {
-  return libPost("/api/library/skills/import", request, "Failed to import skill");
+  const url = apiUrl(`/api/library/skills/import?name=${encodeURIComponent(name)}`);
+  const res = await fetch(url, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to import skill");
+  }
+
+  return res.json();
 }
 
 // Skills Registry (skills.sh) API
