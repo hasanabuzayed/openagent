@@ -2935,6 +2935,7 @@ async fn control_actor_loop(
                                         model_override,
                                         agent_override,
                                         session_id,
+                                        false, // force_session_resume: regular message, not a resume
                                     )
                                     .await;
                                     (mid, msg, result)
@@ -3326,6 +3327,7 @@ async fn control_actor_loop(
                                                 model_override,
                                                 agent_override,
                                                 session_id,
+                                                true, // force_session_resume: this is a resume operation
                                             )
                                             .await;
                                             (mid, msg, result)
@@ -3844,6 +3846,7 @@ async fn control_actor_loop(
                             model_override,
                             agent_override,
                             session_id,
+                            false, // force_session_resume: continuation turn, not a resume
                         )
                         .await;
                         (mid, msg, result)
@@ -4273,6 +4276,7 @@ async fn run_single_control_turn(
     model_override: Option<String>,
     agent_override: Option<String>,
     session_id: Option<String>,
+    force_session_resume: bool,
 ) -> crate::agents::AgentResult {
     let is_claudecode = backend_id.as_deref() == Some("claudecode");
     if let Some(model) = model_override {
@@ -4388,7 +4392,10 @@ async fn run_single_control_turn(
             // Check if this is a continuation turn (has prior assistant response).
             // Note: history may include the current user message before the turn runs,
             // so we check for assistant messages to determine if this is truly a continuation.
-            let is_continuation = history.iter().any(|(role, _)| role == "assistant");
+            // Also use --resume if force_session_resume is set (e.g., for mission resume operations
+            // where the session exists but history may not have assistant messages yet).
+            let is_continuation =
+                force_session_resume || history.iter().any(|(role, _)| role == "assistant");
             super::mission_runner::run_claudecode_turn(
                 exec_workspace,
                 &ctx.working_dir,
@@ -4422,7 +4429,8 @@ async fn run_single_control_turn(
                     .with_terminal_reason(TerminalReason::LlmError);
                 }
             };
-            let is_continuation = history.iter().any(|(role, _)| role == "assistant");
+            let is_continuation =
+                force_session_resume || history.iter().any(|(role, _)| role == "assistant");
             let api_key = super::mission_runner::get_amp_api_key_from_config();
             super::mission_runner::run_amp_turn(
                 exec_workspace,
