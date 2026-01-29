@@ -63,7 +63,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation fonts-dejavu-core fonts-noto \
     # Chromium
     chromium \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Add missing Ubuntu noble (24.04) script for debootstrap
+    # Debian 12's debootstrap doesn't include noble yet
+    && ln -sf gutsy /usr/share/debootstrap/scripts/noble \
+    && ln -sf gutsy /usr/share/debootstrap/scripts/plucky
 
 # -- Node.js 20 (for Next.js standalone + Claude Code via npm) ---------------
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
