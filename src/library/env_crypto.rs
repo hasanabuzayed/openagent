@@ -158,6 +158,46 @@ pub fn decrypt_env_vars(
     Ok(decrypted)
 }
 
+/// Result of graceful decryption
+pub struct GracefulDecryptResult {
+    pub env_vars: HashMap<String, String>,
+    pub failed_keys: Vec<String>,
+}
+
+/// Decrypt all values in an env_vars HashMap, handling failures gracefully.
+/// Values that fail to decrypt are returned with a special marker prefix.
+/// Returns both the (possibly partially decrypted) env vars and a list of keys that failed.
+pub fn decrypt_env_vars_graceful(
+    key: &[u8; KEY_LENGTH],
+    env_vars: &HashMap<String, String>,
+) -> GracefulDecryptResult {
+    let mut decrypted = HashMap::with_capacity(env_vars.len());
+    let mut failed_keys = Vec::new();
+
+    for (k, v) in env_vars {
+        match decrypt_value(key, v) {
+            Ok(plaintext) => {
+                decrypted.insert(k.clone(), plaintext);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    key = %k,
+                    error = %e,
+                    "Failed to decrypt env var, marking as failed"
+                );
+                // Keep the original encrypted value with a failure marker
+                decrypted.insert(k.clone(), format!("[DECRYPTION_FAILED]{}", v));
+                failed_keys.push(k.clone());
+            }
+        }
+    }
+
+    GracefulDecryptResult {
+        env_vars: decrypted,
+        failed_keys,
+    }
+}
+
 /// Load the encryption key from environment.
 /// Returns None if PRIVATE_KEY is not set.
 pub fn load_private_key_from_env() -> Result<Option<[u8; KEY_LENGTH]>> {
@@ -172,7 +212,7 @@ pub fn load_private_key_from_env() -> Result<Option<[u8; KEY_LENGTH]>> {
 }
 
 /// Get the path to the private key file.
-/// Uses `PRIVATE_KEY_FILE` env var, or defaults to `{WORKING_DIR}/.openagent/private_key`.
+/// Uses `PRIVATE_KEY_FILE` env var, or defaults to `{WORKING_DIR}/.sandboxed-sh/private_key`.
 fn private_key_file_path() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("PRIVATE_KEY_FILE") {
         return std::path::PathBuf::from(path);
@@ -180,13 +220,13 @@ fn private_key_file_path() -> std::path::PathBuf {
     let working_dir = std::env::var("WORKING_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/root"));
-    working_dir.join(".openagent").join("private_key")
+    working_dir.join(".sandboxed-sh").join("private_key")
 }
 
 /// Ensure a private key is available, generating one lazily if needed.
 ///
 /// 1. Checks `PRIVATE_KEY` env var (fast path, no I/O).
-/// 2. Reads from the key file (`{WORKING_DIR}/.openagent/private_key`).
+/// 2. Reads from the key file (`{WORKING_DIR}/.sandboxed-sh/private_key`).
 /// 3. Generates a new key, persists it to the file, and sets the env var.
 pub async fn ensure_private_key() -> Result<[u8; KEY_LENGTH]> {
     // 1. Fast path: env var already set
@@ -310,6 +350,10 @@ const VERSIONED_TAG_REGEX: &str = r#"<encrypted v="(\d+)">([^<]*)</encrypted>"#;
 /// Regex to match any encrypted tag (both versioned and unversioned).
 const ANY_ENCRYPTED_TAG_REGEX: &str = r#"<encrypted(?:\s+v="\d+")?>([^<]*)</encrypted>"#;
 
+/// Regex to match failed-to-decrypt tags.
+const FAILED_ENCRYPTED_TAG_REGEX: &str =
+    r#"<encrypted-failed(?:\s+v="\d+")?>([^<]*)</encrypted-failed>"#;
+
 /// Check if a value is an unversioned encrypted tag (user input format).
 pub fn is_unversioned_encrypted(value: &str) -> bool {
     let trimmed = value.trim();
@@ -318,9 +362,16 @@ pub fn is_unversioned_encrypted(value: &str) -> bool {
         && !trimmed.contains(" v=\"")
 }
 
-/// Check if content contains any encrypted tags (versioned or unversioned).
+/// Check if content contains any encrypted tags (versioned, unversioned, or failed).
 pub fn has_encrypted_tags(content: &str) -> bool {
-    content.contains("<encrypted>") || content.contains("<encrypted v=\"")
+    content.contains("<encrypted>")
+        || content.contains("<encrypted v=\"")
+        || content.contains("<encrypted-failed")
+}
+
+/// Check if content contains any failed-to-decrypt tags.
+pub fn has_failed_encrypted_tags(content: &str) -> bool {
+    content.contains("<encrypted-failed")
 }
 
 /// Strip all <encrypted>...</encrypted> tags from content, leaving only the inner values.
@@ -328,12 +379,18 @@ pub fn has_encrypted_tags(content: &str) -> bool {
 /// This is used when deploying skills to workspaces where the actual plaintext
 /// values are needed (after decryption has already been performed).
 ///
-/// Handles both versioned and unversioned tags:
+/// Handles versioned, unversioned, and failed tags:
 /// - `<encrypted>plaintext</encrypted>` → `plaintext`
 /// - `<encrypted v="1">ciphertext</encrypted>` → `ciphertext` (should not happen after decryption)
+/// - `<encrypted-failed v="1">ciphertext</encrypted-failed>` → `[DECRYPTION_FAILED]` (placeholder)
 pub fn strip_encrypted_tags(content: &str) -> String {
+    // First handle failed tags with a placeholder
+    let re_failed = regex::Regex::new(FAILED_ENCRYPTED_TAG_REGEX).expect("Invalid regex");
+    let content = re_failed.replace_all(content, "[DECRYPTION_FAILED]");
+
+    // Then handle normal encrypted tags
     let re = regex::Regex::new(ANY_ENCRYPTED_TAG_REGEX).expect("Invalid regex");
-    re.replace_all(content, "$1").to_string()
+    re.replace_all(&content, "$1").to_string()
 }
 
 /// Encrypt all unversioned <encrypted>value</encrypted> tags in content.
@@ -384,8 +441,19 @@ pub fn encrypt_content_tags(key: &[u8; KEY_LENGTH], content: &str) -> Result<Str
     Ok(result)
 }
 
+/// Marker for encrypted values that failed to decrypt (wrong key).
+const DECRYPT_FAILED_PREFIX: &str = "<encrypted-failed v=\"";
+
+/// Check if a value is a failed-to-decrypt encrypted tag.
+pub fn is_decrypt_failed(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with(DECRYPT_FAILED_PREFIX) && trimmed.ends_with("</encrypted-failed>")
+}
+
 /// Decrypt all versioned <encrypted v="N">ciphertext</encrypted> tags in content.
 /// Transforms <encrypted v="1">ciphertext</encrypted> to <encrypted>plaintext</encrypted>.
+/// If decryption fails (wrong key), transforms to <encrypted-failed v="1">ciphertext</encrypted-failed>
+/// so the frontend can display it specially for the user to re-enter.
 pub fn decrypt_content_tags(key: &[u8; KEY_LENGTH], content: &str) -> Result<String> {
     let re = regex::Regex::new(VERSIONED_TAG_REGEX).map_err(|e| anyhow!("Invalid regex: {}", e))?;
 
@@ -394,15 +462,30 @@ pub fn decrypt_content_tags(key: &[u8; KEY_LENGTH], content: &str) -> Result<Str
 
     for cap in re.captures_iter(content) {
         let full_match = cap.get(0).unwrap();
-        let _version = cap.get(1).unwrap().as_str();
-        let _ciphertext_b64 = cap.get(2).unwrap().as_str();
+        let version = cap.get(1).unwrap().as_str();
+        let ciphertext_b64 = cap.get(2).unwrap().as_str();
 
         // Reconstruct the full encrypted value for decryption
         let encrypted_value = full_match.as_str();
-        let plaintext = decrypt_value(key, encrypted_value)?;
 
-        // Format as unversioned tag for display
-        let display_tag = format!("<encrypted>{}</encrypted>", plaintext);
+        // Try to decrypt, but handle failure gracefully
+        let display_tag = match decrypt_value(key, encrypted_value) {
+            Ok(plaintext) => {
+                // Success: format as unversioned tag for display
+                format!("<encrypted>{}</encrypted>", plaintext)
+            }
+            Err(e) => {
+                // Failure: mark as failed so frontend can show it differently
+                tracing::warn!(
+                    error = %e,
+                    "Failed to decrypt value, marking as encrypted-failed for user to re-enter"
+                );
+                format!(
+                    "<encrypted-failed v=\"{}\">{}</encrypted-failed>",
+                    version, ciphertext_b64
+                )
+            }
+        };
 
         // Calculate adjusted position with offset
         let start = (full_match.start() as i64 + offset) as usize;
@@ -446,6 +529,12 @@ pub async fn set_private_key_hex(key_hex: &str) -> Result<()> {
 
     tracing::info!("Restored PRIVATE_KEY from backup");
     Ok(())
+}
+
+/// Parse a key from a hex string.
+/// Returns the 32-byte key if valid, or an error otherwise.
+pub fn parse_key_hex(key_hex: &str) -> Result<[u8; KEY_LENGTH]> {
+    parse_key(key_hex)
 }
 
 #[cfg(test)]
